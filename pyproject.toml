@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "fastapi-boilerplate-cli"
-version = "0.1.0"
-description = "bp — developer/operator CLI for the FastAPI boilerplate. Hosts in-tree commands and discovers third-party plugins."
+name = "fastro"
+version = "0.1.0.dev0"
+description = "Generate Fastro projects from a blueprint, keep them in sync, and check them."
 authors = [{ name = "Benav Labs", email = "contact@benav.io" }]
 license = { text = "MIT" }
 readme = "README.md"
@@ -21,20 +21,15 @@ dev = [
     "pyyaml>=6.0.2",
     "ruff>=0.9.4",
     "mypy>=1.14.1",
+    "hatchling>=1.27",
 ]
 
 [project.scripts]
-bp = "cli.app:app"
+fastro = "fastro.cli:app"
+bp = "fastro.cli:app"
 
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["*"]
-
-[tool.setuptools.package-data]
-"*" = ["*.j2", "*.toml", "*.conf", "py.typed"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/fastro"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -49,7 +44,7 @@ select = ["E", "F", "I", "UP"]
 extend-select = ["UP006", "UP007", "UP035", "UP039", "PLC0415"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["cli"]
+known-first-party = ["fastro"]
 
 [tool.mypy]
 python_version = "3.11"

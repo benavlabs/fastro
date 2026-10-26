@@ -1,7 +1,7 @@
-"""``bp deploy`` — generate deployment artifacts.
+"""``fastro deploy``: generate deployment artifacts.
 
 Today this is just a wrapper around the in-tree ``deploy`` feature.
-Other deploy-adjacent commands (``bp deploy nginx-tls``, ``bp deploy
+Other deploy-adjacent commands (``fastro deploy nginx-tls``, ``fastro deploy
 github-actions``) can mount here as siblings.
 """
 
@@ -55,7 +55,7 @@ def generate(
     """Generate ``docker-compose.yml`` (and ``nginx/default.conf`` for nginx mode)."""
     project = discover_project(output_dir)
     feature = get_feature("deploy")
-    if feature is None:  # pragma: no cover — built-in feature, always present
+    if feature is None:  # pragma: no cover
         error("deploy feature is not registered.")
         raise typer.Exit(code=1)
 
@@ -88,7 +88,7 @@ def generate(
         info(f"{len(result.files_skipped)} file(s) skipped.")
     if dry_run:
         info("")
-        info("dry-run complete — no files were written.")
+        info("dry-run complete: no files were written.")
         return
 
     info("")

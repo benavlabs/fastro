@@ -1,11 +1,11 @@
-"""``bp env``: inspect and prepare the runtime environment.
+"""``fastro env``: inspect and prepare the runtime environment.
 
 Both commands run the project's own scripts in its interpreter:
 
-- ``bp env gen-secret`` runs ``scripts.gen_secret``, which prints a key the
+- ``fastro env gen-secret`` runs ``scripts.gen_secret``, which prints a key the
   project's rules accept. Outside a project it prints ``secrets.token_hex``.
 
-- ``bp env validate`` runs ``scripts.validate_env``, the production security
+- ``fastro env validate`` runs ``scripts.validate_env``, the production security
   validator, regardless of the configured environment.
 """
 
@@ -38,14 +38,15 @@ def _run_script(command: str, backend: Path, module: str, args: list[str]) -> No
     script = runner.module_file(backend, module)
     if not script.is_file():
         shown = script.relative_to(backend.parent)
-        error(f"`bp env {command}` is not available in this project: {shown} doesn't exist.")
+        error(f"`fastro env {command}` is not available in this project: {shown} doesn't exist.")
         raise typer.Exit(code=3)
 
     try:
         code = runner.run_module(backend, module, args)
     except runner.MissingToolError as missing:
         error(
-            f"`bp env {command}` runs in the project through {missing.tool}, which isn't on PATH. Install it: {UV_INSTALL_URL}"
+            f"`fastro env {command}` runs in the project through {missing.tool}, which isn't on PATH. "
+            f"Install it: {UV_INSTALL_URL}"
         )
         raise typer.Exit(code=3) from missing
 

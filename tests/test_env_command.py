@@ -1,4 +1,4 @@
-"""``bp env``: what it runs in the project, and what it says when it can't."""
+"""``fastro env``: what it runs in the project, and what it says when it can't."""
 
 import json
 import os
@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import cli.app
-from cli import plugins
-from cli.commands import env
+import fastro.cli
+from fastro import plugins
+from fastro.commands import env
 
 runner = CliRunner()
 
@@ -98,7 +98,7 @@ def test_without_uv_the_command_says_what_is_missing(project, tmp_path, monkeypa
     result = runner.invoke(env.app, ["validate"])
 
     assert result.exit_code == 3
-    assert "`bp env validate` runs in the project through uv, which isn't on PATH." in result.stderr
+    assert "`fastro env validate` runs in the project through uv, which isn't on PATH." in result.stderr
     assert "Install it: https://docs.astral.sh/uv/getting-started/installation/" in result.stderr
     assert result.stdout == ""
 
@@ -139,6 +139,6 @@ def test_mounting_the_plugins_routes_their_warnings(monkeypatch):
     routed: list[bool] = []
     monkeypatch.setattr(plugins, "emit_plugin_warnings_to_stderr", lambda: routed.append(True))
 
-    cli.app._mount_command_plugins()
+    fastro.cli._mount_command_plugins()
 
     assert routed == [True]

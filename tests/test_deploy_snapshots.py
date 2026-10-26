@@ -1,4 +1,4 @@
-"""``bp deploy generate``: the files it writes, byte for byte, against what ``b2c2900`` wrote."""
+"""``fastro deploy generate``: the files it writes, byte for byte, against what ``b2c2900`` wrote."""
 
 import re
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import cli.app
+import fastro.cli
 
 runner = CliRunner()
 
@@ -46,7 +46,7 @@ def test_generate_writes_what_b2c2900_wrote(tmp_path, case: str):
     args, taskiq = CASES[case]
     project = _project(tmp_path, taskiq=taskiq)
 
-    result = runner.invoke(cli.app.app, ["deploy", "generate", *args, "-o", str(project), "--yes"])
+    result = runner.invoke(fastro.cli.app, ["deploy", "generate", *args, "-o", str(project), "--yes"])
 
     assert result.exit_code == 0, result.output
     assert _files(project) == _files(FIXTURES / case)
@@ -57,7 +57,7 @@ def test_a_dry_run_names_each_file_and_writes_none(tmp_path, case: str):
     args, taskiq = CASES[case]
     project = _project(tmp_path, taskiq=taskiq)
 
-    result = runner.invoke(cli.app.app, ["deploy", "generate", *args, "-o", str(project), "--dry-run"])
+    result = runner.invoke(fastro.cli.app, ["deploy", "generate", *args, "-o", str(project), "--dry-run"])
 
     named = [match["path"] for match in WOULD_WRITE.finditer(result.stdout)]
     assert result.exit_code == 0, result.output
