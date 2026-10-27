@@ -1,6 +1,7 @@
 """The ``fastro`` wheel: what it's called, what it needs, and that it carries every package file."""
 
 import importlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -14,6 +15,8 @@ import fastro
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "fastro"
+
+STYLE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 @pytest.fixture(scope="module")
@@ -74,4 +77,4 @@ def test_python_dash_m_fastro_runs_the_cli() -> None:
     result = subprocess.run([sys.executable, "-m", "fastro", "--help"], capture_output=True, text=True, check=False)
 
     assert result.returncode == 0, result.stderr
-    assert "Usage: python -m fastro" in result.stdout
+    assert "Usage: python -m fastro" in STYLE.sub("", result.stdout)
