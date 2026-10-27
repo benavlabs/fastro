@@ -1,4 +1,4 @@
-"""The compose files ``fastro deploy generate`` writes, from the templates the boilerplate's ``bp`` shipped.
+"""The compose files ``fastro make deploy`` writes, from the templates the boilerplate's ``bp`` shipped.
 
 Three modes are supported:
 

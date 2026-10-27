@@ -29,8 +29,8 @@ src/fastro/
 ├── runner.py              runs a project's scripts in its own interpreter
 ├── plugins.py             entry-point loader for bp.commands
 ├── commands/              in-tree command sub-apps
-│   ├── deploy.py          fastro deploy generate <mode>
-│   └── env.py             fastro env gen-secret / fastro env validate
+│   ├── make.py            fastro make deploy <mode>
+│   └── env.py             fastro env secret / fastro env validate
 ├── _legacy_deploy/        compose and nginx templates for local/prod/nginx
 └── lib/                   shared helpers (project discovery, prompts, render)
 ```

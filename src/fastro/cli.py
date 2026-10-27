@@ -10,8 +10,8 @@ from __future__ import annotations
 import typer
 
 from . import plugins as _plugins
-from .commands import deploy as _deploy_cmd
 from .commands import env as _env_cmd
+from .commands import make as _make_cmd
 
 app = typer.Typer(
     name="fastro",
@@ -20,7 +20,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-app.add_typer(_deploy_cmd.app, name="deploy", help="Generate deployment artifacts (Dockerfile, compose, nginx config).")
+app.add_typer(_make_cmd.app, name="make", help="Generate files the project owns, such as the deploy compose files.")
 app.add_typer(_env_cmd.app, name="env", help="Inspect and prepare the runtime environment.")
 
 
@@ -33,7 +33,7 @@ def _mount_command_plugins() -> None:
     """
     _plugins.emit_plugin_warnings_to_stderr()
 
-    builtin_names = {"deploy", "env", "feature"}
+    builtin_names = {group.name for group in app.registered_groups}
     for name, sub_app in _plugins.discover_command_plugins().items():
         if name in builtin_names:
             typer.secho(

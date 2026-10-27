@@ -1,8 +1,6 @@
-"""``fastro deploy``: generate deployment artifacts.
+"""``fastro make``: generate files a project owns from then on.
 
-Today this is just a wrapper around ``fastro._legacy_deploy``.
-Other deploy-adjacent commands (``fastro deploy nginx-tls``, ``fastro deploy
-github-actions``) can mount here as siblings.
+``fastro make deploy`` renders the compose files from ``fastro._legacy_deploy``.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from .._legacy_deploy import DEFAULT_INTERNAL_SUBNET
 from ..lib.project import discover_project
 from ..lib.prompts import error, info
 
-app = typer.Typer(no_args_is_help=True, help="Generate deployment artifacts.")
+app = typer.Typer(no_args_is_help=True, help="Generate files the project owns from then on.")
 
 
 class DeployMode(StrEnum):
@@ -26,8 +24,8 @@ class DeployMode(StrEnum):
     nginx = "nginx"
 
 
-@app.command("generate")
-def generate(
+@app.command("deploy")
+def deploy(
     mode: DeployMode = typer.Argument(
         ...,
         help="Deployment mode to generate. Pick `local` for hot-reload dev, `prod` for "

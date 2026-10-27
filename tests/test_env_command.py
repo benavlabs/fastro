@@ -70,21 +70,21 @@ def test_validate_exits_with_the_validators_code(project, uv, monkeypatch):
     assert result.exit_code == 1
 
 
-def test_gen_secret_hands_the_byte_count_to_the_projects_script(project, uv):
-    result = runner.invoke(env.app, ["gen-secret", "--bytes", "48"])
+def test_secret_hands_the_byte_count_to_the_projects_script(project, uv):
+    result = runner.invoke(env.app, ["secret", "--bytes", "48"])
 
     assert result.exit_code == 0, result.output
     assert uv()["argv"][-4:] == ["-m", "scripts.gen_secret", "--bytes", "48"]
 
 
-@pytest.mark.parametrize(("command", "script"), [("validate", "validate_env.py"), ("gen-secret", "gen_secret.py")])
+@pytest.mark.parametrize(("command", "script"), [("validate", "validate_env.py"), ("secret", "gen_secret.py")])
 def test_a_project_without_the_script_is_told_so(project, uv, command: str, script: str):
     (project / "backend" / "scripts" / script).unlink()
 
     result = runner.invoke(env.app, [command])
 
     assert result.exit_code == 3
-    assert "not available in this project" in result.stderr
+    assert f"`fastro env {command}` is not available in this project" in result.stderr
     assert f"backend/scripts/{script}" in result.stderr
     assert result.stdout == ""
     assert uv() is None
@@ -117,7 +117,7 @@ def test_the_first_draw_is_printed_outside_a_project(monkeypatch, tmp_path, uv):
     """Nothing to ask: the rules live in the project, and the command still answers."""
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(env.app, ["gen-secret", "--bytes", "20"])
+    result = runner.invoke(env.app, ["secret", "--bytes", "20"])
 
     assert result.exit_code == 0
     assert len(bytes.fromhex(result.stdout.strip())) == 20

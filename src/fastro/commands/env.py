@@ -2,7 +2,7 @@
 
 Both commands run the project's own scripts in its interpreter:
 
-- ``fastro env gen-secret`` runs ``scripts.gen_secret``, which prints a key the
+- ``fastro env secret`` runs ``scripts.gen_secret``, which prints a key the
   project's rules accept. Outside a project it prints ``secrets.token_hex``.
 
 - ``fastro env validate`` runs ``scripts.validate_env``, the production security
@@ -53,8 +53,8 @@ def _run_script(command: str, backend: Path, module: str, args: list[str]) -> No
     raise typer.Exit(code=code)
 
 
-@app.command("gen-secret")
-def gen_secret(
+@app.command("secret")
+def secret(
     bytes_: int = typer.Option(32, "--bytes", min=16, max=128, help="Number of random bytes (hex output is 2x)."),
 ) -> None:
     """Generate a high-entropy hex secret suitable for ``SECRET_KEY``."""
@@ -63,7 +63,7 @@ def gen_secret(
         typer.echo(secrets.token_hex(bytes_))
         return
 
-    _run_script("gen-secret", backend, GEN_SECRET_MODULE, ["--bytes", str(bytes_)])
+    _run_script("secret", backend, GEN_SECRET_MODULE, ["--bytes", str(bytes_)])
 
 
 @app.command("validate")
