@@ -1,6 +1,6 @@
 """``fastro deploy``: generate deployment artifacts.
 
-Today this is just a wrapper around the in-tree ``deploy`` feature.
+Today this is just a wrapper around ``fastro._legacy_deploy``.
 Other deploy-adjacent commands (``fastro deploy nginx-tls``, ``fastro deploy
 github-actions``) can mount here as siblings.
 """
@@ -9,13 +9,11 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
 import typer
 
-from ..features._builtins.deploy.feature import DEFAULT_INTERNAL_SUBNET
-from ..features.installer import FeatureInstaller
-from ..features.registry import get_feature
+from .. import _legacy_deploy
+from .._legacy_deploy import DEFAULT_INTERNAL_SUBNET
 from ..lib.project import discover_project
 from ..lib.prompts import error, info
 
@@ -54,38 +52,24 @@ def generate(
 ) -> None:
     """Generate ``docker-compose.yml`` (and ``nginx/default.conf`` for nginx mode)."""
     project = discover_project(output_dir)
-    feature = get_feature("deploy")
-    if feature is None:  # pragma: no cover
-        error("deploy feature is not registered.")
-        raise typer.Exit(code=1)
 
     target_root = (output_dir or project.repo_root).resolve()
     if not dry_run:
         target_root.mkdir(parents=True, exist_ok=True)
 
-    params: dict[str, Any] = {
-        "mode": mode.value,
-        "api_port": api_port,
-        "workers": workers,
-        "compose_target": target_root / "docker-compose.yml",
-    }
-    if mode == DeployMode.nginx:
-        params["nginx_conf_target"] = target_root / "nginx" / "default.conf"
-        params["internal_subnet"] = internal_subnet
-
+    subnet = internal_subnet if mode == DeployMode.nginx else DEFAULT_INTERNAL_SUBNET
     try:
-        plan = feature.plan(params, project)
+        plan = _legacy_deploy.plan(mode.value, project, target_root, api_port=api_port, workers=workers, internal_subnet=subnet)
     except ValueError as failure:
         error(f"--internal-subnet: {failure}")
         raise typer.Exit(code=1) from failure
 
-    installer = FeatureInstaller(dry_run=dry_run, assume_yes=force or yes)
     info(f"deploy: generating '{mode.value}' compose for {project.repo_root}")
-    result = installer.apply(plan)
+    result = _legacy_deploy.write(plan, dry_run=dry_run, assume_yes=force or yes)
 
-    if result.files_skipped:
+    if result.skipped:
         info("")
-        info(f"{len(result.files_skipped)} file(s) skipped.")
+        info(f"{len(result.skipped)} file(s) skipped.")
     if dry_run:
         info("")
         info("dry-run complete: no files were written.")

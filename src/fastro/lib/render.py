@@ -1,8 +1,7 @@
-"""Jinja-based template rendering for in-tree features and plugins.
+"""Jinja-based template rendering.
 
-A feature points at a directory containing Jinja templates. ``Renderer``
-loads them with a sandboxed environment, applies the supplied context,
-and writes the result to disk.
+``Renderer`` loads the templates in a directory and renders one with a
+context, refusing any name the context doesn't define.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
 class Renderer:
-    """Render Jinja templates from a feature's templates directory."""
+    """Render Jinja templates from one directory."""
 
     def __init__(self, templates_root: Path) -> None:
         if not templates_root.is_dir():

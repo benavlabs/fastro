@@ -1,14 +1,8 @@
 """Plugin discovery for the fastro CLI.
 
-Two extension points, kept deliberately separate:
-
-- ``bp.commands``: a Typer sub-app mounted under the root, e.g.
-  ``fastro aws deploy``. Plugin packages declare entry points whose values
-  resolve to a ``typer.Typer`` instance.
-
-- ``bp.features``: a ``Feature`` instance that ``bp feature`` can list
-  and apply. Plugin packages declare entry points whose values resolve
-  to ``Feature`` instances (or callables that return one).
+``bp.commands`` entry points are Typer sub-apps mounted under the root,
+e.g. ``fastro aws deploy``. Plugin packages declare entry points whose
+values resolve to a ``typer.Typer`` instance.
 
 A broken plugin must not break the CLI. Discovery wraps each load in a
 broad except and surfaces a warning so the user can still operate the
@@ -23,10 +17,7 @@ from importlib.metadata import EntryPoint, entry_points
 
 import typer
 
-from .features.base import Feature
-
 COMMANDS_GROUP = "bp.commands"
-FEATURES_GROUP = "bp.features"
 
 
 def _safe_load(ep: EntryPoint) -> object | None:
@@ -54,30 +45,6 @@ def discover_command_plugins() -> dict[str, typer.Typer]:
         else:
             warnings.warn(
                 f"Plugin {ep.name!r} resolved to {type(loaded).__name__}, expected typer.Typer; ignoring.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-    return found
-
-
-def discover_feature_plugins() -> dict[str, Feature]:
-    """Return ``{name: feature}`` for every healthy ``bp.features`` entry point.
-
-    Entry-point values may be either a ``Feature`` instance or a callable
-    that returns one (helpful when constructing features needs the project
-    context).
-    """
-    found: dict[str, Feature] = {}
-    for ep in entry_points(group=FEATURES_GROUP):
-        loaded = _safe_load(ep)
-        if loaded is None:
-            continue
-        candidate = loaded() if callable(loaded) and not isinstance(loaded, Feature) else loaded
-        if isinstance(candidate, Feature):
-            found[ep.name] = candidate
-        else:
-            warnings.warn(
-                f"Feature plugin {ep.name!r} resolved to {type(candidate).__name__}, expected Feature; ignoring.",
                 RuntimeWarning,
                 stacklevel=2,
             )

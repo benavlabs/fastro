@@ -6,9 +6,9 @@ import pytest
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
-from fastro.features._builtins.deploy.feature import DEFAULT_INTERNAL_SUBNET
+from fastro._legacy_deploy import DEFAULT_INTERNAL_SUBNET
 
-TEMPLATES = Path(__file__).resolve().parents[1] / "src/fastro/features/_builtins/deploy/templates"
+TEMPLATES = Path(__file__).resolve().parents[1] / "src/fastro/_legacy_deploy/templates"
 
 CONTEXT = {
     "mode": "nginx",

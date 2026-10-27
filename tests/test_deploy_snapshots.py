@@ -10,7 +10,7 @@ import fastro.cli
 
 runner = CliRunner()
 
-WOULD_WRITE = re.compile(r"^would write (?P<path>.+) \(\d+ bytes\)$", re.MULTILINE)
+WOULD_WRITE = re.compile(r"^would write (?P<path>.+) \((?P<size>\d+) bytes\)$", re.MULTILINE)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "deploy"
 
@@ -53,14 +53,14 @@ def test_generate_writes_what_b2c2900_wrote(tmp_path, case: str):
 
 
 @pytest.mark.parametrize("case", ["local", "prod", "nginx"])
-def test_a_dry_run_names_each_file_and_writes_none(tmp_path, case: str):
+def test_a_dry_run_names_each_file_with_its_size_and_writes_none(tmp_path, case: str):
     args, taskiq = CASES[case]
     project = _project(tmp_path, taskiq=taskiq)
 
     result = runner.invoke(fastro.cli.app, ["deploy", "generate", *args, "-o", str(project), "--dry-run"])
 
-    named = [match["path"] for match in WOULD_WRITE.finditer(result.stdout)]
+    named = [(match["path"], int(match["size"])) for match in WOULD_WRITE.finditer(result.stdout)]
     assert result.exit_code == 0, result.output
-    assert named == [str(project.resolve() / path) for path in _files(FIXTURES / case)]
+    assert named == [(str(project.resolve() / path), len(content)) for path, content in _files(FIXTURES / case).items()]
     assert "services:" not in result.output
     assert _files(project) == {}
