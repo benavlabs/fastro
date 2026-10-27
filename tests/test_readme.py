@@ -17,7 +17,8 @@ runner = CliRunner()
 def _tree() -> list[str]:
     """The lines of the README's ``src/fastro/`` tree."""
     readme = (ROOT / "README.md").read_text()
-    (block,) = re.findall(r"```\nsrc/fastro/\n(.*?)```", readme, re.DOTALL)
+    blocks: list[str] = re.findall(r"```\nsrc/fastro/\n(.*?)```", readme, re.DOTALL)
+    (block,) = blocks
     return block.splitlines()
 
 
@@ -34,14 +35,14 @@ def _commands() -> list[list[str]]:
 
 
 @pytest.mark.parametrize("name", [_named(line) for line in _tree()])
-def test_every_file_the_readme_names_is_in_the_package(name: str):
+def test_every_file_the_readme_names_is_in_the_package(name: str) -> None:
     matches = [path for path in PACKAGE.rglob(name.rstrip("/")) if path.is_dir() == name.endswith("/")]
 
     assert matches, f"{name} is in the README's tree but not under src/fastro/"
 
 
 @pytest.mark.parametrize("words", _commands(), ids=" ".join)
-def test_every_command_the_readme_names_runs(words: list[str]):
+def test_every_command_the_readme_names_runs(words: list[str]) -> None:
     result = runner.invoke(fastro.cli.app, [*words, "--help"])
 
     assert result.exit_code == 0, result.output

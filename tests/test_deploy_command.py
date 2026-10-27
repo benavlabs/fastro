@@ -1,5 +1,7 @@
 """``fastro make deploy``: what it writes, and what a dry run leaves alone."""
 
+from pathlib import Path
+
 import pytest
 import yaml
 from typer.testing import CliRunner
@@ -10,7 +12,7 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def project(tmp_path):
+def project(tmp_path: Path) -> Path:
     """A directory that looks enough like a project for the command to run in."""
     (tmp_path / "backend").mkdir()
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'example'\n")
@@ -18,7 +20,7 @@ def project(tmp_path):
     return tmp_path
 
 
-def test_a_dry_run_writes_nothing_and_creates_no_directory(project):
+def test_a_dry_run_writes_nothing_and_creates_no_directory(project: Path) -> None:
     target = project / "generated"
 
     result = runner.invoke(fastro.cli.app, ["make", "deploy", "nginx", "-o", str(target), "--dry-run"])
@@ -28,7 +30,7 @@ def test_a_dry_run_writes_nothing_and_creates_no_directory(project):
     assert not target.exists()
 
 
-def test_a_dry_run_over_an_existing_file_asks_nothing(project):
+def test_a_dry_run_over_an_existing_file_asks_nothing(project: Path) -> None:
     compose = project / "docker-compose.yml"
     compose.write_text("keep me\n")
 
@@ -39,7 +41,7 @@ def test_a_dry_run_over_an_existing_file_asks_nothing(project):
     assert "Overwrite" not in result.output
 
 
-def test_a_project_with_taskiq_gets_its_worker_and_scheduler(project):
+def test_a_project_with_taskiq_gets_its_worker_and_scheduler(project: Path) -> None:
     """The services are read off the project: this one carries the feature."""
     (project / "backend/src/infrastructure/taskiq").mkdir(parents=True)
 
@@ -51,7 +53,7 @@ def test_a_project_with_taskiq_gets_its_worker_and_scheduler(project):
     assert "taskiq scheduler src.infrastructure.taskiq.scheduler:scheduler" in compose
 
 
-def test_a_project_without_taskiq_gets_neither(project):
+def test_a_project_without_taskiq_gets_neither(project: Path) -> None:
     result = runner.invoke(fastro.cli.app, ["make", "deploy", "prod", "-o", str(project), "--yes"])
 
     assert result.exit_code == 0, result.output
@@ -60,7 +62,7 @@ def test_a_project_without_taskiq_gets_neither(project):
     assert "scheduler" not in services
 
 
-def test_generating_writes_the_compose_file(project):
+def test_generating_writes_the_compose_file(project: Path) -> None:
     result = runner.invoke(fastro.cli.app, ["make", "deploy", "prod", "-o", str(project), "--yes"])
 
     assert result.exit_code == 0, result.output
@@ -82,7 +84,7 @@ def test_generating_writes_the_compose_file(project):
         "fd00::1/48",
     ],
 )
-def test_a_subnet_that_trusts_too_much_is_refused(project, subnet: str):
+def test_a_subnet_that_trusts_too_much_is_refused(project: Path, subnet: str) -> None:
     """The range decides whose forwarded headers the app believes."""
     result = runner.invoke(
         fastro.cli.app, ["make", "deploy", "nginx", "-o", str(project), "--internal-subnet", subnet, "--yes"]
@@ -94,7 +96,7 @@ def test_a_subnet_that_trusts_too_much_is_refused(project, subnet: str):
 
 
 @pytest.mark.parametrize("subnet", ["172.31.240.0/24", "10.1.2.0/28", "192.168.0.0/16", "fd00::/48", "fd00::/64"])
-def test_a_subnet_that_names_a_network_is_accepted(project, subnet: str):
+def test_a_subnet_that_names_a_network_is_accepted(project: Path, subnet: str) -> None:
     result = runner.invoke(
         fastro.cli.app, ["make", "deploy", "nginx", "-o", str(project), "--internal-subnet", subnet, "--yes"]
     )
@@ -104,7 +106,7 @@ def test_a_subnet_that_names_a_network_is_accepted(project, subnet: str):
 
 
 @pytest.mark.parametrize("mode", ["prod", "nginx"])
-def test_the_next_steps_migrate_before_starting_the_stack(project, mode: str):
+def test_the_next_steps_migrate_before_starting_the_stack(project: Path, mode: str) -> None:
     """The API doesn't create its own schema here, and nothing waits on the migrate service."""
     result = runner.invoke(fastro.cli.app, ["make", "deploy", mode, "-o", str(project), "--yes"])
 
@@ -117,7 +119,7 @@ def test_the_next_steps_migrate_before_starting_the_stack(project, mode: str):
     assert steps.index("docker compose build") < migrate < steps.index("docker compose up -d")
 
 
-def test_the_local_next_steps_just_start_the_stack(project):
+def test_the_local_next_steps_just_start_the_stack(project: Path) -> None:
     result = runner.invoke(fastro.cli.app, ["make", "deploy", "local", "-o", str(project), "--yes"])
 
     assert result.exit_code == 0, result.output
@@ -125,7 +127,7 @@ def test_the_local_next_steps_just_start_the_stack(project):
     assert "migrate" not in result.output
 
 
-def test_an_existing_file_is_kept_when_the_answer_is_no(project):
+def test_an_existing_file_is_kept_when_the_answer_is_no(project: Path) -> None:
     compose = project / "docker-compose.yml"
     compose.write_text("keep me\n")
 
@@ -137,7 +139,7 @@ def test_an_existing_file_is_kept_when_the_answer_is_no(project):
     assert "1 file(s) skipped." in result.output
 
 
-def test_an_existing_file_is_replaced_when_the_answer_is_yes(project):
+def test_an_existing_file_is_replaced_when_the_answer_is_yes(project: Path) -> None:
     compose = project / "docker-compose.yml"
     compose.write_text("replace me\n")
 

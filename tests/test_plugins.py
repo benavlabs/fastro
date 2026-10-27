@@ -1,18 +1,22 @@
 """Which plugin entry points fastro loads, from distributions installed on ``sys.path``."""
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import fastro.cli
 
 runner = CliRunner()
 
+Install = Callable[..., Path]
+
 
 @pytest.fixture
-def installed(tmp_path, monkeypatch):
+def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Install:
     """Install a distribution whose module leaves a marker file when it's imported."""
 
     def install(name: str, group: str, body: str = "plugin = object()\n") -> Path:
@@ -29,7 +33,7 @@ def installed(tmp_path, monkeypatch):
     return install
 
 
-def test_a_bp_features_entry_point_is_never_loaded(installed, tmp_path):
+def test_a_bp_features_entry_point_is_never_loaded(installed: Install, tmp_path: Path) -> None:
     marker = installed("old_feature", "bp.features")
     project = tmp_path / "acme"
     (project / "backend").mkdir(parents=True)
@@ -46,14 +50,16 @@ TYPER_PLUGIN = (
 
 
 @pytest.fixture
-def app(monkeypatch):
+def app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
     """The root app, with any group a test mounts dropped again afterwards."""
     monkeypatch.setattr(fastro.cli.app, "registered_groups", [*fastro.cli.app.registered_groups])
     return fastro.cli.app
 
 
 @pytest.mark.parametrize("name", ["make", "env"])
-def test_a_plugin_cannot_take_a_built_in_name(installed, app, capsys, name: str):
+def test_a_plugin_cannot_take_a_built_in_name(
+    installed: Install, app: typer.Typer, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
     installed(name, "bp.commands", TYPER_PLUGIN)
 
     fastro.cli._mount_command_plugins()
@@ -62,7 +68,7 @@ def test_a_plugin_cannot_take_a_built_in_name(installed, app, capsys, name: str)
     assert [group.name for group in app.registered_groups].count(name) == 1
 
 
-def test_a_plugin_can_take_a_name_fastro_no_longer_uses(installed, app):
+def test_a_plugin_can_take_a_name_fastro_no_longer_uses(installed: Install, app: typer.Typer) -> None:
     installed("deploy", "bp.commands", TYPER_PLUGIN)
 
     fastro.cli._mount_command_plugins()

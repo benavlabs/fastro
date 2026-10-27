@@ -42,7 +42,7 @@ def _files(root: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("case", list(CASES))
-def test_generate_writes_what_b2c2900_wrote(tmp_path, case: str):
+def test_generate_writes_what_b2c2900_wrote(tmp_path: Path, case: str) -> None:
     args, taskiq = CASES[case]
     project = _project(tmp_path, taskiq=taskiq)
 
@@ -53,7 +53,7 @@ def test_generate_writes_what_b2c2900_wrote(tmp_path, case: str):
 
 
 @pytest.mark.parametrize("case", ["local", "prod", "nginx"])
-def test_a_dry_run_names_each_file_with_its_size_and_writes_none(tmp_path, case: str):
+def test_a_dry_run_names_each_file_with_its_size_and_writes_none(tmp_path: Path, case: str) -> None:
     args, taskiq = CASES[case]
     project = _project(tmp_path, taskiq=taskiq)
 

@@ -17,13 +17,13 @@ PACKAGE = ROOT / "src" / "fastro"
 
 
 @pytest.fixture(scope="module")
-def wheel(tmp_path_factory) -> zipfile.ZipFile:
+def wheel(tmp_path_factory: pytest.TempPathFactory) -> zipfile.ZipFile:
     """The wheel the declared build backend makes from this checkout."""
     backend = tomllib.loads((ROOT / "pyproject.toml").read_text())["build-system"]["build-backend"]
     out = tmp_path_factory.mktemp("dist")
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(ROOT)
-        name = importlib.import_module(backend).build_wheel(str(out))
+        name: str = importlib.import_module(backend).build_wheel(str(out))
 
     return zipfile.ZipFile(out / name)
 
@@ -33,7 +33,7 @@ def _dist_info(wheel: zipfile.ZipFile, name: str) -> str:
     return wheel.read(path).decode()
 
 
-def test_the_wheel_is_fastro_at_the_package_version(wheel):
+def test_the_wheel_is_fastro_at_the_package_version(wheel: zipfile.ZipFile) -> None:
     metadata = Parser().parsestr(_dist_info(wheel, "METADATA"))
 
     assert metadata["Name"] == "fastro"
@@ -41,20 +41,21 @@ def test_the_wheel_is_fastro_at_the_package_version(wheel):
     assert fastro.__version__ == "0.1.0.dev0"
 
 
-def test_the_wheel_needs_no_backend(wheel):
+def test_the_wheel_needs_no_backend(wheel: zipfile.ZipFile) -> None:
     requires = Parser().parsestr(_dist_info(wheel, "METADATA")).get_all("Requires-Dist")
+    assert requires is not None
     runtime = sorted(req.split(">")[0].split("=")[0] for req in requires if "extra ==" not in req)
 
     assert runtime == ["jinja2", "typer"]
 
 
-def test_the_wheel_installs_the_fastro_command(wheel):
+def test_the_wheel_installs_the_fastro_command(wheel: zipfile.ZipFile) -> None:
     scripts = _dist_info(wheel, "entry_points.txt")
 
     assert "fastro = fastro.cli:app" in scripts.splitlines()
 
 
-def test_the_wheel_carries_every_file_in_the_package_and_nothing_else(wheel):
+def test_the_wheel_carries_every_file_in_the_package_and_nothing_else(wheel: zipfile.ZipFile) -> None:
     """The deploy templates and ``py.typed`` aren't Python, and a build can leave them behind."""
     packaged = {name for name in wheel.namelist() if ".dist-info/" not in name}
     on_disk = {
@@ -68,7 +69,7 @@ def test_the_wheel_carries_every_file_in_the_package_and_nothing_else(wheel):
     assert sum(name.endswith(".j2") for name in packaged) == 4
 
 
-def test_python_dash_m_fastro_runs_the_cli():
+def test_python_dash_m_fastro_runs_the_cli() -> None:
     result = subprocess.run([sys.executable, "-m", "fastro", "--help"], capture_output=True, text=True, check=False)
 
     assert result.returncode == 0, result.stderr
