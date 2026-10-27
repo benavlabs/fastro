@@ -1,4 +1,4 @@
-"""The engine modules the brief holds to 100% branch coverage get it from their own tests."""
+"""The engine modules that parse catalog text get 100% branch coverage from their own tests."""
 
 import json
 import os
@@ -13,7 +13,11 @@ import fastro.engine
 ENGINE = Path(fastro.engine.__file__).parent
 TESTS = Path(__file__).parent
 
-FULLY_COVERED = {"conditions": "test_engine_conditions.py"}
+FULLY_COVERED = {
+    "conditions": "test_engine_conditions.py",
+    "positions": "test_engine_positions.py",
+    "problems": "test_engine_problems.py",
+}
 
 
 @pytest.mark.parametrize(("module", "tests"), sorted(FULLY_COVERED.items()))
