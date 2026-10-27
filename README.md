@@ -26,6 +26,7 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 ```
 src/fastro/
 ├── cli.py                 root Typer app + plugin discovery
+├── compat.py              the bp command, kept for 0.1.x
 ├── runner.py              runs a project's scripts in its own interpreter
 ├── plugins.py             entry-point loader for fastro.commands
 ├── commands/              in-tree command sub-apps

@@ -49,10 +49,11 @@ def test_the_wheel_needs_no_backend(wheel: zipfile.ZipFile) -> None:
     assert runtime == ["jinja2", "typer"]
 
 
-def test_the_wheel_installs_the_fastro_command(wheel: zipfile.ZipFile) -> None:
-    scripts = _dist_info(wheel, "entry_points.txt")
+def test_the_wheel_installs_the_fastro_command_and_the_bp_shim(wheel: zipfile.ZipFile) -> None:
+    scripts = _dist_info(wheel, "entry_points.txt").splitlines()
 
-    assert "fastro = fastro.cli:app" in scripts.splitlines()
+    assert "fastro = fastro.cli:app" in scripts
+    assert "bp = fastro.compat:bp_main" in scripts
 
 
 def test_the_wheel_carries_every_file_in_the_package_and_nothing_else(wheel: zipfile.ZipFile) -> None:

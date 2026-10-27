@@ -27,7 +27,7 @@ dev = [
 
 [project.scripts]
 fastro = "fastro.cli:app"
-bp = "fastro.cli:app"
+bp = "fastro.compat:bp_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fastro"]
