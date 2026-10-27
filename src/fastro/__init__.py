@@ -2,7 +2,7 @@
 
 The CLI is a Typer application. Third-party packages can register
 top-level Typer sub-apps that mount under `fastro <name>` through the
-`bp.commands` entry-point group, the same contract the in-tree commands
+`fastro.commands` entry-point group, the same contract the in-tree commands
 follow.
 """
 

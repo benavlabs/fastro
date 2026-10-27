@@ -27,7 +27,7 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 src/fastro/
 ├── cli.py                 root Typer app + plugin discovery
 ├── runner.py              runs a project's scripts in its own interpreter
-├── plugins.py             entry-point loader for bp.commands
+├── plugins.py             entry-point loader for fastro.commands
 ├── commands/              in-tree command sub-apps
 │   ├── make.py            fastro make deploy <mode>
 │   └── env.py             fastro env secret / fastro env validate
@@ -37,7 +37,8 @@ src/fastro/
 
 ## Plugin extension point
 
-The `bp.commands` entry-point group mounts third-party Typer sub-apps under
-`fastro <name>` (e.g. `fastro aws deploy`).
+The `fastro.commands` entry-point group mounts third-party Typer sub-apps
+under `fastro <name>` (e.g. `fastro aws deploy`). Plugins registered under the
+old `bp.commands` group still mount, with a warning, until fastro 0.2.
 
 See `src/fastro/plugins.py` for the discovery contract.

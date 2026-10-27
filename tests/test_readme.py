@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 import fastro.cli
+from fastro import plugins
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "fastro"
@@ -46,3 +47,10 @@ def test_every_command_the_readme_names_runs(words: list[str]) -> None:
     result = runner.invoke(fastro.cli.app, [*words, "--help"])
 
     assert result.exit_code == 0, result.output
+
+
+def test_the_readme_names_the_entry_point_groups_fastro_reads() -> None:
+    readme = (ROOT / "README.md").read_text()
+
+    assert f"The `{plugins.COMMANDS_GROUP}` entry-point group mounts" in readme
+    assert f"the\nold `{plugins.DEPRECATED_COMMANDS_GROUP}` group still mount" in readme
