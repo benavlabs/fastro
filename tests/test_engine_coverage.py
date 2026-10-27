@@ -14,6 +14,7 @@ ENGINE = Path(fastro.engine.__file__).parent
 TESTS = Path(__file__).parent
 
 FULLY_COVERED = {
+    "blueprint": "test_engine_blueprint.py",
     "conditions": "test_engine_conditions.py",
     "positions": "test_engine_positions.py",
     "problems": "test_engine_problems.py",

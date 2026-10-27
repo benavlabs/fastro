@@ -12,6 +12,7 @@ from packaging.version import InvalidVersion, Version
 
 NAME = re.compile(r"[a-z][a-z0-9_]*")
 BLUEPRINT_NAME = re.compile(r"[a-z][a-z0-9-]*")
+LABEL = re.compile(r"[a-z][a-z0-9_-]*")
 OPERATORS = ("and", "or", "not")
 RESERVED = {
     "app": "the project's own code",
@@ -45,6 +46,15 @@ def choice(text: str) -> str:
     """``text``, if it's a valid option choice: one or more characters a condition's option atom can hold."""
     if not CHOICE.fullmatch(text):
         raise SpecError(f"{text!r} isn't a valid choice: use no whitespace, '(', ')' or '=', so a condition can name it.")
+    return text
+
+
+def label(text: str, kind: str) -> str:
+    """``text``, if it's a valid preset or verify set name: lowercase letters, digits, ``-`` and ``_``, from a letter."""
+    if not LABEL.fullmatch(text):
+        raise SpecError(
+            f"{text!r} isn't a valid {kind} name: use lowercase letters, digits, '-' and '_', starting with a letter."
+        )
     return text
 
 

@@ -15,6 +15,7 @@ from fastro.engine.spec import (
     blueprint_name,
     choice,
     feature_name,
+    label,
     option_name,
     repo_path,
     requirement,
@@ -64,6 +65,17 @@ def test_a_choice_is_any_run_of_characters_a_condition_can_name(text: str) -> No
 def test_a_choice_a_condition_couldnt_name_is_refused(text: str) -> None:
     with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a valid choice: use no whitespace, '(', ')' or '='")):
         choice(text)
+
+
+@pytest.mark.parametrize("name", ["minimal", "core-only", "accounts_taskiq", "accounts-api_keys2"])
+def test_a_preset_or_verify_set_name_may_use_hyphens_and_underscores(name: str) -> None:
+    assert label(name, "preset") == name
+
+
+@pytest.mark.parametrize("name", ["Minimal", "-core", "_core", "2fa", "core only", ""])
+def test_any_other_preset_or_verify_set_name_is_refused(name: str) -> None:
+    with pytest.raises(SpecError, match=re.escape(f"{name!r} isn't a valid verify set name: use lowercase letters")):
+        label(name, "verify set")
 
 
 @pytest.mark.parametrize("name", ["fastro", "fastroai", "my-blueprint2"])
