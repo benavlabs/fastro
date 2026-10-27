@@ -70,10 +70,42 @@ def test_not_binds_tighter_than_and_which_binds_tighter_than_or(text: str, condi
         ("taskiq.broker==redis", "'taskiq.broker==redis' at column 1 isn't a feature name or 'feature.option=value'"),
         ("taskiq=redis", "'taskiq=redis' at column 1 isn't a feature name or 'feature.option=value'"),
         ("a.b.c=redis", "'a.b.c=redis' at column 1 isn't a feature name or 'feature.option=value'"),
+        ("or.x=y", "'or.x=y' at column 1 isn't a feature name or 'feature.option=value'"),
+        ("a and not.x=y", "'not.x=y' at column 7 isn't a feature name or 'feature.option=value'"),
     ],
 )
 def test_text_outside_the_grammar_is_refused_with_where_and_what(text: str, why: str) -> None:
     with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a condition: {why}.")):
+        parse(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["not " * 100 + "a", "(" * 100 + "a" + ")" * 100, "not (" * 50 + "a" + ")" * 50, " and ".join(["not (a)"] * 101)],
+)
+def test_a_condition_may_nest_100_levels(text: str) -> None:
+    assert set(atoms(parse(text))) == {Feature("a")}
+
+
+@pytest.mark.parametrize(
+    ("text", "column"),
+    [
+        ("not " * 101 + "a", 401),
+        ("(" * 101 + "a" + ")" * 101, 101),
+        ("not (" * 50 + "not a" + ")" * 50, 251),
+        ("not " * 5000 + "a", 401),
+        ("(" * 5000 + "a" + ")" * 5000, 101),
+    ],
+)
+def test_a_condition_nested_deeper_than_100_levels_is_refused(text: str, column: int) -> None:
+    with pytest.raises(SpecError, match=re.escape(f"nests deeper than 100 levels at column {column}.")):
+        parse(text)
+
+
+def test_a_long_condition_is_quoted_shortened_in_its_error() -> None:
+    text = "a and " * 20 + "2fa"
+
+    with pytest.raises(SpecError, match=re.escape(f"{text[:60]!r}... isn't a condition: '2fa' at column 121")):
         parse(text)
 
 

@@ -10,6 +10,8 @@ from fastro.engine.spec import SpecError
 TOKEN = re.compile(r"\s*(?:([()])|([^\s()]+))")
 ATOM = re.compile(r"([a-z][a-z0-9_]*)(?:\.([a-z][a-z0-9_]*)=([^\s()=]+))?")
 KEYWORDS = {"and", "or", "not"}
+MAX_DEPTH = 100
+QUOTED = 60
 
 
 @dataclass(frozen=True)
@@ -48,9 +50,10 @@ Condition = Feature | Option | Not | And | Or
 
 class _Parser:
     def __init__(self, text: str) -> None:
-        self.text = text
         self.tokens = [(match.start(match.lastindex or 0) + 1, match[0].strip()) for match in TOKEN.finditer(text)]
         self.index = 0
+        self.depth = 0
+        self.quoted = repr(text) if len(text) <= QUOTED else f"{text[:QUOTED]!r}..."
 
     def peek(self) -> str | None:
         return self.tokens[self.index][1] if self.index < len(self.tokens) else None
@@ -58,8 +61,8 @@ class _Parser:
     def refuse(self, expected: str) -> SpecError:
         if self.index < len(self.tokens):
             column, token = self.tokens[self.index]
-            return SpecError(f"{self.text!r} isn't a condition: expected {expected} at column {column}, found {token!r}.")
-        return SpecError(f"{self.text!r} isn't a condition: expected {expected} at the end.")
+            return SpecError(f"{self.quoted} isn't a condition: expected {expected} at column {column}, found {token!r}.")
+        return SpecError(f"{self.quoted} isn't a condition: expected {expected} at the end.")
 
     def condition(self) -> Condition:
         result = self.either()
@@ -83,26 +86,32 @@ class _Parser:
 
     def negation(self) -> Condition:
         token = self.peek()
-        if token == "not":
+        if token in ("not", "("):
+            self.depth += 1
+            if self.depth > MAX_DEPTH:
+                column = self.tokens[self.index][0]
+                raise SpecError(f"{self.quoted} isn't a condition: it nests deeper than {MAX_DEPTH} levels at column {column}.")
             self.index += 1
-            return Not(self.negation())
-        if token == "(":
-            self.index += 1
-            inner = self.either()
-            if self.peek() != ")":
-                raise self.refuse("')'")
-            self.index += 1
+            inner = Not(self.negation()) if token == "not" else self.group()
+            self.depth -= 1
             return inner
         if token is None or token == ")" or token in KEYWORDS:
             raise self.refuse("a feature name, 'not' or '('")
         return self.atom(token)
 
+    def group(self) -> Condition:
+        inner = self.either()
+        if self.peek() != ")":
+            raise self.refuse("')'")
+        self.index += 1
+        return inner
+
     def atom(self, token: str) -> Condition:
         match = ATOM.fullmatch(token)
-        if match is None:
+        if match is None or match[1] in KEYWORDS:
             column = self.tokens[self.index][0]
             raise SpecError(
-                f"{self.text!r} isn't a condition: {token!r} at column {column} isn't a feature name or 'feature.option=value'."
+                f"{self.quoted} isn't a condition: {token!r} at column {column} isn't a feature name or 'feature.option=value'."
             )
         self.index += 1
         feature, option, value = match.groups()
