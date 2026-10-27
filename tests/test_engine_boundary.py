@@ -5,7 +5,7 @@ from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1] / "src" / "fastro" / "engine"
 
-CLI_LIBRARIES = {"typer", "click", "rich", "jinja2", "questionary", "prompt_toolkit", "httpx"}
+CLI_LIBRARIES = {"typer", "click", "rich", "jinja2", "questionary", "prompt_toolkit", "httpx", "httpx2"}
 
 
 def _module_name(path: Path) -> list[str]:
