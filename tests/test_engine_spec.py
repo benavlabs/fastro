@@ -6,12 +6,14 @@ import pytest
 from packaging.requirements import Requirement
 from packaging.version import Version
 
+from fastro.engine.conditions import Option, parse
 from fastro.engine.spec import (
     Ref,
     RepoPath,
     SpecError,
     allows,
     blueprint_name,
+    choice,
     feature_name,
     option_name,
     repo_path,
@@ -38,12 +40,30 @@ def test_any_other_feature_name_is_refused(name: str) -> None:
 
 @pytest.mark.parametrize(
     ("name", "why"),
-    [("app", "the project's own code"), ("core", "the files no feature owns")],
+    [
+        ("app", "the project's own code"),
+        ("core", "the files no feature owns"),
+        ("and", "the condition language"),
+        ("or", "the condition language"),
+        ("not", "the condition language"),
+    ],
 )
-def test_app_and_core_are_reserved_for_features_but_not_options(name: str, why: str) -> None:
+def test_reserved_names_are_refused_for_features_but_not_options(name: str, why: str) -> None:
     with pytest.raises(SpecError, match=re.escape(f"'{name}' is reserved for {why}")):
         feature_name(name)
     assert option_name(name) == name
+
+
+@pytest.mark.parametrize("text", ["redis", "rabbitmq", "prod-eu.2", "v1:2", "Redis"])
+def test_a_choice_is_any_run_of_characters_a_condition_can_name(text: str) -> None:
+    assert choice(text) == text
+    assert parse(f"taskiq.broker={text}") == Option("taskiq", "broker", text)
+
+
+@pytest.mark.parametrize("text", ["", "two words", "tab\there", "a(b", "a)b", "a=b", "redis "])
+def test_a_choice_a_condition_couldnt_name_is_refused(text: str) -> None:
+    with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a valid choice: use no whitespace, '(', ')' or '='")):
+        choice(text)
 
 
 @pytest.mark.parametrize("name", ["fastro", "fastroai", "my-blueprint2"])

@@ -12,7 +12,13 @@ from packaging.version import InvalidVersion, Version
 
 NAME = re.compile(r"[a-z][a-z0-9_]*")
 BLUEPRINT_NAME = re.compile(r"[a-z][a-z0-9-]*")
-RESERVED = {"app": "the project's own code", "core": "the files no feature owns"}
+OPERATORS = ("and", "or", "not")
+RESERVED = {
+    "app": "the project's own code",
+    "core": "the files no feature owns",
+    **dict.fromkeys(OPERATORS, "the condition language"),
+}
+CHOICE = re.compile(r"[^\s()=]+")
 GLOB = re.compile(r"[*?\[\]]")
 
 
@@ -32,6 +38,13 @@ def feature_name(text: str) -> str:
     option_name(text)
     if text in RESERVED:
         raise SpecError(f"{text!r} is reserved for {RESERVED[text]}.")
+    return text
+
+
+def choice(text: str) -> str:
+    """``text``, if it's a valid option choice: one or more characters a condition's option atom can hold."""
+    if not CHOICE.fullmatch(text):
+        raise SpecError(f"{text!r} isn't a valid choice: use no whitespace, '(', ')' or '=', so a condition can name it.")
     return text
 
 

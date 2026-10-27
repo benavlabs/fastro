@@ -5,11 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from fastro.engine.spec import SpecError
+from fastro.engine.spec import CHOICE, NAME, OPERATORS, SpecError
 
 TOKEN = re.compile(r"\s*(?:([()])|([^\s()]+))")
-ATOM = re.compile(r"([a-z][a-z0-9_]*)(?:\.([a-z][a-z0-9_]*)=([^\s()=]+))?")
-KEYWORDS = {"and", "or", "not"}
+ATOM = re.compile(rf"({NAME.pattern})(?:\.({NAME.pattern})=({CHOICE.pattern}))?")
 MAX_DEPTH = 100
 QUOTED = 60
 
@@ -95,7 +94,7 @@ class _Parser:
             inner = Not(self.negation()) if token == "not" else self.group()
             self.depth -= 1
             return inner
-        if token is None or token == ")" or token in KEYWORDS:
+        if token is None or token == ")" or token in OPERATORS:
             raise self.refuse("a feature name, 'not' or '('")
         return self.atom(token)
 
@@ -108,7 +107,7 @@ class _Parser:
 
     def atom(self, token: str) -> Condition:
         match = ATOM.fullmatch(token)
-        if match is None or match[1] in KEYWORDS:
+        if match is None or match[1] in OPERATORS:
             column = self.tokens[self.index][0]
             raise SpecError(
                 f"{self.quoted} isn't a condition: {token!r} at column {column} isn't a feature name or 'feature.option=value'."
