@@ -31,7 +31,8 @@ summary = "Users and login"
 
 MINIMAL = GOOD[: GOOD.index("[presets]")]
 
-SHADOW = "whether a [commands] entry shadows a built-in fastro command"
+SHADOW = "whether a declared command shadows a built-in fastro command"
+MODULES = "where a feature command's module sits"
 
 
 def metadata_version() -> Version:
@@ -78,7 +79,7 @@ def test_the_blueprint_section_is_checked() -> None:
 def test_every_section_is_checked_now_so_cross_references_and_shadowing_are_left() -> None:
     assert blueprint.NOT_YET == ()
     assert blueprint.not_checked() == (
-        f"Not checked yet: names that refer to another section (features, points and options) and {SHADOW}."
+        f"Not checked yet: names that refer to another section (features, points and options), {MODULES} and {SHADOW}."
     )
 
 
@@ -96,7 +97,7 @@ def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
             ("checks",),
             True,
             "Not checked yet: what's inside [checks], names that refer to another section (features, points and "
-            f"options) and {SHADOW}.",
+            f"options), {MODULES} and {SHADOW}.",
         ),
         (
             ("wiring", "checks"),
@@ -106,7 +107,7 @@ def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
         (
             (),
             True,
-            f"Not checked yet: names that refer to another section (features, points and options) and {SHADOW}.",
+            f"Not checked yet: names that refer to another section (features, points and options), {MODULES} and {SHADOW}.",
         ),
         ((), False, f"Not checked yet: {SHADOW}."),
     ],

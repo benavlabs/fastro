@@ -185,6 +185,71 @@ def test_commands_are_read_by_their_words() -> None:
     }
 
 
+ACCOUNTS = '[features.accounts]\nsummary = "Users and login"\n'
+
+
+def test_a_feature_declares_its_own_commands_apart_from_the_top_level_ones() -> None:
+    body = ACCOUNTS + '[features.accounts.commands."accounts unlock"]\nmodule = "scripts.unlock_account"\nhelp = "Unlock."\n'
+    catalog = _load(MINIMAL + body)
+
+    assert catalog.features[0].commands == {
+        ("accounts", "unlock"): Command(
+            ("accounts", "unlock"),
+            "scripts.unlock_account",
+            help="Unlock.",
+            at=("features", "accounts", "commands", "accounts unlock"),
+        )
+    }
+    assert catalog.commands == {}
+
+
+def test_a_feature_without_commands_has_none() -> None:
+    assert _load(MINIMAL + ACCOUNTS).features[0].commands == {}
+
+
+@pytest.mark.parametrize(
+    ("body", "problem"),
+    [
+        (
+            '[commands."db seed"]\nmodule = "a"\n' + ACCOUNTS + '[features.accounts.commands."db seed"]\nmodule = "b"\n',
+            '10: features.accounts.commands."db seed": \'db seed\' is declared by commands."db seed" already.',
+        ),
+        (
+            ACCOUNTS + '[features.accounts.commands."db seed"]\nmodule = "b"\n[commands."db seed"]\nmodule = "a"\n',
+            '10: commands."db seed": \'db seed\' is declared by features.accounts.commands."db seed" already.',
+        ),
+        (
+            ACCOUNTS
+            + '[features.accounts.commands."db seed"]\nmodule = "a"\n'
+            + '[features.tiers]\nsummary = "Tiers"\n[features.tiers.commands."db seed"]\nmodule = "b"\n',
+            '12: features.tiers.commands."db seed": \'db seed\' is declared by features.accounts.commands."db seed" already.',
+        ),
+        (
+            ACCOUNTS + '[features.accounts.commands."Unlock"]\nmodule = "m"\n',
+            "8: features.accounts.commands.Unlock: 'Unlock' isn't a command: write its words in lowercase letters, "
+            "digits and hyphens, one space apart, such as 'env validate'.",
+        ),
+        (
+            ACCOUNTS + '[features.accounts.commands."accounts unlock"]\nhelp = "Unlock."\n',
+            '8: features.accounts.commands."accounts unlock".module: is required.\n'
+            '  Add module to [features.accounts.commands."accounts unlock"].',
+        ),
+        (
+            ACCOUNTS + "[features.accounts.commands]\nunlock = 1\n",
+            "9: features.accounts.commands.unlock: should be a table, not an integer.",
+        ),
+        (
+            ACCOUNTS + '[[features.accounts.when]]\nif = "taskiq"\ncommands = {}\n',
+            "10: features.accounts.when[0].commands: isn't a key of [features.accounts.when[0]].\n"
+            "  The keys of [features.accounts.when[0]] are contributes, dependencies, dev_dependencies, if, "
+            "paths, services.",
+        ),
+    ],
+)
+def test_a_command_declared_twice_or_badly_in_a_feature_is_refused(body: str, problem: str) -> None:
+    assert _problems(MINIMAL + body) == [f"blueprint.toml:{problem}"]
+
+
 def test_the_plugin_api_is_read() -> None:
     assert _load(MINIMAL + TOOLS).plugin_api == PluginApi(
         version=1,

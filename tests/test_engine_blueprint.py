@@ -224,6 +224,7 @@ def test_features_are_read_in_declaration_order_with_every_key() -> None:
         },
         options={},
         when=(),
+        commands={},
         at=("features", "accounts"),
     )
     assert (taskiq.name, taskiq.summary, taskiq.group, taskiq.requires) == ("taskiq", "Background tasks", "", ("accounts",))

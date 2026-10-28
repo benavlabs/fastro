@@ -65,6 +65,7 @@ FEATURE_KEYS = {
     "contributes",
     "options",
     "when",
+    "commands",
 }
 WHEN_KEYS = {"if", "paths", "contributes", "dependencies", "dev_dependencies", "services"}
 OPTION_KEYS = {"choices", "default", "env", "services", "dependencies"}
@@ -216,6 +217,7 @@ class Feature:
     contributes: Contributions
     options: Mapping[str, Option]
     when: tuple[When, ...]
+    commands: Mapping[tuple[str, ...], Command]
     at: KeyPath
 
 
@@ -505,6 +507,11 @@ class _Reader:
         commands = [self.command(at, name, item) for at, name, item in self.named((), data, "commands", _command)]
         plugin_api = self.plugin_api(("plugin_api",), data["plugin_api"]) if "plugin_api" in data else None
         checks, toolchain_env = self.checks(("checks",), self.subtable((), data, "checks"))
+        declared = [command for command in commands if command is not None] + [
+            command for feature in features if feature is not None for command in feature.commands.values()
+        ]
+        declared.sort(key=lambda command: self.document.line(command.at))
+        self.duplicates([(command.at, " ".join(command.words)) for command in declared], None, "is declared by {} already.")
         if info is None:
             return None
         return Blueprint(
@@ -524,12 +531,12 @@ class _Reader:
             document=self.document,
         )
 
-    def duplicates(self, entries: list[tuple[KeyPath, str]], key: str, message: str) -> None:
-        """Report each entry whose ``key`` repeats an earlier entry's, naming the earlier one."""
+    def duplicates(self, entries: list[tuple[KeyPath, str]], key: str | None, message: str) -> None:
+        """Report each entry whose ``key``, or whose own name when ``key`` is None, repeats an earlier entry's."""
         first: dict[str, KeyPath] = {}
         for at, value in entries:
             if value in first:
-                self.fail((*at, key), f"{value!r} " + message.format(key_name(first[value])))
+                self.fail(at if key is None else (*at, key), f"{value!r} " + message.format(key_name(first[value])))
             else:
                 first[value] = at
 
@@ -807,6 +814,7 @@ class _Reader:
         group = self.text(path, table, "group", str)
         options = [self.option(at, option, item) for at, option, item in self.named(path, table, "options", spec.option_name)]
         when = [self.when(at, item) for at, item in self.tables(path, table, "when")]
+        commands = [self.command(at, words, item) for at, words, item in self.named(path, table, "commands", _command)]
         feature = Feature(
             name=name,
             summary=summary or "",
@@ -819,6 +827,7 @@ class _Reader:
             contributes=self.contributes(path, table),
             options={option.name: option for option in options if option is not None},
             when=tuple(item for item in when if item is not None),
+            commands={command.words: command for command in commands if command is not None},
             at=path,
         )
         return feature if summary is not None else None
@@ -1192,7 +1201,8 @@ def not_checked() -> str:
     parts = [f"what's inside {_listed(sections)}"] if sections else []
     if not CROSS_REFERENCES_CHECKED:
         parts.append("names that refer to another section (features, points and options)")
-    parts.append("whether a [commands] entry shadows a built-in fastro command")
+        parts.append("where a feature command's module sits")
+    parts.append("whether a declared command shadows a built-in fastro command")
     return f"Not checked yet: {_listed(parts)}."
 
 
