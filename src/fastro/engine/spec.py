@@ -102,7 +102,8 @@ def repo_path(text: str) -> RepoPath:
     return RepoPath(text)
 
 
-def _identifier(text: str) -> bool:
+def identifier(text: str) -> bool:
+    """Whether ``text`` is a Python name that isn't a keyword."""
     return text.isidentifier() and not keyword.iskeyword(text)
 
 
@@ -123,8 +124,8 @@ class Ref:
     def parse(cls, text: str) -> Ref:
         target, has_alias, alias = text.partition(" as ")
         module, _, attr = target.partition(":")
-        target_ok = all(_identifier(part) for part in module.split(".")) and _identifier(attr)
-        if not target_ok or (has_alias and not _identifier(alias)):
+        target_ok = all(identifier(part) for part in module.split(".")) and identifier(attr)
+        if not target_ok or (has_alias and not identifier(alias)):
             raise SpecError(f"{text!r} isn't a ref: expected 'package.module:name' or 'package.module:name as alias'.")
         return cls(module, attr, alias if has_alias else None)
 

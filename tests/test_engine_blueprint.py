@@ -18,7 +18,7 @@ from fastro.engine.blueprint import (
 )
 from fastro.engine.conditions import parse
 from fastro.engine.problems import CatalogError
-from fastro.engine.spec import RepoPath
+from fastro.engine.spec import Ref, RepoPath
 
 MINIMAL = """\
 [blueprint]
@@ -115,13 +115,17 @@ email_sender = ["src.infrastructure.taskiq.email:queued_sender"]
 """
 
 
-def _load(text: str) -> Blueprint:
-    return load("blueprint.toml", text)
+TOOL = Version("0.1.0")
+UPGRADE = "  Upgrade fastro (uv tool upgrade fastro), then run this again."
 
 
-def _problems(text: str) -> list[str]:
+def _load(text: str, tool: Version = TOOL) -> Blueprint:
+    return load("blueprint.toml", text, tool)
+
+
+def _problems(text: str, tool: Version = TOOL) -> list[str]:
     with pytest.raises(CatalogError) as caught:
-        _load(text)
+        _load(text, tool)
     return [str(problem) for problem in caught.value.problems]
 
 
@@ -194,7 +198,7 @@ def test_features_are_read_in_declaration_order_with_every_key() -> None:
             "routers": (
                 Contribution("src.modules.accounts.routes:router as accounts_router", "", at=(*contributes, "routers", 0)),
                 Contribution(
-                    "src.accounts.admin:router",
+                    Ref.parse("src.accounts.admin:router"),
                     "ref",
                     order=50,
                     condition=parse("taskiq"),
@@ -294,12 +298,64 @@ def test_a_value_of_the_wrong_kind_is_named_by_its_toml_kind() -> None:
     ]
 
 
-def test_a_schema_other_than_1_is_refused() -> None:
-    text = MINIMAL.replace("schema = 1", "schema = 2")
+UNKNOWN_KEYS = 'new_table = {}\n[features.a]\nsummary = "A"\nnew_key = 1\n'
+
+
+def test_a_newer_schema_stops_the_load_with_only_the_upgrade() -> None:
+    text = MINIMAL.replace("schema = 1", "schema = 2") + UNKNOWN_KEYS
+
+    assert _problems(text) == [f"blueprint.toml:4: blueprint.schema: is 2, and this fastro reads schema 1.\n{UPGRADE}"]
+
+
+def test_a_schema_below_1_is_refused_without_suggesting_an_upgrade() -> None:
+    text = MINIMAL.replace("schema = 1", "schema = 0") + UNKNOWN_KEYS
+
+    assert _problems(text) == ["blueprint.toml:4: blueprint.schema: should be 1, not 0.\n  Set schema = 1 in [blueprint]."]
+
+
+@pytest.mark.parametrize("requires", [">=0.2", "==0.2.*", ">=0.1.1,<0.3", "~=0.2.0"])
+def test_a_catalog_for_a_newer_fastro_stops_the_load_with_only_the_upgrade(requires: str) -> None:
+    text = MINIMAL.replace(">=0.1.0.dev0", requires) + UNKNOWN_KEYS
 
     assert _problems(text) == [
-        "blueprint.toml:4: blueprint.schema: is 2, and this fastro reads schema 1.\n"
-        "  Upgrade fastro (uv tool upgrade fastro), then run this again."
+        f"blueprint.toml:5: blueprint.requires_fastro: is {requires!r}, which doesn't include this fastro, 0.1.0.\n{UPGRADE}"
+    ]
+
+
+@pytest.mark.parametrize("requires", ["<0.1", "==0.0.5", "!=0.1.0", ">=0.0.1,<0.1"])
+def test_a_catalog_for_an_older_fastro_names_the_one_to_install(requires: str) -> None:
+    text = MINIMAL.replace(">=0.1.0.dev0", requires) + UNKNOWN_KEYS
+
+    assert _problems(text) == [
+        f"blueprint.toml:5: blueprint.requires_fastro: is {requires!r}, which doesn't include this fastro, 0.1.0.\n"
+        f"  Install a fastro it accepts (uv tool install 'fastro{requires}'), then run this again."
+    ]
+
+
+@pytest.mark.parametrize(("requires", "tool"), [(">=0.1.0.dev0,<0.2", "0.1.0.dev0"), (">=0.1,<0.2", "0.1.1.dev3")])
+def test_a_development_build_of_fastro_reads_a_catalog_whose_range_includes_it(requires: str, tool: str) -> None:
+    assert _load(MINIMAL.replace(">=0.1.0.dev0", requires), Version(tool)).info.name == "mini"
+
+
+def test_an_empty_requires_fastro_is_refused() -> None:
+    assert _problems(MINIMAL.replace(">=0.1.0.dev0", "")) == [
+        "blueprint.toml:5: blueprint.requires_fastro: should name the fastro versions that can read this catalog, "
+        "such as '>=0.1.0.dev0,<0.2'."
+    ]
+
+
+@pytest.mark.parametrize("requires", ["===abc", "===0.1.0", ">=0.1,===abc"])
+def test_arbitrary_equality_is_refused_in_requires_fastro(requires: str) -> None:
+    assert _problems(MINIMAL.replace(">=0.1.0.dev0", requires)) == [
+        f"blueprint.toml:5: blueprint.requires_fastro: {requires!r} uses '===', which can't express a version range: "
+        "write it with ==, >= and <, such as '>=0.1.0.dev0,<0.2'."
+    ]
+
+
+def test_everything_cant_be_declared_as_a_verify_set() -> None:
+    assert _problems(MINIMAL + '[verify.sets]\neverything = ["a"]\n') == [
+        "blueprint.toml:7: verify.sets.everything: is always there, as the set of every feature.\n"
+        "  Remove it from [verify.sets]."
     ]
 
 
@@ -539,6 +595,12 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
         ),
         ('[features]\na = "x"', "7: features.a: should be a table, not a string."),
         (FEATURE + 'options = { broker = "redis" }', "8: features.a.options.broker: should be a table, not a string."),
+        (
+            FEATURE + 'contributes = { r = [{ ref = "not a ref!" }] }',
+            "8: features.a.contributes.r[0].ref: 'not a ref!' isn't a ref: "
+            "expected 'package.module:name' or 'package.module:name as alias'.",
+        ),
+        ('import_root = "class"', "6: blueprint.import_root: 'class' isn't an importable package name, such as 'src'."),
         (FEATURE + 'when = "x"', "8: features.a.when: should be a list of tables, not a string."),
         (
             FEATURE + "[[features.a.when]]\npaths = []",

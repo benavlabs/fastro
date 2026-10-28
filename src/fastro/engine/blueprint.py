@@ -16,7 +16,7 @@ from fastro.engine import conditions, spec
 from fastro.engine.conditions import Condition
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, Problem, key_name, read
-from fastro.engine.spec import RepoPath, SpecError
+from fastro.engine.spec import Ref, RepoPath, SpecError
 
 T = TypeVar("T")
 
@@ -64,6 +64,7 @@ OPTION_KEYS = {"choices", "default", "env", "services", "dependencies"}
 CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
 SCHEMA = 1
+UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
 
 
 @dataclass(frozen=True)
@@ -93,12 +94,12 @@ class Info:
 
 @dataclass(frozen=True)
 class Contribution:
-    """One entry contributed to a point (1.5): a bare string, or a table's ``ref``, ``value`` or ``data``.
+    """One entry contributed to a point (1.5): a bare string, or a table's parsed ``ref``, ``value`` or ``data``.
 
     ``via`` is the key the target came from, or ``""`` for a bare string.
     """
 
-    target: str | Mapping[str, Any]
+    target: str | Ref | Mapping[str, Any]
     via: str
     order: int | None = None
     condition: Condition | None = None
@@ -197,11 +198,14 @@ class Blueprint:
     document: Document = field(compare=False, repr=False)
 
 
-def load(file: str, text: str) -> Blueprint:
-    """``text`` as the ``blueprint.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it."""
+def load(file: str, text: str, tool: Version) -> Blueprint:
+    """``text`` as the ``blueprint.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
+
+    A catalog whose ``schema`` or ``requires_fastro`` rules out ``tool`` is refused with only that problem.
+    """
     document = read(file, text)
     reader = _Reader(document)
-    blueprint = reader.blueprint(document.data)
+    blueprint = reader.blueprint(document.data) if reader.gate(document.data, tool) else None
     if reader.problems or blueprint is None:
         raise CatalogError(reader.problems)
     return blueprint
@@ -314,6 +318,31 @@ class _Reader:
             return None
         return table.get(key)
 
+    def gate(self, data: dict[str, Any], tool: Version) -> bool:
+        """Whether a valid ``schema`` and ``requires_fastro`` let ``tool`` read the catalog, reporting each that doesn't."""
+        table = data.get("blueprint")
+        if not isinstance(table, dict):
+            return True
+        path = ("blueprint",)
+        schema = table.get("schema")
+        if isinstance(schema, int) and not isinstance(schema, bool) and schema > SCHEMA:
+            self.fail((*path, "schema"), f"is {schema}, and this fastro reads schema {SCHEMA}.", UPGRADE)
+        elif isinstance(schema, int) and not isinstance(schema, bool) and schema < SCHEMA:
+            self.fail((*path, "schema"), f"should be {SCHEMA}, not {schema}.", f"Set schema = {SCHEMA} in [blueprint].")
+        requires = table.get("requires_fastro")
+        try:
+            allowed = _requires(requires) if isinstance(requires, str) else None
+        except SpecError:
+            allowed = None
+        if allowed is not None and not spec.tool_allowed(allowed, tool):
+            fix = (
+                UPGRADE
+                if _too_old(allowed, tool)
+                else f"Install a fastro it accepts (uv tool install 'fastro{requires}'), then run this again."
+            )
+            self.fail((*path, "requires_fastro"), f"is {requires!r}, which doesn't include this fastro, {tool}.", fix)
+        return not self.problems
+
     def blueprint(self, data: dict[str, Any]) -> Blueprint | None:
         self.table((), data, TOP_LEVEL)
         if "blueprint" not in data:
@@ -344,20 +373,14 @@ class _Reader:
         table = self.table(path, value, BLUEPRINT_KEYS, ("name", "version", "schema", "requires_fastro"))
         if table is None:
             return None
-        schema = self.number(path, table, "schema")
-        if schema is not None and schema != SCHEMA:
-            self.fail(
-                (*path, "schema"),
-                f"is {schema}, and this fastro reads schema {SCHEMA}.",
-                "Upgrade fastro (uv tool upgrade fastro), then run this again.",
-            )
+        self.number(path, table, "schema")
         dependencies = self.subtable(path, table, "dependencies", {"runtime", "dev"})
         at_dependencies = (*path, "dependencies")
         info = Info(
             name=self.text(path, table, "name", spec.blueprint_name) or "",
             version=self.text(path, table, "version", spec.version) or Version("0"),
             schema=SCHEMA,
-            requires_fastro=self.text(path, table, "requires_fastro", spec.specifier) or SpecifierSet(),
+            requires_fastro=self.text(path, table, "requires_fastro", _requires) or SpecifierSet(),
             python_root=self.text(path, table, "python_root", spec.repo_path) or RepoPath("backend"),
             import_root=self.text(path, table, "import_root", _package) or "src",
             blueprint_only=self.texts(path, table, "blueprint_only", spec.repo_path),
@@ -366,7 +389,7 @@ class _Reader:
             dependencies=self.texts(at_dependencies, dependencies, "runtime", spec.requirement),
             dev_dependencies=self.texts(at_dependencies, dependencies, "dev", spec.requirement),
         )
-        return info if schema == SCHEMA else None
+        return info
 
     def extends(self, path: KeyPath, value: object) -> Extends | None:
         table = self.table(path, value, ("name", "version"), ("name", "version"))
@@ -377,10 +400,12 @@ class _Reader:
         return Extends(name, version) if name is not None and version is not None else None
 
     def verify(self, path: KeyPath, table: dict[str, Any]) -> Verify:
-        sets = {
-            name: self.texts((*path, "sets"), table["sets"], name, spec.feature_name)
-            for _, name, _ in self.named(path, table, "sets", lambda text: spec.label(text, "verify set"))
-        }
+        sets = {}
+        for at, name, _ in self.named(path, table, "sets", lambda text: spec.label(text, "verify set")):
+            if name == "everything":
+                self.fail(at, "is always there, as the set of every feature.", "Remove it from [verify.sets].")
+            else:
+                sets[name] = self.texts((*path, "sets"), table["sets"], name, spec.feature_name)
         checks = [self.check(at, item) for at, item in self.tables(path, table, "checks")]
         include = self.flag(path, table, "include_presets")
         return Verify(include is not False, sets, tuple(check for check in checks if check is not None))
@@ -496,7 +521,8 @@ class _Reader:
             self.fail(path, "takes only one of ref, value and data." if targets else "needs one of ref, value and data.")
             return None
         via = targets[0]
-        target = self.subtable(path, value, via) if via == "data" else self.text(path, value, via, str)
+        parser: Callable[[str], str | Ref] = Ref.parse if via == "ref" else str
+        target = self.subtable(path, value, via) if via == "data" else self.text(path, value, via, parser)
         order = self.number(path, value, "order")
         condition = self.text(path, value, "if", conditions.parse)
         call = self.flag(path, value, "call")
@@ -509,8 +535,32 @@ class _Reader:
         return Contribution(target, via, order, condition, call is True, fields, path)
 
 
+def _requires(text: str) -> SpecifierSet:
+    allowed = spec.specifier(text)
+    if any(bound.operator == "===" for bound in allowed):
+        raise SpecError(
+            f"{text!r} uses '===', which can't express a version range: "
+            "write it with ==, >= and <, such as '>=0.1.0.dev0,<0.2'."
+        )
+    if not allowed:
+        raise SpecError("should name the fastro versions that can read this catalog, such as '>=0.1.0.dev0,<0.2'.")
+    return allowed
+
+
+def _too_old(allowed: SpecifierSet, tool: Version) -> bool:
+    """Whether ``tool`` falls below a lower bound of ``allowed``, so a newer fastro is what's needed."""
+    for bound in allowed:
+        if bound.contains(tool, prereleases=True):
+            continue
+        if bound.operator in (">", ">="):
+            return True
+        if bound.operator in ("==", "~=") and tool < Version(bound.version.removesuffix(".*")):
+            return True
+    return False
+
+
 def _package(text: str) -> str:
-    if not text.isidentifier():
+    if not spec.identifier(text):
         raise SpecError(f"{text!r} isn't an importable package name, such as 'src'.")
     return text
 
