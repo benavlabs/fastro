@@ -41,7 +41,7 @@ choices = ["nginx", "caddy"]
 type = "cidr"
 default = "172.31.240.0/24"
 private_only = true
-max_prefix = 8
+max_prefix = 16
 
 [generators.module]
 templates = "blueprint/templates/module/"
@@ -109,7 +109,7 @@ def test_generators_are_read_with_their_params() -> None:
             "domain": Param("domain", "str", "example.com", at=(*params, "domain")),
             "proxy": Param("proxy", "choice", "nginx", choices=("nginx", "caddy"), at=(*params, "proxy")),
             "internal_subnet": Param(
-                "internal_subnet", "cidr", "172.31.240.0/24", private_only=True, max_prefix=8, at=(*params, "internal_subnet")
+                "internal_subnet", "cidr", "172.31.240.0/24", private_only=True, max_prefix=16, at=(*params, "internal_subnet")
             ),
         },
         register=None,
@@ -130,6 +130,29 @@ def test_the_module_generator_also_has_register_and_types() -> None:
         "str": {"column": "String({length})", "schema": "str", "default_length": 255},
         "int": {"column": "Integer", "schema": "int"},
     }
+
+
+@pytest.mark.parametrize(
+    ("default", "max_prefix"),
+    [
+        ("172.31.240.0/24", "16"),
+        ("10.0.0.0/16", "16"),
+        ("10.0.0.1/32", "32"),
+        ("fd00::/64", "64"),
+        ("fd00::/64", "24"),
+        ("0.0.0.0/0", "0"),
+    ],
+)
+def test_a_cidr_default_as_narrow_as_max_prefix_or_narrower_loads(default: str, max_prefix: str) -> None:
+    body = PARAM + f'type = "cidr"\ndefault = "{default}"\nmax_prefix = {max_prefix}\n'
+
+    assert _load(MINIMAL + body).generators["deploy"].params["p"].max_prefix == int(max_prefix)
+
+
+def test_without_max_prefix_any_cidr_default_loads() -> None:
+    body = PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\n'
+
+    assert _load(MINIMAL + body).generators["deploy"].params["p"].default == "10.0.0.0/8"
 
 
 @pytest.mark.parametrize(
@@ -277,6 +300,21 @@ PATTERN = "isn't a module, or a package followed by '.*', such as 'src.infrastru
         (
             PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = 129\n',
             "11: generators.deploy.params.p.max_prefix: should be from 0 to 128, not 129.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = 16\n',
+            "10: generators.deploy.params.p.default: '10.0.0.0/8' is wider than max_prefix allows: it's /8, "
+            "and this param takes /16 or longer.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "fd00::/48"\nmax_prefix = 64\n',
+            "10: generators.deploy.params.p.default: 'fd00::/48' is wider than max_prefix allows: it's /48, "
+            "and this param takes /64 or longer.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/24"\nmax_prefix = 33\n',
+            "10: generators.deploy.params.p.default: '10.0.0.0/24' is an IPv4 network, and max_prefix = 33 needs "
+            "an IPv6 one, since IPv4 prefixes stop at /32.",
         ),
         (
             PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nprivate_only = "yes"\n',

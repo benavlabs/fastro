@@ -637,13 +637,22 @@ class _Reader:
         max_prefix = self.number(path, table, "max_prefix") if kind == "cidr" else None
         if max_prefix is not None and not 0 <= max_prefix <= 128:
             self.fail((*path, "max_prefix"), f"should be from 0 to 128, not {max_prefix}.")
-        default = self.default(path, table, kind, choices, private_only) if kind is not None and "default" in table else None
+        bound = max_prefix if max_prefix is not None and 0 <= max_prefix <= 128 else None
+        default = (
+            self.default(path, table, kind, choices, private_only, bound) if kind is not None and "default" in table else None
+        )
         if kind is None or default is None:
             return None
         return Param(name, kind, default, self.text(path, table, "help", str) or "", choices, private_only, max_prefix, path)
 
     def default(
-        self, path: KeyPath, table: dict[str, Any], kind: str, choices: tuple[str, ...], private_only: bool
+        self,
+        path: KeyPath,
+        table: dict[str, Any],
+        kind: str,
+        choices: tuple[str, ...],
+        private_only: bool,
+        max_prefix: int | None,
     ) -> str | int | bool | None:
         if kind == "int":
             return self.number(path, table, "default")
@@ -652,7 +661,7 @@ class _Reader:
         if kind == "choice":
             return self.text(path, table, "default", _in(choices) if choices else str)
         if kind == "cidr":
-            return self.text(path, table, "default", lambda text: _network(text, private_only))
+            return self.text(path, table, "default", lambda text: _network(text, private_only, max_prefix))
         return self.text(path, table, "default", str)
 
     def register(self, path: KeyPath, value: object) -> Register | None:
@@ -1012,13 +1021,23 @@ def _param_type(text: str) -> str:
     return text
 
 
-def _network(text: str, private_only: bool) -> str:
+def _network(text: str, private_only: bool, max_prefix: int | None) -> str:
+    """``text`` if it's a network address no wider than ``max_prefix`` allows, and private when ``private_only``."""
     try:
         network = ipaddress.ip_network(text, strict=True)
     except ValueError:
         raise SpecError(f"{text!r} isn't a network address, such as '172.31.240.0/24'.") from None
     if private_only and not network.is_private:
         raise SpecError(f"{text!r} isn't a private network, and private_only is set.")
+    if max_prefix is not None and max_prefix > network.max_prefixlen:
+        raise SpecError(
+            f"{text!r} is an IPv4 network, and max_prefix = {max_prefix} needs an IPv6 one, since IPv4 prefixes stop at /32."
+        )
+    if max_prefix is not None and network.prefixlen < max_prefix:
+        raise SpecError(
+            f"{text!r} is wider than max_prefix allows: it's /{network.prefixlen}, "
+            f"and this param takes /{max_prefix} or longer."
+        )
     return text
 
 
