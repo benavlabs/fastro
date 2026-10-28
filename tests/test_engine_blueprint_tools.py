@@ -76,6 +76,9 @@ allow = ["enums"]
 
 [checks.toolchain.env]
 DATABASE_URL = "sqlite://"
+
+[features.accounts]
+summary = "Users and login"
 """
 
 
@@ -418,6 +421,11 @@ PATTERN = "isn't a module, or a package followed by '.*', such as 'src.infrastru
             MODULE + 'contributes = { routers = [{ ref = "m:r", prefix = "/{Nme}" }] }\n',
             "9: generators.module.register.contributes.routers[0].prefix: '/{Nme}' uses {Nme}, "
             "and register templates take {name}, {name_dashed} and {Name}.",
+        ),
+        (
+            MODULE + 'contributes = { routers = [{ ref = "m:r", if = "{name}" }] }\n',
+            "9: generators.module.register.contributes.routers[0].if: '{name}' isn't a condition: '{name}' at column 1 "
+            "isn't a feature name or 'feature.option=value'.",
         ),
         (
             MODULE + "contributes = { routers = [{ order = 1 }] }\n",

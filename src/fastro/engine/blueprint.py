@@ -19,7 +19,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from fastro.engine import conditions, spec
+from fastro.engine import conditions, references, spec
 from fastro.engine.conditions import Condition
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, Problem, key_name, read
@@ -99,7 +99,10 @@ SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
 COMMAND = "python -m fastro.engine.blueprint"
 NOT_YET: tuple[str, ...] = ()
-CROSS_REFERENCES_CHECKED = False
+CROSS_REFERENCES_LEFT: tuple[str, ...] = (
+    "which points contributions, slots and [plugin_api] name",
+    "where a feature command's module sits",
+)
 
 
 @dataclass(frozen=True)
@@ -274,6 +277,7 @@ class Register:
 
     paths: tuple[str, ...]
     contributes: Mapping[str, tuple[str | Mapping[str, Any], ...]]
+    conditions: Mapping[KeyPath, Condition] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -338,7 +342,8 @@ class IncompatibleCatalog(CatalogError):
 def load(file: str, text: str, tool: Version) -> Blueprint:
     """``text`` as the ``blueprint.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
 
-    A catalog whose ``schema`` or ``requires_fastro`` rules out ``tool`` is refused with only that problem.
+    A catalog whose ``schema`` or ``requires_fastro`` rules out ``tool`` is refused with only that problem. Names
+    that refer to another section are checked once every key reads cleanly, unless the catalog extends another.
     """
     document = read(file, text)
     reader = _Reader(document)
@@ -347,6 +352,8 @@ def load(file: str, text: str, tool: Version) -> Blueprint:
     blueprint = reader.blueprint(document.data)
     if reader.problems or blueprint is None:
         raise CatalogError(reader.problems)
+    if blueprint.info.extends is None and (found := references.problems(blueprint)):
+        raise CatalogError(found)
     return blueprint
 
 
@@ -677,31 +684,34 @@ class _Reader:
             return None
         paths = self.texts(path, table, "paths", _filled(spec.repo_path))
         contributes: dict[str, tuple[str | Mapping[str, Any], ...]] = {}
+        conditions: dict[KeyPath, Condition] = {}
         for at, point, items in self.named(path, table, "contributes", spec.option_name):
             if not isinstance(items, list):
                 self.wrong(at, "a list of contributions", items)
                 continue
             for index, item in enumerate(items):
-                self.templated((*at, index), item)
+                contribution = self.templated((*at, index), item)
+                if contribution is not None and contribution.condition is not None:
+                    conditions[(*at, index)] = contribution.condition
             contributes[point] = tuple(items)
-        return Register(paths, contributes)
+        return Register(paths, contributes, conditions)
 
-    def templated(self, path: KeyPath, value: object) -> None:
-        """Check a ``register`` contribution as it reads once its templates are filled in."""
+    def templated(self, path: KeyPath, value: object) -> Contribution | None:
+        """Check a ``register`` contribution as it reads once its templates are filled in, with ``if`` as written."""
         if isinstance(value, str):
             self.string(path, value, _filled(str))
-            return
+            return None
         if not isinstance(value, dict):
             self.wrong(path, "a ref string or a table", value)
-            return
+            return None
         filled: dict[str, Any] = {}
         for key, item in value.items():
-            if isinstance(item, str):
+            if isinstance(item, str) and key != "if":
                 if self.string((*path, key), item, _filled(Ref.parse if key == "ref" else str)) is None:
-                    return
+                    return None
                 item = item.format(**TEMPLATE_FIELDS)
             filled[key] = item
-        self.contribution(path, filled)
+        return self.contribution(path, filled)
 
     def command(self, path: KeyPath, words: str, value: object) -> Command | None:
         table = self.table(path, value, ("module", "cwd", "help", "outside_project"), ("module",))
@@ -1191,17 +1201,24 @@ def main(argv: list[str]) -> int:
         _counted(len(loaded.presets), "preset"),
     )
     print(f"ok: {file} is {info.name} {info.version}, with {features}, {points} and {presets}.")
-    print(not_checked())
+    print(not_checked(info.extends.name if info.extends is not None else None))
     return 0
 
 
-def not_checked() -> str:
-    """The line saying what ``main`` can't vouch for: :data:`NOT_YET`, cross-references and built-in shadowing."""
+def not_checked(extends: str | None = None) -> str:
+    """The line saying what ``main`` can't vouch for: :data:`NOT_YET`, cross-references and built-in shadowing.
+
+    A catalog that ``extends`` another has its cross-references checked only once it's merged with its base.
+    """
     sections = [f"[[{name}]]" if name == "wiring" else f"[{name}]" for name in NOT_YET]
     parts = [f"what's inside {_listed(sections)}"] if sections else []
-    if not CROSS_REFERENCES_CHECKED:
-        parts.append("names that refer to another section (features, points and options)")
-        parts.append("where a feature command's module sits")
+    if extends is None:
+        parts.extend(CROSS_REFERENCES_LEFT)
+    else:
+        parts.append(
+            f"names that refer to another section, since this catalog extends {extends}, "
+            "and those are checked on the merged catalog (extends, not built yet)"
+        )
     parts.append("whether a declared command shadows a built-in fastro command")
     return f"Not checked yet: {_listed(parts)}."
 

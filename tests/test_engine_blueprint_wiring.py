@@ -77,6 +77,9 @@ settings = Settings()
 path = "frontend/src/wiring/menu.ts"
 doc = "The menu entries."
 slots = [{ kind = "data", name = "MENU", point = "menu", format = "ts" }]
+
+[features.accounts]
+summary = "Users and login"
 '''
 
 

@@ -33,6 +33,7 @@ MINIMAL = GOOD[: GOOD.index("[presets]")]
 
 SHADOW = "whether a declared command shadows a built-in fastro command"
 MODULES = "where a feature command's module sits"
+POINTS = "which points contributions, slots and [plugin_api] name"
 
 
 def metadata_version() -> Version:
@@ -76,11 +77,10 @@ def test_the_blueprint_section_is_checked() -> None:
         blueprint.load("blueprint.toml", MINIMAL + "fastro_probe = 1\n", metadata_version())
 
 
-def test_every_section_is_checked_now_so_cross_references_and_shadowing_are_left() -> None:
+def test_every_section_is_checked_now_so_point_names_module_places_and_shadowing_are_left() -> None:
     assert blueprint.NOT_YET == ()
-    assert blueprint.not_checked() == (
-        f"Not checked yet: names that refer to another section (features, points and options), {MODULES} and {SHADOW}."
-    )
+    assert blueprint.CROSS_REFERENCES_LEFT == (POINTS, MODULES)
+    assert blueprint.not_checked() == f"Not checked yet: {POINTS}, {MODULES} and {SHADOW}."
 
 
 def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
@@ -91,32 +91,27 @@ def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
 
 
 @pytest.mark.parametrize(
-    ("sections", "cross", "line"),
+    ("sections", "left", "line"),
     [
         (
             ("checks",),
-            True,
-            "Not checked yet: what's inside [checks], names that refer to another section (features, points and "
-            f"options), {MODULES} and {SHADOW}.",
+            (POINTS, MODULES),
+            f"Not checked yet: what's inside [checks], {POINTS}, {MODULES} and {SHADOW}.",
         ),
         (
             ("wiring", "checks"),
-            False,
+            (),
             f"Not checked yet: what's inside [[wiring]] and [checks] and {SHADOW}.",
         ),
-        (
-            (),
-            True,
-            f"Not checked yet: names that refer to another section (features, points and options), {MODULES} and {SHADOW}.",
-        ),
-        ((), False, f"Not checked yet: {SHADOW}."),
+        ((), (MODULES,), f"Not checked yet: {MODULES} and {SHADOW}."),
+        ((), (), f"Not checked yet: {SHADOW}."),
     ],
 )
 def test_the_not_checked_line_shrinks_as_checks_arrive(
-    sections: tuple[str, ...], cross: bool, line: str, monkeypatch: pytest.MonkeyPatch
+    sections: tuple[str, ...], left: tuple[str, ...], line: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(blueprint, "NOT_YET", sections)
-    monkeypatch.setattr(blueprint, "CROSS_REFERENCES_CHECKED", not cross)
+    monkeypatch.setattr(blueprint, "CROSS_REFERENCES_LEFT", left)
 
     assert blueprint.not_checked() == line
 
@@ -125,10 +120,24 @@ def test_shadowing_is_still_named_once_everything_else_is_checked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(blueprint, "NOT_YET", ())
-    monkeypatch.setattr(blueprint, "CROSS_REFERENCES_CHECKED", True)
+    monkeypatch.setattr(blueprint, "CROSS_REFERENCES_LEFT", ())
 
     assert blueprint.main([str(_repo(tmp_path, GOOD))]) == 0
     assert capsys.readouterr().out.splitlines()[1:] == [f"Not checked yet: {SHADOW}."]
+
+
+def test_an_extending_catalog_with_a_base_name_says_ok_and_that_names_wait_for_the_merge(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = GOOD.replace("[presets]", 'extends = { name = "fastro", version = "0.21.0" }\n\n[presets]').replace(
+        'summary = "Users and login"', 'summary = "Users and login"\nrequires = ["jwt"]'
+    )
+
+    assert blueprint.main([str(_repo(tmp_path, text))]) == 0
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        "Not checked yet: names that refer to another section, since this catalog extends fastro, and those are "
+        f"checked on the merged catalog (extends, not built yet) and {SHADOW}."
+    ]
 
 
 def test_a_utf_8_byte_order_mark_is_read_past(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

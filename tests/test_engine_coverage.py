@@ -19,10 +19,12 @@ FULLY_COVERED = {
         "test_engine_blueprint_command.py",
         "test_engine_blueprint_wiring.py",
         "test_engine_blueprint_tools.py",
+        "test_engine_references.py",
     ),
     "conditions": ("test_engine_conditions.py",),
     "positions": ("test_engine_positions.py",),
     "problems": ("test_engine_problems.py",),
+    "references": ("test_engine_references.py",),
 }
 
 
