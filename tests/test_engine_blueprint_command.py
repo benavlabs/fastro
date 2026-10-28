@@ -31,6 +31,8 @@ summary = "Users and login"
 
 MINIMAL = GOOD[: GOOD.index("[presets]")]
 
+SHADOW = "whether a [commands] entry shadows a built-in fastro command"
+
 
 def metadata_version() -> Version:
     return Version(metadata.version("fastro"))
@@ -73,13 +75,18 @@ def test_the_blueprint_section_is_checked() -> None:
         blueprint.load("blueprint.toml", MINIMAL + "fastro_probe = 1\n", metadata_version())
 
 
-def test_the_not_checked_line_names_every_section_not_checked_yet() -> None:
-    sections = [f"[[{name}]]" if name == "wiring" else f"[{name}]" for name in blueprint.NOT_YET]
-
+def test_every_section_is_checked_now_so_cross_references_and_shadowing_are_left() -> None:
+    assert blueprint.NOT_YET == ()
     assert blueprint.not_checked() == (
-        f"Not checked yet: what's inside {', '.join(sections[:-1])} and {sections[-1]}, "
-        "and names that refer to another section (features, points and options)."
+        f"Not checked yet: names that refer to another section (features, points and options), and {SHADOW}."
     )
+
+
+def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
+    catalog = blueprint.load("blueprint.toml", MINIMAL + '[commands."make deploy"]\nmodule = "m"\n', metadata_version())
+
+    assert ("make", "deploy") in catalog.commands
+    assert "shadows a built-in fastro command" in blueprint.not_checked()
 
 
 @pytest.mark.parametrize(
@@ -88,11 +95,20 @@ def test_the_not_checked_line_names_every_section_not_checked_yet() -> None:
         (
             ("checks",),
             True,
-            "Not checked yet: what's inside [checks], and names that refer to another section (features, points and options).",
+            "Not checked yet: what's inside [checks], and names that refer to another section (features, points and "
+            f"options), and {SHADOW}.",
         ),
-        (("wiring", "checks"), False, "Not checked yet: what's inside [[wiring]] and [checks]."),
-        ((), True, "Not checked yet: names that refer to another section (features, points and options)."),
-        ((), False, ""),
+        (
+            ("wiring", "checks"),
+            False,
+            f"Not checked yet: what's inside [[wiring]] and [checks], and {SHADOW}.",
+        ),
+        (
+            (),
+            True,
+            f"Not checked yet: names that refer to another section (features, points and options), and {SHADOW}.",
+        ),
+        ((), False, f"Not checked yet: {SHADOW}."),
     ],
 )
 def test_the_not_checked_line_shrinks_as_checks_arrive(
@@ -104,14 +120,14 @@ def test_the_not_checked_line_shrinks_as_checks_arrive(
     assert blueprint.not_checked() == line
 
 
-def test_ok_is_the_only_line_once_everything_is_checked(
+def test_shadowing_is_still_named_once_everything_else_is_checked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(blueprint, "NOT_YET", ())
     monkeypatch.setattr(blueprint, "CROSS_REFERENCES_CHECKED", True)
 
     assert blueprint.main([str(_repo(tmp_path, GOOD))]) == 0
-    assert capsys.readouterr().out.count("\n") == 1
+    assert capsys.readouterr().out.splitlines()[1:] == [f"Not checked yet: {SHADOW}."]
 
 
 def test_a_utf_8_byte_order_mark_is_read_past(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

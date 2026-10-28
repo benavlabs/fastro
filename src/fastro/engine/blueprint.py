@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import codecs
 import difflib
+import ipaddress
 import re
 import string
 import sys
@@ -86,12 +87,17 @@ SLOT_REQUIRED = {
     "data": ("name", "point", "format"),
 }
 HEADER_WIDTH = 100
+PARAM_TYPES = ("bool", "choice", "cidr", "int", "str")
+MODULE_GENERATOR = "module"
+TEMPLATE_FIELDS = {"name": "sample_name", "name_dashed": "sample-name", "Name": "SampleName"}
+COMMAND_WORDS = re.compile(r"[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*")
+CHECK_CODE = re.compile(r"[A-Z]+[0-9]+")
 CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
 SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
 COMMAND = "python -m fastro.engine.blueprint"
-NOT_YET = ("generators", "commands", "plugin_api", "checks")
+NOT_YET: tuple[str, ...] = ()
 CROSS_REFERENCES_CHECKED = False
 
 
@@ -247,6 +253,63 @@ class Wiring:
 
 
 @dataclass(frozen=True)
+class Param:
+    """A generator's parameter (2.9)."""
+
+    name: str
+    type: str
+    default: str | int | bool
+    help: str = ""
+    choices: tuple[str, ...] = ()
+    private_only: bool = False
+    max_prefix: int | None = None
+    at: KeyPath = ()
+
+
+@dataclass(frozen=True)
+class Register:
+    """What ``make module`` adds under ``[app]``, as templates over ``{name}``, ``{name_dashed}`` and ``{Name}`` (2.9)."""
+
+    paths: tuple[str, ...]
+    contributes: Mapping[str, tuple[str | Mapping[str, Any], ...]]
+
+
+@dataclass(frozen=True)
+class Generator:
+    """A ``fastro make`` generator (2.9)."""
+
+    name: str
+    templates: RepoPath
+    params: Mapping[str, Param]
+    register: Register | None
+    types: Mapping[str, Mapping[str, Any]]
+    at: KeyPath
+
+
+@dataclass(frozen=True)
+class Command:
+    """A command the blueprint declares, run in the project (2.9)."""
+
+    words: tuple[str, ...]
+    module: str
+    cwd: RepoPath | None = None
+    help: str = ""
+    outside_project: str = "error"
+    at: KeyPath = ()
+
+
+@dataclass(frozen=True)
+class PluginApi:
+    """What plugins may contribute to and import (2.11)."""
+
+    version: int
+    points: tuple[str, ...]
+    public: tuple[str, ...]
+    public_with: Mapping[str, tuple[str, ...]]
+    at: KeyPath
+
+
+@dataclass(frozen=True)
 class Blueprint:
     """A loaded ``blueprint.toml``, with the document it came from for placing later problems."""
 
@@ -258,6 +321,11 @@ class Blueprint:
     core: Contributions
     wiring: tuple[Wiring, ...]
     header: str
+    generators: Mapping[str, Generator]
+    commands: Mapping[tuple[str, ...], Command]
+    plugin_api: PluginApi | None
+    checks: Mapping[str, Mapping[str, Any]]
+    toolchain_env: Mapping[str, str]
     document: Document = field(compare=False, repr=False)
 
 
@@ -433,6 +501,10 @@ class _Reader:
         )
         defaults = self.subtable((), data, "wiring_defaults", {"header"})
         header = self.text(("wiring_defaults",), defaults, "header", _header)
+        generators = [self.generator(at, name, item) for at, name, item in self.named((), data, "generators", _generator_name)]
+        commands = [self.command(at, name, item) for at, name, item in self.named((), data, "commands", _command)]
+        plugin_api = self.plugin_api(("plugin_api",), data["plugin_api"]) if "plugin_api" in data else None
+        checks, toolchain_env = self.checks(("checks",), self.subtable((), data, "checks"))
         if info is None:
             return None
         return Blueprint(
@@ -444,6 +516,11 @@ class _Reader:
             core=self.contributes(("core",), core),
             wiring=tuple(file for file in wiring if file is not None),
             header=header or "",
+            generators={generator.name: generator for generator in generators if generator is not None},
+            commands={command.words: command for command in commands if command is not None},
+            plugin_api=plugin_api,
+            checks=checks,
+            toolchain_env=toolchain_env,
             document=self.document,
         )
 
@@ -520,6 +597,139 @@ class _Reader:
             format=self.text(path, table, "format", _data_format) or "",
             at=path,
         )
+
+    def generator(self, path: KeyPath, name: str, value: object) -> Generator | None:
+        table = self.table(path, value, ("templates", "params", "register", "types"), ("templates",))
+        if table is None:
+            return None
+        templates = self.text(path, table, "templates", spec.repo_path)
+        params = [self.param(at, param, item) for at, param, item in self.named(path, table, "params", spec.option_name)]
+        for key in ("register", "types"):
+            if key in table and name != MODULE_GENERATOR:
+                self.fail((*path, key), "is only for the module generator, which make module runs.")
+        module = name == MODULE_GENERATOR
+        register = self.register((*path, "register"), table["register"]) if module and "register" in table else None
+        types = {kind: item for at, kind, item in self.named(path, table, "types", str) if self.table(at, item) is not None}
+        if templates is None:
+            return None
+        return Generator(
+            name,
+            templates,
+            {param.name: param for param in params if param is not None},
+            register,
+            types if module else {},
+            path,
+        )
+
+    def param(self, path: KeyPath, name: str, value: object) -> Param | None:
+        keys = ("type", "default", "help", "choices", "private_only", "max_prefix")
+        table = self.table(path, value, keys, ("type", "default"))
+        if table is None:
+            return None
+        kind = self.text(path, table, "type", _param_type)
+        for key, only in (("choices", "choice"), ("private_only", "cidr"), ("max_prefix", "cidr")):
+            if kind is not None and key in table and kind != only:
+                self.fail((*path, key), f"is only for a {only} param.")
+        if kind == "choice" and "choices" not in table:
+            self.fail((*path, "choices"), "is required for a choice param.", f"Add choices to [{key_name(path)}].")
+        choices = self.choices(path, table) if kind == "choice" and "choices" in table else ()
+        private_only = self.flag(path, table, "private_only") is True if kind == "cidr" else False
+        max_prefix = self.number(path, table, "max_prefix") if kind == "cidr" else None
+        if max_prefix is not None and not 0 <= max_prefix <= 128:
+            self.fail((*path, "max_prefix"), f"should be from 0 to 128, not {max_prefix}.")
+        default = self.default(path, table, kind, choices, private_only) if kind is not None and "default" in table else None
+        if kind is None or default is None:
+            return None
+        return Param(name, kind, default, self.text(path, table, "help", str) or "", choices, private_only, max_prefix, path)
+
+    def default(
+        self, path: KeyPath, table: dict[str, Any], kind: str, choices: tuple[str, ...], private_only: bool
+    ) -> str | int | bool | None:
+        if kind == "int":
+            return self.number(path, table, "default")
+        if kind == "bool":
+            return self.flag(path, table, "default")
+        if kind == "choice":
+            return self.text(path, table, "default", _in(choices) if choices else str)
+        if kind == "cidr":
+            return self.text(path, table, "default", lambda text: _network(text, private_only))
+        return self.text(path, table, "default", str)
+
+    def register(self, path: KeyPath, value: object) -> Register | None:
+        table = self.table(path, value, ("paths", "contributes"))
+        if table is None:
+            return None
+        paths = self.texts(path, table, "paths", _filled(spec.repo_path))
+        contributes: dict[str, tuple[str | Mapping[str, Any], ...]] = {}
+        for at, point, items in self.named(path, table, "contributes", spec.option_name):
+            if not isinstance(items, list):
+                self.wrong(at, "a list of contributions", items)
+                continue
+            for index, item in enumerate(items):
+                self.templated((*at, index), item)
+            contributes[point] = tuple(items)
+        return Register(paths, contributes)
+
+    def templated(self, path: KeyPath, value: object) -> None:
+        """Check a ``register`` contribution as it reads once its templates are filled in."""
+        if isinstance(value, str):
+            self.string(path, value, _filled(str))
+            return
+        if not isinstance(value, dict):
+            self.wrong(path, "a ref string or a table", value)
+            return
+        filled: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, str):
+                if self.string((*path, key), item, _filled(Ref.parse if key == "ref" else str)) is None:
+                    return
+                item = "m:x" if key == "ref" else item.format(**TEMPLATE_FIELDS)
+            filled[key] = item
+        self.contribution(path, filled)
+
+    def command(self, path: KeyPath, words: str, value: object) -> Command | None:
+        table = self.table(path, value, ("module", "cwd", "help", "outside_project"), ("module",))
+        if table is None:
+            return None
+        module = self.text(path, table, "module", _module)
+        cwd = self.text(path, table, "cwd", spec.repo_path)
+        help_text = self.text(path, table, "help", str)
+        outside = self.text(path, table, "outside_project", _outside_project)
+        if module is None:
+            return None
+        return Command(tuple(words.split(" ")), module, cwd, help_text or "", outside or "error", path)
+
+    def plugin_api(self, path: KeyPath, value: object) -> PluginApi | None:
+        table = self.table(path, value, ("version", "points", "public", "public_with"), ("version",))
+        if table is None:
+            return None
+        version = self.number(path, table, "version")
+        if version is not None and version < 1:
+            self.fail((*path, "version"), f"should be 1 or more, not {version}.")
+        points = self.texts(path, table, "points", spec.option_name)
+        public = self.texts(path, table, "public", _public)
+        public_with = {
+            feature: self.texts((*path, "public_with"), table["public_with"], feature, _public)
+            for _, feature, _ in self.named(path, table, "public_with", spec.option_name)
+        }
+        if version is None or version < 1:
+            return None
+        return PluginApi(version, points, public, public_with, path)
+
+    def checks(self, path: KeyPath, table: dict[str, Any]) -> tuple[dict[str, Mapping[str, Any]], dict[str, str]]:
+        toolchain = self.subtable(path, table, "toolchain", ("env",))
+        env = {
+            var: text
+            for _, var, _ in self.named((*path, "toolchain"), toolchain, "env", _env_var)
+            if (text := self.text((*path, "toolchain", "env"), toolchain["env"], var, str)) is not None
+        }
+        codes = {key: item for key, item in table.items() if key != "toolchain"}
+        checks = {
+            code: item
+            for at, code, item in self.named((), {"checks": codes}, "checks", _check_code)
+            if self.table(at, item) is not None
+        }
+        return checks, env
 
     def info(self, path: KeyPath, value: object) -> Info | None:
         table = self.table(path, value, BLUEPRINT_KEYS, ("name", "version", "schema", "requires_fastro"))
@@ -788,6 +998,90 @@ def _data_format(text: str) -> str:
     return text
 
 
+def _generator_name(text: str) -> str:
+    if not spec.BLUEPRINT_NAME.fullmatch(text):
+        raise SpecError(
+            f"{text!r} isn't a valid generator name: use lowercase letters, digits and hyphens, starting with a letter."
+        )
+    return text
+
+
+def _param_type(text: str) -> str:
+    if text not in PARAM_TYPES:
+        raise SpecError(f"should be one of {', '.join(PARAM_TYPES)}, not {text!r}.")
+    return text
+
+
+def _network(text: str, private_only: bool) -> str:
+    try:
+        network = ipaddress.ip_network(text, strict=True)
+    except ValueError:
+        raise SpecError(f"{text!r} isn't a network address, such as '172.31.240.0/24'.") from None
+    if private_only and not network.is_private:
+        raise SpecError(f"{text!r} isn't a private network, and private_only is set.")
+    return text
+
+
+def _template(text: str) -> str:
+    """``text`` with ``register``'s fields filled in with sample values, refusing any other field."""
+    try:
+        fields = [field for _, field, _, _ in string.Formatter().parse(text) if field is not None]
+    except ValueError as error:
+        raise SpecError(f"{text!r} isn't a format string: {error}.") from None
+    for name in fields:
+        if name not in TEMPLATE_FIELDS:
+            raise SpecError(f"{text!r} uses {{{name}}}, and register templates take {{name}}, {{name_dashed}} and {{Name}}.")
+    return text.format(**TEMPLATE_FIELDS)
+
+
+def _filled(parser: Callable[[str], object]) -> Callable[[str], str]:
+    """A rule that checks a template with ``parser`` once its fields are filled in, quoting the template."""
+
+    def rule(text: str) -> str:
+        filled = _template(text)
+        try:
+            parser(filled)
+        except SpecError as error:
+            raise SpecError(str(error).replace(repr(filled), repr(text), 1)) from None
+        return text
+
+    return rule
+
+
+def _command(text: str) -> str:
+    if not COMMAND_WORDS.fullmatch(text):
+        raise SpecError(
+            f"{text!r} isn't a command: write its words in lowercase letters, digits and hyphens, one space apart, "
+            "such as 'env validate'."
+        )
+    return text
+
+
+def _module(text: str) -> str:
+    if not all(spec.identifier(part) for part in text.split(".")):
+        raise SpecError(f"{text!r} isn't a module name, such as 'scripts.validate_env'.")
+    return text
+
+
+def _outside_project(text: str) -> str:
+    if text not in ("error", "token_hex"):
+        raise SpecError(f"should be 'error' or 'token_hex', not {text!r}.")
+    return text
+
+
+def _public(text: str) -> str:
+    parts = text.removesuffix(".*").split(".")
+    if not all(spec.identifier(part) for part in parts):
+        raise SpecError(f"{text!r} isn't a module, or a package followed by '.*', such as 'src.infrastructure.composition'.")
+    return text
+
+
+def _check_code(text: str) -> str:
+    if not CHECK_CODE.fullmatch(text):
+        raise SpecError(f"{text!r} isn't a check code, such as 'FR013'.")
+    return text
+
+
 def _package(text: str) -> str:
     if not spec.identifier(text):
         raise SpecError(f"{text!r} isn't an importable package name, such as 'src'.")
@@ -869,18 +1163,18 @@ def main(argv: list[str]) -> int:
         _counted(len(loaded.presets), "preset"),
     )
     print(f"ok: {file} is {info.name} {info.version}, with {features}, {points} and {presets}.")
-    if line := not_checked():
-        print(line)
+    print(not_checked())
     return 0
 
 
 def not_checked() -> str:
-    """The line saying what ``main`` can't vouch for yet, built from :data:`NOT_YET`; empty once it's all checked."""
+    """The line saying what ``main`` can't vouch for: :data:`NOT_YET`, cross-references, and shadowing, which the CLI checks."""
     sections = [f"[[{name}]]" if name == "wiring" else f"[{name}]" for name in NOT_YET]
     parts = [f"what's inside {_listed(sections)}"] if sections else []
     if not CROSS_REFERENCES_CHECKED:
         parts.append("names that refer to another section (features, points and options)")
-    return f"Not checked yet: {', and '.join(parts)}." if parts else ""
+    parts.append("whether a [commands] entry shadows a built-in fastro command")
+    return f"Not checked yet: {', and '.join(parts)}."
 
 
 def _text(file: Path) -> str:
