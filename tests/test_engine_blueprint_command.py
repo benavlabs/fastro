@@ -78,7 +78,7 @@ def test_the_blueprint_section_is_checked() -> None:
 def test_every_section_is_checked_now_so_cross_references_and_shadowing_are_left() -> None:
     assert blueprint.NOT_YET == ()
     assert blueprint.not_checked() == (
-        f"Not checked yet: names that refer to another section (features, points and options), and {SHADOW}."
+        f"Not checked yet: names that refer to another section (features, points and options) and {SHADOW}."
     )
 
 
@@ -95,18 +95,18 @@ def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
         (
             ("checks",),
             True,
-            "Not checked yet: what's inside [checks], and names that refer to another section (features, points and "
-            f"options), and {SHADOW}.",
+            "Not checked yet: what's inside [checks], names that refer to another section (features, points and "
+            f"options) and {SHADOW}.",
         ),
         (
             ("wiring", "checks"),
             False,
-            f"Not checked yet: what's inside [[wiring]] and [checks], and {SHADOW}.",
+            f"Not checked yet: what's inside [[wiring]] and [checks] and {SHADOW}.",
         ),
         (
             (),
             True,
-            f"Not checked yet: names that refer to another section (features, points and options), and {SHADOW}.",
+            f"Not checked yet: names that refer to another section (features, points and options) and {SHADOW}.",
         ),
         ((), False, f"Not checked yet: {SHADOW}."),
     ],

@@ -683,7 +683,7 @@ class _Reader:
             if isinstance(item, str):
                 if self.string((*path, key), item, _filled(Ref.parse if key == "ref" else str)) is None:
                     return
-                item = "m:x" if key == "ref" else item.format(**TEMPLATE_FIELDS)
+                item = item.format(**TEMPLATE_FIELDS)
             filled[key] = item
         self.contribution(path, filled)
 
@@ -1168,13 +1168,13 @@ def main(argv: list[str]) -> int:
 
 
 def not_checked() -> str:
-    """The line saying what ``main`` can't vouch for: :data:`NOT_YET`, cross-references, and shadowing, which the CLI checks."""
+    """The line saying what ``main`` can't vouch for: :data:`NOT_YET`, cross-references and built-in shadowing."""
     sections = [f"[[{name}]]" if name == "wiring" else f"[{name}]" for name in NOT_YET]
     parts = [f"what's inside {_listed(sections)}"] if sections else []
     if not CROSS_REFERENCES_CHECKED:
         parts.append("names that refer to another section (features, points and options)")
     parts.append("whether a [commands] entry shadows a built-in fastro command")
-    return f"Not checked yet: {', and '.join(parts)}."
+    return f"Not checked yet: {_listed(parts)}."
 
 
 def _text(file: Path) -> str:
