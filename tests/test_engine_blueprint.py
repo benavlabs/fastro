@@ -269,7 +269,7 @@ def test_when_tables_are_read() -> None:
 
 
 def test_the_tables_of_later_sections_are_known_top_level_keys() -> None:
-    text = MINIMAL + "[wiring_defaults]\n[checks]\n[plugin_api]\n[generators]\n[commands]\n[[wiring]]\n"
+    text = MINIMAL + "[wiring_defaults]\n[checks]\n[plugin_api]\n[generators]\n[commands]\n"
 
     assert _load(text).info.name == "mini"
 

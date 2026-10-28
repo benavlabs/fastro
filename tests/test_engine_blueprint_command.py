@@ -1,5 +1,6 @@
 """``python -m fastro.engine.blueprint PATH``: track B's early check of its ``blueprint.toml``."""
 
+import re
 import subprocess
 import sys
 from importlib import metadata
@@ -56,12 +57,14 @@ def test_a_good_catalog_says_ok_and_what_it_hasnt_checked(tmp_path: Path, capsys
 
 @pytest.mark.parametrize("section", sorted(blueprint.TOP_LEVEL - {"blueprint"}))
 def test_every_section_is_either_checked_or_listed_as_not_checked_yet(section: str) -> None:
-    text = f"{section}.fastro_probe = 1\n" + MINIMAL
+    array = section == "wiring"
+    text = MINIMAL + (f"[[{section}]]" if array else f"[{section}]") + "\nfastro_probe = 1\n"
 
     if section in blueprint.NOT_YET:
         assert blueprint.load("blueprint.toml", text, metadata_version()).info.name == "mini"
     else:
-        with pytest.raises(CatalogError, match=f"{section}.fastro_probe"):
+        probe = f"{section}[0].fastro_probe" if array else f"{section}.fastro_probe"
+        with pytest.raises(CatalogError, match=re.escape(probe)):
             blueprint.load("blueprint.toml", text, metadata_version())
 
 
