@@ -175,6 +175,18 @@ def test_points_are_read() -> None:
     }
 
 
+def test_a_point_may_use_a_name_reserved_for_features() -> None:
+    text = MINIMAL + '[points.core]\ncardinality = "many"\n[points.and]\ncardinality = "one"\n'
+
+    assert list(_load(text).points) == ["core", "and"]
+
+
+def test_an_options_env_names_may_be_any_case_and_start_with_an_underscore() -> None:
+    text = MINIMAL + OPTION + 'env = { lower_case = "{value}", _Private2 = "x" }\n'
+
+    assert _load(text).features[0].options["broker"].env == {"lower_case": "{value}", "_Private2": "x"}
+
+
 def test_core_contributions_are_read() -> None:
     assert _load(FULL).core == {
         "readiness": (Contribution("src.core.health:database", "", at=("core", "contributes", "readiness", 0)),),
@@ -601,6 +613,10 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
             "expected 'package.module:name' or 'package.module:name as alias'.",
         ),
         ('import_root = "class"', "6: blueprint.import_root: 'class' isn't an importable package name, such as 'src'."),
+        (
+            OPTION + 'dependencies = { kafka = ["aiokafka"] }',
+            "11: features.a.options.broker.dependencies.kafka: 'kafka' isn't one of the choices: 'redis'.",
+        ),
         (FEATURE + 'when = "x"', "8: features.a.when: should be a list of tables, not a string."),
         (
             FEATURE + "[[features.a.when]]\npaths = []",
