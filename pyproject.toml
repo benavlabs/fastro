@@ -55,3 +55,6 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 warn_unused_ignores = true
+
+[tool.coverage.report]
+exclude_also = ['if __name__ == "__main__":']

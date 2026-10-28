@@ -14,20 +14,20 @@ ENGINE = Path(fastro.engine.__file__).parent
 TESTS = Path(__file__).parent
 
 FULLY_COVERED = {
-    "blueprint": "test_engine_blueprint.py",
-    "conditions": "test_engine_conditions.py",
-    "positions": "test_engine_positions.py",
-    "problems": "test_engine_problems.py",
+    "blueprint": ("test_engine_blueprint.py", "test_engine_blueprint_command.py"),
+    "conditions": ("test_engine_conditions.py",),
+    "positions": ("test_engine_positions.py",),
+    "problems": ("test_engine_problems.py",),
 }
 
 
 @pytest.mark.parametrize(("module", "tests"), sorted(FULLY_COVERED.items()))
-def test_the_module_has_full_branch_coverage(module: str, tests: str, tmp_path: Path) -> None:
+def test_the_module_has_full_branch_coverage(module: str, tests: tuple[str, ...], tmp_path: Path) -> None:
     env = {**os.environ, "COVERAGE_FILE": str(tmp_path / ".coverage")}
     source = str(ENGINE / f"{module}.py")
     coverage = [sys.executable, "-m", "coverage"]
     measure = ["run", "--branch", f"--include={source}"]
-    pytest_args = ["-m", "pytest", "-q", "-p", "no:cacheprovider", str(TESTS / tests)]
+    pytest_args = ["-m", "pytest", "-q", "-p", "no:cacheprovider", *(str(TESTS / name) for name in tests)]
 
     run = subprocess.run([*coverage, *measure, *pytest_args], env=env, capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr

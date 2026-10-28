@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import codecs
 import difflib
 import re
+import sys
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
+from importlib import metadata
+from pathlib import Path
 from typing import Any, TypeVar
 
 from packaging.requirements import Requirement
@@ -65,6 +69,9 @@ CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
 SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
+COMMAND = "python -m fastro.engine.blueprint"
+NOT_YET = ("wiring", "wiring_defaults", "generators", "commands", "plugin_api", "checks")
+CROSS_REFERENCES_CHECKED = False
 
 
 @dataclass(frozen=True)
@@ -198,6 +205,10 @@ class Blueprint:
     document: Document = field(compare=False, repr=False)
 
 
+class IncompatibleCatalog(CatalogError):
+    """A catalog whose ``schema`` or ``requires_fastro`` rules out the running fastro."""
+
+
 def load(file: str, text: str, tool: Version) -> Blueprint:
     """``text`` as the ``blueprint.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
 
@@ -205,7 +216,9 @@ def load(file: str, text: str, tool: Version) -> Blueprint:
     """
     document = read(file, text)
     reader = _Reader(document)
-    blueprint = reader.blueprint(document.data) if reader.gate(document.data, tool) else None
+    if not reader.gate(document.data, tool):
+        raise IncompatibleCatalog(reader.problems)
+    blueprint = reader.blueprint(document.data)
     if reader.problems or blueprint is None:
         raise CatalogError(reader.problems)
     return blueprint
@@ -596,3 +609,82 @@ def _in(choices: tuple[str, ...]) -> Callable[[str], str]:
         return text
 
     return rule
+
+
+def main(argv: list[str]) -> int:
+    """Check the ``blueprint.toml`` at ``argv[0]``, a repo or the file itself, printing ``ok`` or its problems."""
+    if len(argv) != 1:
+        print(f"usage: {COMMAND} PATH", file=sys.stderr)
+        return 2
+    path = Path(argv[0])
+    file = path / "blueprint.toml" if path.is_dir() else path
+    if not file.is_file():
+        why = "has no blueprint.toml" if path.is_dir() else "doesn't exist"
+        print(f"error: {path} {why}. Pass a blueprint repo or its blueprint.toml: {COMMAND} PATH", file=sys.stderr)
+        return 2
+    try:
+        tool = Version(metadata.version("fastro"))
+    except metadata.PackageNotFoundError:
+        print(
+            "error: fastro isn't installed, so this can't tell which catalogs it reads. "
+            "Install it (uv pip install -e PATH_TO_FASTRO), then run this again.",
+            file=sys.stderr,
+        )
+        return 3
+    try:
+        loaded = load(str(file), _text(file), tool)
+    except OSError as error:
+        print(
+            f"error: can't read {file}: {error.strerror}. Check its permissions, then run {COMMAND} {path} again.",
+            file=sys.stderr,
+        )
+        return 3
+    except CatalogError as error:
+        for problem in error.problems:
+            print(problem)
+        count = len(error.problems)
+        noun, them = ("problem", "it") if count == 1 else ("problems", "them")
+        print(f"{count} {noun} in {file}. Fix {them}, then run {COMMAND} {path} again.")
+        return 3 if isinstance(error, IncompatibleCatalog) else 1
+    info = loaded.info
+    features, points, presets = (
+        _counted(len(loaded.features), "feature"),
+        _counted(len(loaded.points), "point"),
+        _counted(len(loaded.presets), "preset"),
+    )
+    print(f"ok: {file} is {info.name} {info.version}, with {features}, {points} and {presets}.")
+    if line := not_checked():
+        print(line)
+    return 0
+
+
+def not_checked() -> str:
+    """The line saying what ``main`` can't vouch for yet, built from :data:`NOT_YET`; empty once it's all checked."""
+    sections = [f"[[{name}]]" if name == "wiring" else f"[{name}]" for name in NOT_YET]
+    parts = [f"what's inside {_listed(sections)}"] if sections else []
+    if not CROSS_REFERENCES_CHECKED:
+        parts.append("names that refer to another section (features, points and options)")
+    return f"Not checked yet: {', and '.join(parts)}." if parts else ""
+
+
+def _text(file: Path) -> str:
+    data = file.read_bytes().removeprefix(codecs.BOM_UTF8)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        line = data[: error.start].count(b"\n") + 1
+        raise CatalogError(
+            [Problem(str(file), line, "", "isn't UTF-8 text.", "Save it as UTF-8, then run this again.")]
+        ) from None
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
