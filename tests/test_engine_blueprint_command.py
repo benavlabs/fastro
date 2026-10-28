@@ -189,7 +189,21 @@ def test_problems_are_listed_with_a_count_and_exit_1(tmp_path: Path, capsys: pyt
         f"{file}:15: features.accounts.require: isn't a key of [features.accounts].\n"
         "  Did you mean 'requires'?\n"
         f"{file}:16: features.accounts.group: should be a string, not an integer.\n"
+        "Names that refer to another section aren't checked until these are fixed.\n"
         f"2 problems in {file}. Fix them, then run python -m fastro.engine.blueprint {repo} again.\n",
+        "",
+    )
+
+
+def test_problems_with_names_come_without_the_note_about_names(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo(tmp_path, GOOD + 'requires = ["acounts"]\n')
+    file = repo / "blueprint.toml"
+
+    assert blueprint.main([str(repo)]) == 1
+    assert capsys.readouterr() == (
+        f"{file}:15: features.accounts.requires[0]: 'acounts' isn't a feature of this catalog.\n"
+        "  Did you mean 'accounts'?\n"
+        f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.\n",
         "",
     )
 

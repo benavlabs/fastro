@@ -339,6 +339,10 @@ class IncompatibleCatalog(CatalogError):
     """A catalog whose ``schema`` or ``requires_fastro`` rules out the running fastro."""
 
 
+class CrossReferenceError(CatalogError):
+    """A catalog whose keys all read cleanly, with names that refer to something it doesn't declare."""
+
+
 def load(file: str, text: str, tool: Version) -> Blueprint:
     """``text`` as the ``blueprint.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
 
@@ -353,7 +357,7 @@ def load(file: str, text: str, tool: Version) -> Blueprint:
     if reader.problems or blueprint is None:
         raise CatalogError(reader.problems)
     if blueprint.info.extends is None and (found := references.problems(blueprint)):
-        raise CatalogError(found)
+        raise CrossReferenceError(found)
     return blueprint
 
 
@@ -1190,6 +1194,8 @@ def main(argv: list[str]) -> int:
     except CatalogError as error:
         for problem in error.problems:
             print(problem)
+        if not isinstance(error, IncompatibleCatalog | CrossReferenceError):
+            print("Names that refer to another section aren't checked until these are fixed.")
         count = len(error.problems)
         noun, them = ("problem", "it") if count == 1 else ("problems", "them")
         print(f"{count} {noun} in {file}. Fix {them}, then run {COMMAND} {path} again.")

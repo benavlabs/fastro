@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def problems(catalog: Blueprint) -> list[Problem]:
-    """Every name in ``catalog`` that refers to a feature, option or choice it doesn't declare."""
+    """Every name in ``catalog`` that refers to a feature, option or choice it doesn't declare, or a ``requires`` cycle."""
     return list(_Checker(catalog).run())
 
 
