@@ -3,7 +3,7 @@
 import pytest
 from packaging.version import Version
 
-from fastro.engine import blueprint
+from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint, load
 from fastro.engine.problems import CatalogError
 
@@ -217,7 +217,7 @@ def test_an_extending_catalog_loads_with_names_its_base_may_hold() -> None:
 
 
 def test_an_extending_catalog_says_its_names_wait_for_the_merge() -> None:
-    assert blueprint.not_checked("fastro") == (
+    assert catalog_check.not_checked("fastro") == (
         "Not checked yet: names that refer to another section, since this catalog extends fastro, and those are "
         "checked on the merged catalog (extends, not built yet) and whether a declared command shadows a built-in "
         "fastro command."
