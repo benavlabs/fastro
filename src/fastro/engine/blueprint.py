@@ -99,10 +99,7 @@ SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
 COMMAND = "python -m fastro.engine.blueprint"
 NOT_YET: tuple[str, ...] = ()
-CROSS_REFERENCES_LEFT: tuple[str, ...] = (
-    "which points contributions, slots and [plugin_api] name",
-    "where a feature command's module sits",
-)
+CROSS_REFERENCES_LEFT: tuple[str, ...] = ("where a feature command's module sits",)
 
 
 @dataclass(frozen=True)
@@ -277,7 +274,7 @@ class Register:
 
     paths: tuple[str, ...]
     contributes: Mapping[str, tuple[str | Mapping[str, Any], ...]]
-    conditions: Mapping[KeyPath, Condition] = field(default_factory=dict)
+    parsed: Contributions = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True)
@@ -609,7 +606,7 @@ class _Reader:
             name=self.text(path, table, "name", _python_name) or "",
             point=self.text(path, table, "point", spec.option_name) or "",
             annotation=self.text(path, table, "annotation", _expression) or "",
-            item=self.text(path, table, "item", _format_string) or "",
+            item=self.text(path, table, "item", _item) or "",
             defaults=defaults,
             literal=self.flag(path, table, "literal") is True,
             item_imports=self.texts(path, table, "item_imports", _import),
@@ -694,23 +691,21 @@ class _Reader:
             return None
         paths = self.texts(path, table, "paths", _filled(spec.repo_path))
         contributes: dict[str, tuple[str | Mapping[str, Any], ...]] = {}
-        conditions: dict[KeyPath, Condition] = {}
+        parsed: dict[str, tuple[Contribution, ...]] = {}
         for at, point, items in self.named(path, table, "contributes", spec.option_name):
             if not isinstance(items, list):
                 self.wrong(at, "a list of contributions", items)
                 continue
-            for index, item in enumerate(items):
-                contribution = self.templated((*at, index), item)
-                if contribution is not None and contribution.condition is not None:
-                    conditions[(*at, index)] = contribution.condition
+            filled = [self.templated((*at, index), item) for index, item in enumerate(items)]
             contributes[point] = tuple(items)
-        return Register(paths, contributes, conditions)
+            parsed[point] = tuple(item for item in filled if item is not None)
+        return Register(paths, contributes, parsed)
 
     def templated(self, path: KeyPath, value: object) -> Contribution | None:
         """Check a ``register`` contribution as it reads once its templates are filled in, with ``if`` as written."""
         if isinstance(value, str):
-            self.string(path, value, _filled(str))
-            return None
+            text = self.string(path, value, _filled(str))
+            return None if text is None else Contribution(text.format(**TEMPLATE_FIELDS), "", at=path)
         if not isinstance(value, dict):
             self.wrong(path, "a ref string or a table", value)
             return None
@@ -1010,11 +1005,15 @@ def _code(text: str) -> str:
     return text
 
 
-def _format_string(text: str) -> str:
+def _item(text: str) -> str:
+    """``text`` if it's a format string whose fields are all names, which ``defaults`` or a contribution can give."""
     try:
-        list(string.Formatter().parse(text))
+        names = [name for _, name, _, _ in string.Formatter().parse(text) if name is not None]
     except ValueError as error:
         raise SpecError(f"{text!r} isn't a format string: {error}.") from None
+    for name in names:
+        if not name.isidentifier():
+            raise SpecError(f"{text!r} uses {{{name}}}, and an item's fields are names, such as {{name}} or {{prefix}}.")
     return text
 
 

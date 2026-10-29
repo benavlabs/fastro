@@ -80,6 +80,24 @@ slots = [{ kind = "data", name = "MENU", point = "menu", format = "ts" }]
 
 [features.accounts]
 summary = "Users and login"
+
+[points.routers]
+cardinality = "many"
+
+[points.task_modules]
+cardinality = "many"
+
+[points.email_sender]
+cardinality = "one"
+
+[points.settings]
+cardinality = "many"
+
+[points.cache_decorator]
+cardinality = "one"
+
+[points.menu]
+cardinality = "many"
 '''
 
 
@@ -257,6 +275,20 @@ IMPORT_RULE = "isn't one import statement, such as 'from fastapi import APIRoute
         (
             FILE + TUPLE.replace('"tuple[str, ...]"', '"tuple["'),
             "13: wiring[0].slots[0].annotation: 'tuple[' isn't a Python expression.",
+        ),
+        (
+            FILE + TUPLE + 'item = "Mount({})"\n',
+            "14: wiring[0].slots[0].item: 'Mount({})' uses {}, and an item's fields are names, such as {name} or {prefix}.",
+        ),
+        (
+            FILE + TUPLE + 'item = "Mount({ref.x})"\n',
+            "14: wiring[0].slots[0].item: 'Mount({ref.x})' uses {ref.x}, and an item's fields are names, "
+            "such as {name} or {prefix}.",
+        ),
+        (
+            FILE + TUPLE + 'item = "Mount({prefix[0]})"\n',
+            "14: wiring[0].slots[0].item: 'Mount({prefix[0]})' uses {prefix[0]}, and an item's fields are names, "
+            "such as {name} or {prefix}.",
         ),
         (
             FILE + TUPLE + 'item = "Mount({name)"\n',

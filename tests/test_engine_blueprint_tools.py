@@ -79,6 +79,27 @@ DATABASE_URL = "sqlite://"
 
 [features.accounts]
 summary = "Users and login"
+
+[points.routers]
+cardinality = "many"
+
+[points.settings]
+cardinality = "many"
+
+[[wiring]]
+path = "backend/src/wiring/app.py"
+doc = "The composition root."
+
+[[wiring.slots]]
+kind = "tuple"
+name = "ROUTERS"
+point = "routers"
+annotation = "tuple[object, ...]"
+
+[[wiring.slots]]
+kind = "class"
+name = "Settings"
+point = "settings"
 """
 
 
@@ -167,7 +188,10 @@ def test_without_max_prefix_any_cidr_default_loads() -> None:
     ],
 )
 def test_a_register_ref_may_use_its_name_fields_where_python_takes_an_identifier(ref: str) -> None:
-    module = _load(MINIMAL + MODULE + f'contributes = {{ models = [{{ ref = "{ref}" }}] }}\n').generators["module"]
+    models = '[points.models]\ncardinality = "many"\n[[wiring]]\npath = "backend/src/models.py"\ndoc = "Models."\n'
+    models += '[[wiring.slots]]\nkind = "list"\nname = "MODELS"\npoint = "models"\nannotation = "list[type]"\n'
+    text = MINIMAL + models + MODULE + f'contributes = {{ models = [{{ ref = "{ref}" }}] }}\n'
+    module = _load(text).generators["module"]
 
     assert module.register == Register(paths=(), contributes={"models": ({"ref": ref},)})
 

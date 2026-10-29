@@ -177,6 +177,9 @@ def test_points_are_read() -> None:
 
 def test_a_point_may_use_a_name_reserved_for_features() -> None:
     text = MINIMAL + '[points.core]\ncardinality = "many"\n[points.and]\ncardinality = "one"\n'
+    text += '[[wiring]]\npath = "backend/src/w.py"\ndoc = "W."\n'
+    text += '[[wiring.slots]]\nkind = "list"\nname = "CORE"\npoint = "core"\nannotation = "list[str]"\n'
+    text += '[[wiring.slots]]\nkind = "value"\nname = "AND"\npoint = "and"\nannotation = "object"\nfallback = "None"\n'
 
     assert list(_load(text).points) == ["core", "and"]
 

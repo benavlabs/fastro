@@ -25,6 +25,16 @@ minimal = ["accounts"]
 [points.routers]
 cardinality = "many"
 
+[[wiring]]
+path = "backend/src/routers.py"
+doc = "Routers."
+
+[[wiring.slots]]
+kind = "tuple"
+name = "ROUTERS"
+point = "routers"
+annotation = "tuple[object, ...]"
+
 [features.accounts]
 summary = "Users and login"
 """
@@ -77,10 +87,10 @@ def test_the_blueprint_section_is_checked() -> None:
         blueprint.load("blueprint.toml", MINIMAL + "fastro_probe = 1\n", metadata_version())
 
 
-def test_every_section_is_checked_now_so_point_names_module_places_and_shadowing_are_left() -> None:
+def test_every_section_is_checked_now_so_module_places_and_shadowing_are_left() -> None:
     assert blueprint.NOT_YET == ()
-    assert blueprint.CROSS_REFERENCES_LEFT == (POINTS, MODULES)
-    assert blueprint.not_checked() == f"Not checked yet: {POINTS}, {MODULES} and {SHADOW}."
+    assert blueprint.CROSS_REFERENCES_LEFT == (MODULES,)
+    assert blueprint.not_checked() == f"Not checked yet: {MODULES} and {SHADOW}."
 
 
 def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:
@@ -186,9 +196,9 @@ def test_problems_are_listed_with_a_count_and_exit_1(tmp_path: Path, capsys: pyt
 
     assert blueprint.main([str(repo)]) == 1
     assert capsys.readouterr() == (
-        f"{file}:15: features.accounts.require: isn't a key of [features.accounts].\n"
+        f"{file}:25: features.accounts.require: isn't a key of [features.accounts].\n"
         "  Did you mean 'requires'?\n"
-        f"{file}:16: features.accounts.group: should be a string, not an integer.\n"
+        f"{file}:26: features.accounts.group: should be a string, not an integer.\n"
         "Names that refer to another section aren't checked until these are fixed.\n"
         f"2 problems in {file}. Fix them, then run python -m fastro.engine.blueprint {repo} again.\n",
         "",
@@ -198,7 +208,7 @@ def test_problems_are_listed_with_a_count_and_exit_1(tmp_path: Path, capsys: pyt
 @pytest.mark.parametrize(
     ("version", "extra", "problem"),
     [
-        ("0.21.0", "group = 1\n", "17: features.accounts.group: should be a string, not an integer."),
+        ("0.21.0", "group = 1\n", "27: features.accounts.group: should be a string, not an integer."),
         (">=0.21", "", "7: blueprint.extends.version: '>=0.21' isn't a PEP 440 version, such as '0.21.0'."),
     ],
 )
@@ -222,7 +232,7 @@ def test_problems_with_names_come_without_the_note_about_names(tmp_path: Path, c
 
     assert blueprint.main([str(repo)]) == 1
     assert capsys.readouterr() == (
-        f"{file}:15: features.accounts.requires[0]: 'acounts' isn't a feature of this catalog.\n"
+        f"{file}:25: features.accounts.requires[0]: 'acounts' isn't a feature of this catalog.\n"
         "  Did you mean 'accounts'?\n"
         f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.\n",
         "",
@@ -248,7 +258,7 @@ def test_a_file_that_isnt_utf_8_is_a_problem(tmp_path: Path, capsys: pytest.Capt
     file = repo / "blueprint.toml"
 
     assert blueprint.main([str(repo)]) == 1
-    assert capsys.readouterr().out.startswith(f"{file}:15: isn't UTF-8 text.\n  Save it as UTF-8, then run this again.\n")
+    assert capsys.readouterr().out.startswith(f"{file}:25: isn't UTF-8 text.\n  Save it as UTF-8, then run this again.\n")
 
 
 @pytest.mark.parametrize(
