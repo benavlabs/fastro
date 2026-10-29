@@ -1,6 +1,7 @@
 """The definitions every catalog file shares: names, paths, refs and versions (spec section 1)."""
 
 import re
+from collections.abc import Callable
 
 import pytest
 from packaging.requirements import Requirement
@@ -16,12 +17,14 @@ from fastro.engine.spec import (
     check_code,
     choice,
     feature_name,
+    generator_name,
     label,
     option_name,
     repo_path,
     requirement,
     source,
     specifier,
+    starter_name,
     tool_allowed,
     version,
 )
@@ -275,3 +278,14 @@ def test_a_check_code_is_capitals_then_digits(text: str) -> None:
 def test_any_other_check_code_is_refused(text: str) -> None:
     with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a check code, such as 'FR013'.")):
         check_code(text)
+
+
+@pytest.mark.parametrize(("rule", "kind"), [(generator_name, "generator"), (starter_name, "starter")])
+def test_generator_and_starter_names_follow_the_blueprint_name_rule_in_their_own_words(
+    rule: Callable[[str], str], kind: str
+) -> None:
+    assert rule("b2b-api") == "b2b-api"
+    with pytest.raises(
+        SpecError, match=re.escape(f"'B2B' isn't a valid {kind} name: use lowercase letters, digits and hyphens")
+    ):
+        rule("B2B")

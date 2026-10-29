@@ -380,6 +380,8 @@ class Reader:
     absent or broken.
     """
 
+    top = ""
+
     def __init__(self, document: Document) -> None:
         self.document = document
         self.problems: list[Problem] = []
@@ -413,6 +415,10 @@ class Reader:
 
     def unknown(self, path: KeyPath, key: str, keys: Collection[str], where: str = "") -> None:
         close = difflib.get_close_matches(key, keys, n=1)
+        if not path and self.top:
+            fix = f"Did you mean '{close[0]}'?" if close else f"The top-level keys are {', '.join(sorted(keys))}."
+            self.fail((key,), f"isn't a top-level key of {self.top}.", fix)
+            return
         where = where or f"[{key_name(path)}]"
         fix = f"Did you mean '{close[0]}'?" if close else f"The keys of {where} are {', '.join(sorted(keys))}."
         self.fail((*path, key), f"isn't a key of {where}." if path else "isn't a top-level table.", fix)
@@ -464,6 +470,25 @@ class Reader:
             return None
         return table.get(key)
 
+    def repeats(self, path: KeyPath, value: object) -> None:
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if item in value[:index]:
+                    self.fail((*path, index), f"{item!r} is listed twice.")
+
+    def options(self, path: KeyPath, table: dict[str, Any]) -> dict[tuple[str, str], str]:
+        options: dict[tuple[str, str], str] = {}
+        for key, value in table.items():
+            if isinstance(value, dict):
+                example = f'"{key}.{next(iter(value), "option")}" = "{_first(value)}"'
+                self.fail((*path, key), "should be a string, not a table.", f"Quote the whole key, such as {example}.")
+                continue
+            pair = self.parse((*path, key), key, spec.option_key)
+            chosen = self.string((*path, key), value, str)
+            if pair is not None and chosen is not None:
+                options[pair] = chosen
+        return options
+
     def gate(self, data: dict[str, Any], tool: Version) -> bool:
         """Whether a valid ``schema`` and ``requires_fastro`` let ``tool`` read the catalog, reporting each that doesn't."""
         table = data.get("blueprint")
@@ -510,7 +535,9 @@ class Reader:
         )
         defaults = self.subtable((), data, "wiring_defaults", {"header"})
         header = self.text(("wiring_defaults",), defaults, "header", _header)
-        generators = [self.generator(at, name, item) for at, name, item in self.named((), data, "generators", _generator_name)]
+        generators = [
+            self.generator(at, name, item) for at, name, item in self.named((), data, "generators", spec.generator_name)
+        ]
         commands = [self.command(at, name, item) for at, name, item in self.named((), data, "commands", _command)]
         plugin_api = self.plugin_api(("plugin_api",), data["plugin_api"]) if "plugin_api" in data else None
         checks, toolchain_env = self.checks(("checks",), self.subtable((), data, "checks"))
@@ -1028,14 +1055,6 @@ def _data_format(text: str) -> str:
     return text
 
 
-def _generator_name(text: str) -> str:
-    if not spec.BLUEPRINT_NAME.fullmatch(text):
-        raise SpecError(
-            f"{text!r} isn't a valid generator name: use lowercase letters, digits and hyphens, starting with a letter."
-        )
-    return text
-
-
 def _param_type(text: str) -> str:
     if text not in PARAM_TYPES:
         raise SpecError(f"should be one of {', '.join(PARAM_TYPES)}, not {text!r}.")
@@ -1153,6 +1172,11 @@ def _in(choices: tuple[str, ...]) -> Callable[[str], str]:
         return text
 
     return rule
+
+
+def _first(table: dict[str, Any]) -> object:
+    value = next(iter(table.values()), "value")
+    return value if not isinstance(value, dict) else "value"
 
 
 if __name__ == "__main__":

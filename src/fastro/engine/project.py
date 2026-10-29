@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import difflib
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -90,13 +89,7 @@ def load(file: str, text: str, catalog: Blueprint | None = None) -> Project:
 
 
 class _ProjectReader(Reader):
-    def unknown(self, path: KeyPath, key: str, keys: Collection[str], where: str = "") -> None:
-        if path:
-            super().unknown(path, key, keys, where)
-            return
-        close = difflib.get_close_matches(key, keys, n=1)
-        fix = f"Did you mean '{close[0]}'?" if close else f"The top-level keys are {', '.join(sorted(keys))}."
-        self.fail((key,), "isn't a top-level key of fastro.toml.", fix)
+    top = "fastro.toml"
 
     def project(self, data: dict[str, Any]) -> Project | None:
         self.table((), data, TOP_LEVEL)
@@ -136,25 +129,6 @@ class _ProjectReader(Reader):
         version = self.text(path, table, "version", spec.version)
         return Pin(name, version) if name is not None and version is not None else None
 
-    def repeats(self, path: KeyPath, value: object) -> None:
-        if isinstance(value, list):
-            for index, item in enumerate(value):
-                if item in value[:index]:
-                    self.fail((*path, index), f"{item!r} is listed twice.")
-
-    def options(self, path: KeyPath, table: dict[str, Any]) -> dict[tuple[str, str], str]:
-        options: dict[tuple[str, str], str] = {}
-        for key, value in table.items():
-            if isinstance(value, dict):
-                example = f'"{key}.{next(iter(value), "option")}" = "{_first(value)}"'
-                self.fail((*path, key), "should be a string, not a table.", f"Quote the whole key, such as {example}.")
-                continue
-            pair = self.parse((*path, key), key, _option_key)
-            chosen = self.string((*path, key), value, str)
-            if pair is not None and chosen is not None:
-                options[pair] = chosen
-        return options
-
     def app(self, path: KeyPath, table: dict[str, Any]) -> App:
         return App(
             requires=self.texts(path, table, "requires", spec.feature_name),
@@ -182,15 +156,3 @@ def _project_name(text: str) -> str:
             "starting and ending with a letter or digit, as PEP 508 says."
         )
     return text
-
-
-def _option_key(text: str) -> tuple[str, str]:
-    feature, dot, option = text.partition(".")
-    if not dot:
-        raise SpecError(f"{text!r} isn't a feature.option key, such as 'cache.backend'.")
-    return spec.feature_name(feature), spec.option_name(option)
-
-
-def _first(table: dict[str, Any]) -> object:
-    value = next(iter(table.values()), "value")
-    return value if not isinstance(value, dict) else "value"

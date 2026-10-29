@@ -65,13 +65,23 @@ def label(text: str, kind: str) -> str:
     return text
 
 
-def blueprint_name(text: str) -> str:
-    """``text``, if it's a valid blueprint name: lowercase letters, digits and hyphens, starting with a letter."""
+def blueprint_name(text: str, kind: str = "blueprint") -> str:
+    """``text``, if it's a valid blueprint, starter or generator name: lowercase letters, digits and hyphens, from a letter."""
     if not BLUEPRINT_NAME.fullmatch(text):
         raise SpecError(
-            f"{text!r} isn't a valid blueprint name: use lowercase letters, digits and hyphens, starting with a letter."
+            f"{text!r} isn't a valid {kind} name: use lowercase letters, digits and hyphens, starting with a letter."
         )
     return text
+
+
+def generator_name(text: str) -> str:
+    """``text``, if it's a valid generator name, which becomes the word after ``fastro make`` (spec 2.9)."""
+    return blueprint_name(text, "generator")
+
+
+def starter_name(text: str) -> str:
+    """``text``, if it's a valid starter name (spec 5a)."""
+    return blueprint_name(text, "starter")
 
 
 @dataclass(frozen=True)
@@ -198,3 +208,11 @@ def _subdir(text: str) -> bool:
     except SpecError:
         return False
     return True
+
+
+def option_key(text: str) -> tuple[str, str]:
+    """``text`` as the feature and option of a quoted ``"feature.option"`` key (spec 3)."""
+    feature, dot, option = text.partition(".")
+    if not dot:
+        raise SpecError(f"{text!r} isn't a feature.option key, such as 'cache.backend'.")
+    return feature_name(feature), option_name(option)
