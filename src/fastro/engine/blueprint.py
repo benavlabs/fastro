@@ -343,6 +343,10 @@ class CrossReferenceError(CatalogError):
     """A catalog whose keys all read cleanly, with names that refer to something it doesn't declare."""
 
 
+class ExtendingCatalogError(CatalogError):
+    """Key problems in a catalog that extends another, whose names wait for the merge with its base."""
+
+
 def load(file: str, text: str, tool: Version) -> Blueprint:
     """``text`` as the ``blueprint.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
 
@@ -355,7 +359,9 @@ def load(file: str, text: str, tool: Version) -> Blueprint:
         raise IncompatibleCatalog(reader.problems)
     blueprint = reader.blueprint(document.data)
     if reader.problems or blueprint is None:
-        raise CatalogError(reader.problems)
+        info = document.data.get("blueprint")
+        extends = isinstance(info, dict) and "extends" in info
+        raise (ExtendingCatalogError if extends else CatalogError)(reader.problems)
     if blueprint.info.extends is None and (found := references.problems(blueprint)):
         raise CrossReferenceError(found)
     return blueprint
@@ -1194,7 +1200,7 @@ def main(argv: list[str]) -> int:
     except CatalogError as error:
         for problem in error.problems:
             print(problem)
-        if not isinstance(error, IncompatibleCatalog | CrossReferenceError):
+        if not isinstance(error, IncompatibleCatalog | CrossReferenceError | ExtendingCatalogError):
             print("Names that refer to another section aren't checked until these are fixed.")
         count = len(error.problems)
         noun, them = ("problem", "it") if count == 1 else ("problems", "them")

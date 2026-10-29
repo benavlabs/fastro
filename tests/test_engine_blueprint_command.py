@@ -195,6 +195,27 @@ def test_problems_are_listed_with_a_count_and_exit_1(tmp_path: Path, capsys: pyt
     )
 
 
+@pytest.mark.parametrize(
+    ("version", "extra", "problem"),
+    [
+        ("0.21.0", "group = 1\n", "17: features.accounts.group: should be a string, not an integer."),
+        (">=0.21", "", "7: blueprint.extends.version: '>=0.21' isn't a PEP 440 version, such as '0.21.0'."),
+    ],
+)
+def test_key_problems_in_an_extending_catalog_come_without_the_note_about_names(
+    version: str, extra: str, problem: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    extends = f'extends = {{ name = "fastro", version = "{version}" }}\n\n[presets]'
+    repo = _repo(tmp_path, GOOD.replace("[presets]", extends) + extra)
+    file = repo / "blueprint.toml"
+
+    assert blueprint.main([str(repo)]) == 1
+    assert capsys.readouterr() == (
+        f"{file}:{problem}\n1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.\n",
+        "",
+    )
+
+
 def test_problems_with_names_come_without_the_note_about_names(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repo = _repo(tmp_path, GOOD + 'requires = ["acounts"]\n')
     file = repo / "blueprint.toml"
