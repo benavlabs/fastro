@@ -88,7 +88,6 @@ HEADER_WIDTH = 100
 PARAM_TYPES = ("bool", "choice", "cidr", "int", "str")
 MODULE_GENERATOR = "module"
 TEMPLATE_FIELDS = {"name": "sample_name", "name_dashed": "sample-name", "Name": "SampleName"}
-COMMAND_WORDS = re.compile(r"[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*")
 CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
 SCHEMA = 1
@@ -538,7 +537,7 @@ class Reader:
         generators = [
             self.generator(at, name, item) for at, name, item in self.named((), data, "generators", spec.generator_name)
         ]
-        commands = [self.command(at, name, item) for at, name, item in self.named((), data, "commands", _command)]
+        commands = [self.command(at, name, item) for at, name, item in self.named((), data, "commands", spec.command_words)]
         plugin_api = self.plugin_api(("plugin_api",), data["plugin_api"]) if "plugin_api" in data else None
         checks, toolchain_env = self.checks(("checks",), self.subtable((), data, "checks"))
         declared = [command for command in commands if command is not None] + [
@@ -849,7 +848,9 @@ class Reader:
         group = self.text(path, table, "group", str)
         options = [self.option(at, option, item) for at, option, item in self.named(path, table, "options", spec.option_name)]
         when = [self.when(at, item) for at, item in self.tables(path, table, "when")]
-        commands = [self.command(at, words, item) for at, words, item in self.named(path, table, "commands", _command)]
+        commands = [
+            self.command(at, words, item) for at, words, item in self.named(path, table, "commands", spec.command_words)
+        ]
         feature = Feature(
             name=name,
             summary=summary or "",
@@ -1105,15 +1106,6 @@ def _filled(parser: Callable[[str], object]) -> Callable[[str], str]:
         return text
 
     return rule
-
-
-def _command(text: str) -> str:
-    if not COMMAND_WORDS.fullmatch(text):
-        raise SpecError(
-            f"{text!r} isn't a command: write its words in lowercase letters, digits and hyphens, one space apart, "
-            "such as 'env validate'."
-        )
-    return text
 
 
 def _module(text: str) -> str:

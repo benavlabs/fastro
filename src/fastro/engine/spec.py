@@ -22,6 +22,7 @@ RESERVED = {
 CHOICE = re.compile(r"[^\s()=]+")
 GLOB = re.compile(r"[*?\[\]]")
 CHECK_CODE = re.compile(r"[A-Z]+[0-9]+")
+COMMAND_WORDS = re.compile(r"[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*")
 SOURCE = re.compile(
     r"/.*|\.\.?(/.*)?"
     r"|gh:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(@[^@\s]+)?"
@@ -95,11 +96,11 @@ class RepoPath:
         return self.text.endswith("/")
 
 
-def repo_path(text: str) -> RepoPath:
-    """``text`` as a :class:`RepoPath`, if it's POSIX, relative, and names files literally."""
+def repo_path(text: str, root: str = "the repo root") -> RepoPath:
+    """``text`` as a :class:`RepoPath`, if it's POSIX, relative to ``root``, and names files literally."""
 
     def refuse(why: str) -> SpecError:
-        return SpecError(f"{text!r} isn't a repo path: it's {why}. Write it relative to the repo root, with '/'.")
+        return SpecError(f"{text!r} isn't a repo path: it's {why}. Write it relative to {root}, with '/'.")
 
     if not text:
         raise refuse("empty")
@@ -216,3 +217,13 @@ def option_key(text: str) -> tuple[str, str]:
     if not dot:
         raise SpecError(f"{text!r} isn't a feature.option key, such as 'cache.backend'.")
     return feature_name(feature), option_name(option)
+
+
+def command_words(text: str) -> str:
+    """``text``, if it's the words of a declared command: lowercase words of letters, digits and hyphens (spec 2.9)."""
+    if not COMMAND_WORDS.fullmatch(text):
+        raise SpecError(
+            f"{text!r} isn't a command: write its words in lowercase letters, digits and hyphens, one space apart, "
+            "such as 'env validate'."
+        )
+    return text
