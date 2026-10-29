@@ -3,7 +3,8 @@
 import pytest
 from packaging.version import Version
 
-from fastro.engine.blueprint import IncompatibleCatalog
+from fastro.engine import project
+from fastro.engine.blueprint import CrossReferenceError, IncompatibleCatalog
 from fastro.engine.lock import Lock, LockedFile, LockedPlugin, Provenance, load
 from fastro.engine.problems import CatalogError
 from fastro.engine.spec import RepoPath
@@ -249,3 +250,77 @@ COMMIT_FIX = "  Add commit, the full git commit that source resolved to."
 )
 def test_a_key_that_breaks_its_rule_is_refused_at_its_line(text: str, problem: str) -> None:
     assert _problems(text) == [f"lock.toml:{problem}"]
+
+
+PROJECT = """\
+blueprint = { name = "fastro", version = "0.21.0" }
+features = []
+
+[project]
+name = "api"
+
+[plugins]
+stripe = "gh:acme/fastro-stripe"
+"""
+
+STRIPE = '[plugins.stripe]\nsource = "../stripe"\nversion = "1.2.0"\n'
+PIN_FIX = "  fastro writes both together, so one was edited by hand. Make them agree with .fastro/blueprint.toml."
+
+
+def _against(lock: str, fastro: str = PROJECT) -> CatalogError:
+    with pytest.raises(CatalogError) as caught:
+        load("lock.toml", lock, project.load("fastro.toml", fastro))
+    return caught.value
+
+
+def test_a_lock_that_agrees_with_fastro_toml_loads() -> None:
+    assert list(load("lock.toml", _text(tables=STRIPE), project.load("fastro.toml", PROJECT)).plugins) == ["stripe"]
+
+
+@pytest.mark.parametrize(
+    ("lock", "fastro", "problem"),
+    [
+        (
+            _text(tables=STRIPE).replace('name = "fastro"', 'name = "fastroai"'),
+            PROJECT,
+            "lock.toml:4: lock.blueprint.name: is 'fastroai', and fastro.toml pins 'fastro'.\n" + PIN_FIX,
+        ),
+        (
+            _text(tables=STRIPE).replace('version = "0.21.0"', 'version = "0.20.0"'),
+            PROJECT,
+            "lock.toml:4: lock.blueprint.version: is 0.20.0, and fastro.toml pins 0.21.0.\n" + PIN_FIX,
+        ),
+        (
+            _text(tables=STRIPE).replace('version = "0.21.0"', 'version = "0.20.0"'),
+            "source = true\n" + PROJECT,
+            "lock.toml:4: lock.blueprint.version: is 0.20.0, and fastro.toml pins 0.21.0.\n"
+            + PIN_FIX.replace(".fastro/blueprint.toml", "blueprint.toml"),
+        ),
+        (
+            _text(tables=STRIPE + '[plugins.audit]\nsource = "../audit"\nversion = "1.0.0"\n'),
+            PROJECT,
+            "lock.toml:9: plugins.audit: is locked, but fastro.toml's [plugins] doesn't list it.\n"
+            "  fastro writes both together: add audit back to fastro.toml's [plugins], or drop [plugins.audit] here.",
+        ),
+        (
+            _text(),
+            PROJECT,
+            "fastro.toml:8: plugins.stripe: is in fastro.toml's [plugins], but the lock has no [plugins.stripe].\n"
+            "  fastro writes both together: drop stripe from [plugins], or lock the version and commit it was built with.",
+        ),
+    ],
+)
+def test_a_lock_that_disagrees_with_fastro_toml_is_refused(lock: str, fastro: str, problem: str) -> None:
+    refused = _against(lock, fastro)
+
+    assert isinstance(refused, CrossReferenceError)
+    assert [str(found) for found in refused.problems] == [problem]
+
+
+def test_the_lock_is_checked_against_fastro_toml_only_once_its_keys_read_cleanly() -> None:
+    lock = _text(tables=STRIPE).replace('name = "fastro"', 'name = "fastroai"').replace("schema = 1", "schema = 0")
+
+    refused = _against(lock)
+
+    assert not isinstance(refused, CrossReferenceError)
+    assert [str(found) for found in refused.problems] == ["lock.toml:2: lock.schema: should be 1, not 0."]

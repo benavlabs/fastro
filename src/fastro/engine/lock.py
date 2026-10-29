@@ -5,15 +5,18 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from packaging.version import Version
 
 from fastro.engine import spec
-from fastro.engine.blueprint import UPGRADE, IncompatibleCatalog, Reader
+from fastro.engine.blueprint import UPGRADE, CrossReferenceError, IncompatibleCatalog, Reader
 from fastro.engine.positions import KeyPath
-from fastro.engine.problems import CatalogError, Document, read
+from fastro.engine.problems import CatalogError, Document, Problem, read
 from fastro.engine.spec import RepoPath, SpecError
+
+if TYPE_CHECKING:
+    from fastro.engine.project import Project
 
 TOP_LEVEL = ("lock", "plugins", "files")
 LOCK_KEYS = ("schema", "fastro", "blueprint", "features", "options", "starter")
@@ -71,10 +74,11 @@ class Lock:
     document: Document = field(compare=False, repr=False, kw_only=True)
 
 
-def load(file: str, text: str) -> Lock:
+def load(file: str, text: str, project: Project | None = None) -> Lock:
     """``text`` as the ``lock.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
 
-    A lock whose ``schema`` is newer than this fastro reads is refused with only that problem.
+    A lock whose ``schema`` is newer than this fastro reads is refused with only that problem. With ``project``, its
+    ``fastro.toml``, the pin and the plugins are checked against it once every key reads cleanly (spec 4).
     """
     document = read(file, text)
     reader = _LockReader(document)
@@ -85,7 +89,32 @@ def load(file: str, text: str) -> Lock:
     lock = reader.lock(document.data)
     if reader.problems or lock is None:
         raise CatalogError(reader.problems)
+    if project is not None and (found := _against(lock, project)):
+        raise CrossReferenceError(found)
     return lock
+
+
+def _against(lock: Lock, project: Project) -> list[Problem]:
+    """Where the lock and ``fastro.toml`` disagree: the pin, or a plugin one of them lists and the other doesn't."""
+    found: list[Problem] = []
+    pin, locked = project.blueprint, lock.blueprint
+    catalog = "blueprint.toml" if project.source else ".fastro/blueprint.toml"
+    fix = f"fastro writes both together, so one was edited by hand. Make them agree with {catalog}."
+    if locked.name != pin.name:
+        message = f"is {locked.name!r}, and fastro.toml pins {pin.name!r}."
+        found.append(lock.document.problem(("lock", "blueprint", "name"), message, fix))
+    if locked.version != pin.version:
+        message = f"is {locked.version}, and fastro.toml pins {pin.version}."
+        found.append(lock.document.problem(("lock", "blueprint", "version"), message, fix))
+    for name in lock.plugins.keys() - project.plugins.keys():
+        message = "is locked, but fastro.toml's [plugins] doesn't list it."
+        fix = f"fastro writes both together: add {name} back to fastro.toml's [plugins], or drop [plugins.{name}] here."
+        found.append(lock.document.problem(("plugins", name), message, fix))
+    for name in project.plugins.keys() - lock.plugins.keys():
+        message = f"is in fastro.toml's [plugins], but the lock has no [plugins.{name}]."
+        fix = f"fastro writes both together: drop {name} from [plugins], or lock the version and commit it was built with."
+        found.append(project.document.problem(("plugins", name), message, fix))
+    return found
 
 
 class _LockReader(Reader):
