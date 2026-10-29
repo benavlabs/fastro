@@ -11,7 +11,7 @@ from fastro.engine import conditions
 from fastro.engine.conditions import Condition
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import Problem, key_name
-from fastro.engine.spec import Ref, SpecError
+from fastro.engine.spec import Ref, RepoPath, SpecError
 
 if TYPE_CHECKING:
     from fastro.engine.blueprint import Blueprint, Contribution, Contributions, Slot
@@ -21,8 +21,9 @@ ONE_SLOT_KINDS = ("value", "reexport")
 
 
 def problems(catalog: Blueprint) -> list[Problem]:
-    """Every name in ``catalog`` that refers to something it doesn't declare, a ``requires`` cycle, or a point,
-    slot or contribution that doesn't fit the others (spec 2.3 and 2.6)."""
+    """Every name in ``catalog`` that refers to something it doesn't declare, a ``requires`` cycle, a point, slot
+    or contribution that doesn't fit the others (spec 2.3 and 2.6), a path declared twice (1.1), or a feature
+    command whose module sits outside its feature's paths (2.9)."""
     return list(_Checker(catalog).run())
 
 
@@ -63,6 +64,8 @@ class _Checker:
             yield from self.contributions(path, contributes)
         yield from self.owners(groups)
         yield from self.wiring()
+        yield from self.paths()
+        yield from self.commands()
         for name, members in catalog.presets.items():
             for index, member in enumerate(members):
                 yield from self.feature(("presets", name, index), member)
@@ -165,6 +168,57 @@ class _Checker:
             fix = f'Set cardinality = "many" in [points.{name}], or leave it out of register.contributes.'
             yield self.problem(path, message, fix)
 
+    def declarations(self) -> list[tuple[KeyPath, RepoPath]]:
+        """Every path a feature or one of its ``when`` tables declares, with where it's declared."""
+        return [
+            (at, path)
+            for feature in self.catalog.features
+            for at, path in [
+                *(((*feature.at, "paths", index), path) for index, path in enumerate(feature.paths)),
+                *(
+                    ((*feature.at, "when", number, "paths", index), path)
+                    for number, when in enumerate(feature.when)
+                    for index, path in enumerate(when.paths)
+                ),
+            ]
+        ]
+
+    def paths(self) -> Iterator[Problem]:
+        line = self.catalog.document.line
+        first: dict[str, KeyPath] = {}
+        for _, at, text in sorted((line(at), at, path.text) for at, path in self.declarations()):
+            if text in first:
+                fix = "A path belongs to one declaration: drop one of them."
+                yield self.problem(at, f"{text!r} is declared by {key_name(first[text])} already.", fix)
+            else:
+                first[text] = at
+
+    def commands(self) -> Iterator[Problem]:
+        root = self.catalog.info.python_root
+        declarations = self.declarations()
+        for feature in self.catalog.features:
+            own = {(*feature.at, "paths", index) for index in range(len(feature.paths))}
+            for command in feature.commands.values():
+                stem = f"{(command.cwd or root).text.removesuffix('/')}/{command.module.replace('.', '/')}"
+                owners = {target: _owner(declarations, target) for target in (f"{stem}.py", f"{stem}/")}
+                path = (*command.at, "module")
+                fix = f"Move it under the paths of [features.{feature.name}], or declare the command in [commands] instead."
+                taken = [(target, at) for target, at in owners.items() if at is not None and at not in own]
+                if taken:
+                    target, at = taken[0]
+                    message = (
+                        f"{command.module!r} is {target}, which is owned by {key_name(at)}, "
+                        "and a feature command's module must be owned by its feature's own paths."
+                    )
+                    yield self.problem(path, message, fix)
+                elif all(at is None for at in owners.values()):
+                    file, package = owners
+                    message = (
+                        f"{command.module!r} is {file}, or {package} as a package, "
+                        f"and neither is under the paths of feature {feature.name}."
+                    )
+                    yield self.problem(path, message, fix.replace("Move it under", "Add it to"))
+
     def plugin_point(self, path: KeyPath, name: str) -> Iterator[Problem]:
         if name not in self.points:
             yield from self.point(path, name)
@@ -227,6 +281,17 @@ class _Checker:
 def _fields(item: str) -> list[str]:
     """The fields an ``item`` format string uses, in order, each once."""
     return list(dict.fromkeys(field for _, field, _, _ in string.Formatter().parse(item) if field))
+
+
+def _owner(declarations: list[tuple[KeyPath, RepoPath]], target: str) -> KeyPath | None:
+    """Where the declaration that owns ``target`` is: the one with the longest path that takes it in (spec 1.1)."""
+    matches = [(len(path.text), at) for at, path in declarations if _covers(path, target)]
+    return max(matches, key=lambda match: match[0])[1] if matches else None
+
+
+def _covers(path: RepoPath, target: str) -> bool:
+    """Whether ``path``, a file or a subtree, takes in ``target``."""
+    return target.startswith(path.text) if path.subtree else target == path.text
 
 
 def _closest(name: str, names: Collection[str], listing: str) -> str:

@@ -99,7 +99,7 @@ SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
 COMMAND = "python -m fastro.engine.blueprint"
 NOT_YET: tuple[str, ...] = ()
-CROSS_REFERENCES_LEFT: tuple[str, ...] = ("where a feature command's module sits",)
+CROSS_REFERENCES_LEFT: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

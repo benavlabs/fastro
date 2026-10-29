@@ -87,10 +87,10 @@ def test_the_blueprint_section_is_checked() -> None:
         blueprint.load("blueprint.toml", MINIMAL + "fastro_probe = 1\n", metadata_version())
 
 
-def test_every_section_is_checked_now_so_module_places_and_shadowing_are_left() -> None:
+def test_every_section_and_cross_reference_is_checked_now_so_only_shadowing_is_left() -> None:
     assert blueprint.NOT_YET == ()
-    assert blueprint.CROSS_REFERENCES_LEFT == (MODULES,)
-    assert blueprint.not_checked() == f"Not checked yet: {MODULES} and {SHADOW}."
+    assert blueprint.CROSS_REFERENCES_LEFT == ()
+    assert blueprint.not_checked() == f"Not checked yet: {SHADOW}."
 
 
 def test_a_command_that_shadows_a_built_in_loads_so_the_line_says_so() -> None:

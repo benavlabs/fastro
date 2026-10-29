@@ -216,7 +216,8 @@ ACCOUNTS = '[features.accounts]\nsummary = "Users and login"\n'
 
 
 def test_a_feature_declares_its_own_commands_apart_from_the_top_level_ones() -> None:
-    body = ACCOUNTS + '[features.accounts.commands."accounts unlock"]\nmodule = "scripts.unlock_account"\nhelp = "Unlock."\n'
+    body = ACCOUNTS + 'paths = ["backend/scripts/unlock_account.py"]\n'
+    body += '[features.accounts.commands."accounts unlock"]\nmodule = "scripts.unlock_account"\nhelp = "Unlock."\n'
     catalog = _load(MINIMAL + body)
 
     assert catalog.features[0].commands == {

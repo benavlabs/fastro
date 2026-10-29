@@ -421,3 +421,125 @@ def test_a_catalog_without_points_says_so_in_the_fix() -> None:
         "blueprint.toml:9: features.accounts.contributes.routers: 'routers' isn't a declared point.\n"
         "  This catalog declares no points yet.",
     ]
+
+
+OWNED = """\
+[features.accounts]
+summary = "Users and login"
+paths = ["backend/src/modules/user/", "backend/scripts/unlock_account.py", "backend/scripts/accounts/"]
+
+[features.tiers]
+summary = "Tiers"
+paths = ["backend/src/modules/tier/"]
+"""
+
+UNLOCK = '[features.accounts.commands."accounts unlock"]\n'
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        OWNED + UNLOCK + 'module = "scripts.unlock_account"\n',
+        OWNED + UNLOCK + 'module = "scripts.accounts"\n',
+        OWNED + UNLOCK + 'module = "scripts.accounts.unlock"\n',
+        OWNED + UNLOCK + 'module = "user.cli"\ncwd = "backend/src/modules/"\n',
+        OWNED.replace("backend/", "server/") + UNLOCK + 'module = "scripts.unlock_account"\n',
+        OWNED + '[commands."db seed"]\nmodule = "scripts.seed"\n',
+        OWNED.replace('["backend/src/modules/tier/"]', '["backend/src/modules/user"]'),
+    ],
+)
+def test_paths_owned_once_and_commands_under_their_features_paths_load(body: str) -> None:
+    text = MINIMAL + body
+    if body.startswith(OWNED.replace("backend/", "server/")):
+        text = text.replace('requires_fastro = ">=0.1.0.dev0"\n', 'requires_fastro = ">=0.1.0.dev0"\npython_root = "server"\n')
+
+    assert [feature.name for feature in _load(text).features] == ["accounts", "tiers"]
+
+
+SCRIPTS = '[features.accounts]\nsummary = "Users and login"\npaths = ["backend/scripts/"]\n'
+UNLOCK_SCRIPT = '[features.accounts.commands."accounts unlock"]\nmodule = "scripts.unlock"\n'
+TIERS = '[features.tiers]\nsummary = "Tiers"\n'
+
+
+def test_a_command_whose_module_its_feature_owns_through_a_subtree_loads() -> None:
+    assert _load(MINIMAL + SCRIPTS + UNLOCK_SCRIPT).features[0].paths[0].text == "backend/scripts/"
+
+
+@pytest.mark.parametrize(
+    ("body", "target", "owner"),
+    [
+        (
+            SCRIPTS + '[[features.accounts.when]]\nif = "accounts"\npaths = ["backend/scripts/unlock.py"]\n',
+            "backend/scripts/unlock.py",
+            "features.accounts.when[0].paths[0]",
+        ),
+        (SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock.py"]\n', "backend/scripts/unlock.py", "features.tiers.paths[0]"),
+        (SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock/"]\n', "backend/scripts/unlock/", "features.tiers.paths[0]"),
+    ],
+)
+def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, target: str, owner: str) -> None:
+    assert _problems(MINIMAL + body + UNLOCK_SCRIPT) == [
+        f"blueprint.toml:13: features.accounts.commands.\"accounts unlock\".module: 'scripts.unlock' is {target}, "
+        f"which is owned by {owner}, and a feature command's module must be owned by its feature's own paths.\n"
+        "  Move it under the paths of [features.accounts], or declare the command in [commands] instead."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("body", "problem"),
+    [
+        (
+            OWNED.replace('["backend/src/modules/tier/"]', '["backend/src/modules/user/"]'),
+            "12: features.tiers.paths[0]: 'backend/src/modules/user/' is declared by features.accounts.paths[0] already.\n"
+            "  A path belongs to one declaration: drop one of them.",
+        ),
+        (
+            OWNED + '[[features.tiers.when]]\nif = "accounts"\npaths = ["backend/src/modules/tier/"]\n',
+            "15: features.tiers.when[0].paths[0]: 'backend/src/modules/tier/' is declared by features.tiers.paths[0] "
+            "already.\n  A path belongs to one declaration: drop one of them.",
+        ),
+        (
+            OWNED.replace('["backend/src/modules/tier/"]', '["backend/src/modules/tier/", "backend/src/modules/tier/"]'),
+            "12: features.tiers.paths[1]: 'backend/src/modules/tier/' is declared by features.tiers.paths[0] already.\n"
+            "  A path belongs to one declaration: drop one of them.",
+        ),
+        (
+            '[[features.tiers.when]]\nif = "accounts"\npaths = ["backend/src/modules/tier/"]\n' + OWNED,
+            "15: features.tiers.paths[0]: 'backend/src/modules/tier/' is declared by features.tiers.when[0].paths[0] "
+            "already.\n  A path belongs to one declaration: drop one of them.",
+        ),
+        (
+            OWNED.replace('"backend/scripts/accounts/"]', '"backend/scripts/accounts/", "backend/scripts/seed"]')
+            + UNLOCK
+            + 'module = "scripts.seed"\n',
+            "14: features.accounts.commands.\"accounts unlock\".module: 'scripts.seed' is backend/scripts/seed.py, "
+            "or backend/scripts/seed/ as a package, and neither is under the paths of feature accounts.\n"
+            "  Add it to the paths of [features.accounts], or declare the command in [commands] instead.",
+        ),
+        (
+            OWNED + UNLOCK + 'module = "scripts.seed"\n',
+            "14: features.accounts.commands.\"accounts unlock\".module: 'scripts.seed' is backend/scripts/seed.py, "
+            "or backend/scripts/seed/ as a package, and neither is under the paths of feature accounts.\n"
+            "  Add it to the paths of [features.accounts], or declare the command in [commands] instead.",
+        ),
+        (
+            OWNED + UNLOCK + 'module = "src.modules.tier.cli"\n',
+            "14: features.accounts.commands.\"accounts unlock\".module: 'src.modules.tier.cli' is "
+            "backend/src/modules/tier/cli.py, which is owned by features.tiers.paths[0], and a feature command's "
+            "module must be owned by its feature's own paths.\n"
+            "  Move it under the paths of [features.accounts], or declare the command in [commands] instead.",
+        ),
+        (
+            OWNED
+            + '[[features.accounts.when]]\nif = "tiers"\npaths = ["backend/scripts/promote.py"]\n'
+            + UNLOCK
+            + 'module = "scripts.promote"\n',
+            "17: features.accounts.commands.\"accounts unlock\".module: 'scripts.promote' is backend/scripts/promote.py, "
+            "which is owned by features.accounts.when[0].paths[0], and a feature command's module must be owned by "
+            "its feature's own paths.\n"
+            "  Move it under the paths of [features.accounts], or declare the command in [commands] instead.",
+        ),
+    ],
+)
+def test_a_path_owned_twice_or_a_command_outside_its_features_paths_is_refused(body: str, problem: str) -> None:
+    assert _problems(MINIMAL + body) == [f"blueprint.toml:{problem}"]
