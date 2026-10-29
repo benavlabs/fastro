@@ -166,14 +166,25 @@ def test_a_bad_byte_after_a_byte_order_mark_is_reported_at_its_own_line(
     assert capsys.readouterr().out.startswith(f"{repo / 'blueprint.toml'}:2: isn't UTF-8 text.\n")
 
 
-def test_a_file_it_cant_read_exits_3(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def _unreadable(file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    read_bytes = Path.read_bytes
+
+    def refused(self: Path) -> bytes:
+        if self == file:
+            raise PermissionError(13, "Permission denied", str(self))
+        return read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", refused)
+
+
+def test_a_file_it_cant_read_exits_3(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = _repo(tmp_path, GOOD)
     file = repo / "blueprint.toml"
-    file.chmod(0)
-    try:
-        code = catalog_check.main([str(repo)])
-    finally:
-        file.chmod(0o644)
+    _unreadable(file, monkeypatch)
+
+    code = catalog_check.main([str(repo)])
 
     assert code == 3
     assert capsys.readouterr() == (
@@ -313,3 +324,140 @@ def test_it_exits_with_its_code_when_run_as_python_m(tmp_path: Path) -> None:
     run = subprocess.run([sys.executable, "-m", "fastro.engine.blueprint", str(tmp_path)], capture_output=True, text=True)
 
     assert run.returncode == 2
+
+
+PROJECT = """\
+blueprint = { name = "mini", version = "0.1.0" }
+source = true
+features = ["accounts"]
+
+[project]
+name = "mini-app"
+"""
+
+
+def _with_project(tmp_path: Path, project: str | bytes, catalog: str = GOOD) -> Path:
+    repo = _repo(tmp_path, catalog)
+    file = repo / "fastro.toml"
+    if isinstance(project, bytes):
+        file.write_bytes(project)
+    else:
+        file.write_text(project)
+    return repo
+
+
+def test_a_fastro_toml_next_to_the_catalog_is_checked_against_it(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _with_project(tmp_path, PROJECT)
+
+    assert catalog_check.main([str(repo)]) == 0
+    assert capsys.readouterr() == (
+        f"ok: {repo / 'blueprint.toml'} is mini 0.1.0, with 1 feature, 1 point and 1 preset.\n"
+        f"ok: {repo / 'fastro.toml'} is mini-app, with 1 feature, for mini 0.1.0.\n"
+        f"Not checked yet: {SHADOW}.\n",
+        "",
+    )
+
+
+def test_the_fastro_toml_next_to_a_catalog_file_given_by_name_is_checked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path, PROJECT.replace('["accounts"]', "[]"))
+
+    assert catalog_check.main([str(repo / "blueprint.toml")]) == 0
+    assert (
+        capsys.readouterr().out.splitlines()[1] == f"ok: {repo / 'fastro.toml'} is mini-app, with 0 features, for mini 0.1.0."
+    )
+
+
+def test_key_problems_in_fastro_toml_are_listed_with_their_own_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path, PROJECT.replace('"mini-app"', '"-app"'))
+    file = repo / "fastro.toml"
+
+    assert catalog_check.main([str(repo)]) == 1
+    assert capsys.readouterr() == (
+        f"ok: {repo / 'blueprint.toml'} is mini 0.1.0, with 1 feature, 1 point and 1 preset.\n"
+        f"{file}:6: project.name: '-app' isn't a project name: use letters, digits, '.', '_' and '-', "
+        "starting and ending with a letter or digit, as PEP 508 says.\n"
+        "Names that refer to the catalog aren't checked until these are fixed.\n"
+        f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.\n",
+        "",
+    )
+
+
+def test_names_in_fastro_toml_that_the_catalog_doesnt_declare_come_without_the_note(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path, PROJECT.replace('"0.1.0"', '"0.2.0"'))
+    file = repo / "fastro.toml"
+
+    assert catalog_check.main([str(repo)]) == 1
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        f"{file}:1: blueprint.version: is 0.2.0, and the catalog is 0.1.0.",
+        "  Set blueprint.version in fastro.toml to 0.1.0, the catalog's version.",
+        f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.",
+    ]
+
+
+def test_with_catalog_problems_the_fastro_toml_waits_for_them(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _with_project(tmp_path, PROJECT, GOOD + "group = 1\n")
+    file = repo / "blueprint.toml"
+
+    assert catalog_check.main([str(repo)]) == 1
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        "Names that refer to another section aren't checked until these are fixed.",
+        f"{repo / 'fastro.toml'} is checked once {file} has no problems.",
+        f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.",
+    ]
+
+
+def test_a_fastro_toml_that_isnt_utf_8_is_a_problem(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _with_project(tmp_path, PROJECT.encode() + b"# \xff\n")
+
+    assert catalog_check.main([str(repo)]) == 1
+    assert capsys.readouterr().out.splitlines()[1] == f"{repo / 'fastro.toml'}:7: isn't UTF-8 text."
+
+
+def test_a_fastro_toml_it_cant_read_exits_3(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _with_project(tmp_path, PROJECT)
+    file = repo / "fastro.toml"
+    _unreadable(file, monkeypatch)
+
+    code = catalog_check.main([str(repo)])
+
+    assert code == 3
+    assert capsys.readouterr().err == (
+        f"error: can't read {file}: Permission denied. Check its permissions, then run "
+        f"python -m fastro.engine.blueprint {repo} again.\n"
+    )
+
+
+def test_against_an_extending_catalog_key_problems_in_fastro_toml_come_without_the_note(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    catalog = GOOD.replace("[presets]", 'extends = { name = "fastro", version = "0.21.0" }\n\n[presets]')
+    repo = _with_project(tmp_path, PROJECT.replace('"mini-app"', '"-app"'), catalog)
+    file = repo / "fastro.toml"
+
+    assert catalog_check.main([str(repo)]) == 1
+    assert capsys.readouterr().out.splitlines()[2:] == [
+        f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.",
+    ]
+
+
+@pytest.mark.parametrize("source", ["source = false\n", ""])
+def test_a_fastro_toml_without_source_true_isnt_checked_against_this_catalog(
+    source: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path, PROJECT.replace("source = true\n", source).replace('"0.1.0"', '"9.9.9"'))
+    file, catalog = repo / "fastro.toml", repo / "blueprint.toml"
+
+    assert catalog_check.main([str(repo)]) == 0
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        f"{file} doesn't set source = true, so it pins .fastro/blueprint.toml, not {catalog}, "
+        "and this command doesn't check it there. A blueprint repo's fastro.toml sets source = true.",
+        f"Not checked yet: {SHADOW}.",
+    ]
