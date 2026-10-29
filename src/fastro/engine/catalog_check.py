@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import sys
+import tomllib
 from importlib import metadata
 from pathlib import Path
 
@@ -79,12 +80,20 @@ def _project(file: Path, catalog: Blueprint, path: Path) -> int:
     except OSError as error:
         return _unreadable(file, error, path)
     except CatalogError as error:
-        waiting = not isinstance(error, CrossReferenceError) and catalog.info.extends is None
+        waiting = not isinstance(error, CrossReferenceError) and catalog.info.extends is None and _sets_source(file)
         _report(error, file, path, ["Names that refer to the catalog aren't checked until these are fixed."] if waiting else [])
         return 1
     pin = loaded.blueprint
     print(f"ok: {file} is {loaded.name}, with {_counted(len(loaded.features), 'feature')}, for {pin.name} {pin.version}.")
     return 0
+
+
+def _sets_source(file: Path) -> bool:
+    """Whether ``file`` reads as TOML that sets ``source = true``, even when its other keys have problems."""
+    try:
+        return tomllib.loads(_text(file)).get("source") is True
+    except (CatalogError, tomllib.TOMLDecodeError):
+        return False
 
 
 def _report(error: CatalogError, file: Path, path: Path, notes: list[str]) -> None:

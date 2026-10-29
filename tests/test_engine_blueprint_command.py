@@ -461,3 +461,23 @@ def test_a_fastro_toml_without_source_true_isnt_checked_against_this_catalog(
         "and this command doesn't check it there. A blueprint repo's fastro.toml sets source = true.",
         f"Not checked yet: {SHADOW}.",
     ]
+
+
+@pytest.mark.parametrize(
+    "project",
+    [
+        PROJECT.replace("source = true\n", ""),
+        PROJECT.replace("source = true", "source = false"),
+        "source = true\nfeatures = [\n",
+    ],
+)
+def test_key_problems_in_a_fastro_toml_that_doesnt_set_source_come_without_the_note(
+    project: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path, project.replace('"mini-app"', '"-app"'))
+    file = repo / "fastro.toml"
+
+    assert catalog_check.main([str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert out.endswith(f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.\n")
+    assert "Names that refer to the catalog" not in out
