@@ -46,10 +46,11 @@ class _Checker:
         for feature in catalog.features:
             for index, name in enumerate(feature.requires):
                 yield from self.feature((*feature.at, "requires", index), name)
-            groups.append(((*feature.at, "contributes"), feature.name, feature.contributes))
+            owner = f"feature {feature.name}"
+            groups.append(((*feature.at, "contributes"), owner, feature.contributes))
             for index, when in enumerate(feature.when):
                 yield from self.condition((*feature.at, "when", index, "if"), when.condition)
-                groups.append(((*feature.at, "when", index, "contributes"), feature.name, when.contributes))
+                groups.append(((*feature.at, "when", index, "contributes"), owner, when.contributes))
         yield from self.cycles()
         groups.append((("core", "contributes"), "[core]", catalog.core))
         for name, generator in catalog.generators.items():

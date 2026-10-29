@@ -350,7 +350,7 @@ def test_contributions_that_fit_their_slots_load() -> None:
         ),
         (
             WIRED + '[features.accounts.contributes]\ncache = ["m:a"]\n[features.taskiq.contributes]\ncache = ["m:b"]\n',
-            "62: features.taskiq.contributes.cache: 'cache' is a one point, and accounts contributes to it already.",
+            "62: features.taskiq.contributes.cache: 'cache' is a one point, and feature accounts contributes to it already.",
         ),
         (
             WIRED
