@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import string
 from collections.abc import Collection, Iterator
+from pathlib import PurePath
 from typing import TYPE_CHECKING
 
 from fastro.engine import conditions
@@ -49,6 +50,10 @@ class _Checker:
 
     def problem(self, path: KeyPath, message: str, fix: str) -> Problem:
         return self.catalog.document.problem(path, message, fix)
+
+    def place(self, at: KeyPath) -> str:
+        """How a message names the catalog key at ``at``."""
+        return key_name(at)
 
     def run(self) -> Iterator[Problem]:
         catalog = self.catalog
@@ -131,7 +136,7 @@ class _Checker:
         given = BUILT_IN_FIELDS | set(slot.defaults) | set(item.fields)
         for name in _fields(slot.item):
             if name not in given:
-                message = f"doesn't give {name}, which the item of {key_name(slot.at)} uses."
+                message = f"doesn't give {name}, which the item of {self.place(slot.at)} uses."
                 yield self.problem(
                     path, message, f"Add {name} to this contribution, or a default for it in that slot's defaults."
                 )
@@ -321,6 +326,9 @@ class _ProjectChecker(_Checker):
     def problem(self, path: KeyPath, message: str, fix: str) -> Problem:
         return self.project.document.problem(path, message, fix)
 
+    def place(self, at: KeyPath) -> str:
+        return f"{PurePath(self.catalog.document.file).name}'s {key_name(at)}"
+
     def run(self) -> Iterator[Problem]:
         pin, info, project = self.project.blueprint, self.catalog.info, self.project
         if pin.name != info.name:
@@ -345,7 +353,7 @@ class _ProjectChecker(_Checker):
         yield from self.app_paths()
 
     def app_paths(self) -> Iterator[Problem]:
-        first = {path.text: f"{key_name(at)} in the catalog" for at, path in self.declarations()}
+        first = {path.text: self.place(at) for at, path in self.declarations()}
         for index, path in enumerate(self.project.app.paths):
             at = ("app", "paths", index)
             if path.text in first:

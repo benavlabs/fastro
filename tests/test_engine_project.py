@@ -359,13 +359,27 @@ def test_a_project_whose_names_its_catalog_declares_loads() -> None:
         ),
         (
             _for_mini(tables='[app]\npaths = ["backend/src/modules/user/"]\n'),
-            "6: app.paths[0]: 'backend/src/modules/user/' is declared by features.accounts.paths[0] in the catalog "
+            "6: app.paths[0]: 'backend/src/modules/user/' is declared by blueprint.toml's features.accounts.paths[0] "
             "already.\n  A path belongs to one declaration: drop one of them.",
         ),
     ],
 )
 def test_a_name_its_catalog_doesnt_declare_is_refused_at_its_line(text: str, problem: str) -> None:
     assert _checked(text) == [f"fastro.toml:{problem}"]
+
+
+def test_a_catalog_key_in_a_message_about_fastro_toml_names_the_catalog_file() -> None:
+    catalog = _catalog(
+        CATALOG.replace(
+            'annotation = "tuple[object, ...]"', 'annotation = "tuple[object, ...]"\nitem = "Mount({name}, {prefix})"'
+        )
+    )
+    text = _for_mini(tables='[app]\ncontributes = { routers = ["src.app:r"] }\n')
+
+    assert _checked(text, catalog) == [
+        "fastro.toml:6: app.contributes.routers[0]: doesn't give prefix, which the item of blueprint.toml's "
+        "wiring[0].slots[0] uses.\n  Add prefix to this contribution, or a default for it in that slot's defaults."
+    ]
 
 
 def test_names_are_checked_only_once_every_key_reads_cleanly() -> None:
