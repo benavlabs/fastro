@@ -55,7 +55,10 @@ class _Checker:
         groups.append((("core", "contributes"), "[core]", catalog.core))
         for name, generator in catalog.generators.items():
             if generator.register is not None:
-                groups.append((("generators", name, "register", "contributes"), "", generator.register.parsed))
+                at: KeyPath = ("generators", name, "register", "contributes")
+                groups.append((at, "", generator.register.parsed))
+                for point in generator.register.parsed:
+                    yield from self.register_point((*at, point), point)
         for path, _, contributes in groups:
             yield from self.contributions(path, contributes)
         yield from self.owners(groups)
@@ -155,6 +158,12 @@ class _Checker:
             if name not in seen:
                 fix = f"Add a slot with point = {name!r} to a [[wiring]] file, or drop the point."
                 yield self.problem(point.at, "isn't collected by any slot.", fix)
+
+    def register_point(self, path: KeyPath, name: str) -> Iterator[Problem]:
+        if name in self.points and self.points[name].cardinality != "many":
+            message = f"{name!r} is a one point, and register contributes only to many points."
+            fix = f'Set cardinality = "many" in [points.{name}], or leave it out of register.contributes.'
+            yield self.problem(path, message, fix)
 
     def plugin_point(self, path: KeyPath, name: str) -> Iterator[Problem]:
         if name not in self.points:

@@ -291,7 +291,7 @@ def test_contributions_that_fit_their_slots_load() -> None:
         + '[[features.taskiq.when]]\nif = "accounts"\ncontributes = { routers = [{ ref = "m:t", prefix = "/t" }] }\n'
         + '[generators.module]\ntemplates = "t"\n'
         + '[generators.module.register]\ncontributes = { routers = [{ ref = "src.{name}:r", prefix = "/{name_dashed}" }], '
-        + 'cache = ["src.{name}:cache"] }\n'
+        + 'labels = ["{Name}"] }\n'
         + '[plugin_api]\nversion = 1\npoints = ["routers", "labels"]\n'
     )
 
@@ -385,6 +385,13 @@ def test_contributions_that_fit_their_slots_load() -> None:
             WIRED + '[generators.module]\ntemplates = "t"\n[generators.module.register]\ncontributes = { routers = ["m:r"] }\n',
             "62: generators.module.register.contributes.routers[0]: doesn't give prefix, which the item of "
             "wiring[0].slots[0] uses.\n  Add prefix to this contribution, or a default for it in that slot's defaults.",
+        ),
+        (
+            WIRED
+            + '[generators.module]\ntemplates = "t"\n'
+            + '[generators.module.register]\ncontributes = { cache = ["src.{name}:c"] }\n',
+            "62: generators.module.register.contributes.cache: 'cache' is a one point, and register contributes only to many "
+            'points.\n  Set cardinality = "many" in [points.cache], or leave it out of register.contributes.',
         ),
         (
             WIRED + '[plugin_api]\nversion = 1\npoints = ["routrs"]\n',
