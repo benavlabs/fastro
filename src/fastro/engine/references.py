@@ -202,7 +202,7 @@ class _Checker:
                 stem = f"{(command.cwd or root).text.removesuffix('/')}/{command.module.replace('.', '/')}"
                 owners = {target: _owner(declarations, target) for target in (f"{stem}.py", f"{stem}/")}
                 path = (*command.at, "module")
-                fix = f"Move it under the paths of [features.{feature.name}], or declare the command in [commands] instead."
+                instead = ", or declare the command in [commands] instead."
                 taken = [(target, at) for target, at in owners.items() if at is not None and at not in own]
                 if taken:
                     target, at = taken[0]
@@ -210,14 +210,18 @@ class _Checker:
                         f"{command.module!r} is {target}, which is owned by {key_name(at)}, "
                         "and a feature command's module must be owned by its feature's own paths."
                     )
-                    yield self.problem(path, message, fix)
+                    if at[: len(feature.at)] == feature.at:
+                        fix = f"Move it out of {key_name(at)}"
+                    else:
+                        fix = f"Give [features.{feature.name}] a path that owns it, longer than {key_name(at)}"
+                    yield self.problem(path, message, fix + instead)
                 elif all(at is None for at in owners.values()):
                     file, package = owners
                     message = (
                         f"{command.module!r} is {file}, or {package} as a package, "
                         f"and neither is under the paths of feature {feature.name}."
                     )
-                    yield self.problem(path, message, fix.replace("Move it under", "Add it to"))
+                    yield self.problem(path, message, f"Add it to the paths of [features.{feature.name}]" + instead)
 
     def plugin_point(self, path: KeyPath, name: str) -> Iterator[Problem]:
         if name not in self.points:

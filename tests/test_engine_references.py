@@ -465,23 +465,37 @@ def test_a_command_whose_module_its_feature_owns_through_a_subtree_loads() -> No
     assert _load(MINIMAL + SCRIPTS + UNLOCK_SCRIPT).features[0].paths[0].text == "backend/scripts/"
 
 
+ANOTHER = "Give [features.accounts] a path that owns it, longer than features.tiers.paths[0]"
+
+
 @pytest.mark.parametrize(
-    ("body", "target", "owner"),
+    ("body", "target", "owner", "fix"),
     [
         (
             SCRIPTS + '[[features.accounts.when]]\nif = "accounts"\npaths = ["backend/scripts/unlock.py"]\n',
             "backend/scripts/unlock.py",
             "features.accounts.when[0].paths[0]",
+            "Move it out of features.accounts.when[0].paths[0]",
         ),
-        (SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock.py"]\n', "backend/scripts/unlock.py", "features.tiers.paths[0]"),
-        (SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock/"]\n', "backend/scripts/unlock/", "features.tiers.paths[0]"),
+        (
+            SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock.py"]\n',
+            "backend/scripts/unlock.py",
+            "features.tiers.paths[0]",
+            ANOTHER,
+        ),
+        (
+            SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock/"]\n',
+            "backend/scripts/unlock/",
+            "features.tiers.paths[0]",
+            ANOTHER,
+        ),
     ],
 )
-def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, target: str, owner: str) -> None:
+def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, target: str, owner: str, fix: str) -> None:
     assert _problems(MINIMAL + body + UNLOCK_SCRIPT) == [
         f"blueprint.toml:13: features.accounts.commands.\"accounts unlock\".module: 'scripts.unlock' is {target}, "
         f"which is owned by {owner}, and a feature command's module must be owned by its feature's own paths.\n"
-        "  Move it under the paths of [features.accounts], or declare the command in [commands] instead."
+        f"  {fix}, or declare the command in [commands] instead."
     ]
 
 
@@ -527,7 +541,8 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
             "14: features.accounts.commands.\"accounts unlock\".module: 'src.modules.tier.cli' is "
             "backend/src/modules/tier/cli.py, which is owned by features.tiers.paths[0], and a feature command's "
             "module must be owned by its feature's own paths.\n"
-            "  Move it under the paths of [features.accounts], or declare the command in [commands] instead.",
+            "  Give [features.accounts] a path that owns it, longer than features.tiers.paths[0], "
+            "or declare the command in [commands] instead.",
         ),
         (
             OWNED
@@ -537,7 +552,7 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
             "17: features.accounts.commands.\"accounts unlock\".module: 'scripts.promote' is backend/scripts/promote.py, "
             "which is owned by features.accounts.when[0].paths[0], and a feature command's module must be owned by "
             "its feature's own paths.\n"
-            "  Move it under the paths of [features.accounts], or declare the command in [commands] instead.",
+            "  Move it out of features.accounts.when[0].paths[0], or declare the command in [commands] instead.",
         ),
     ],
 )
