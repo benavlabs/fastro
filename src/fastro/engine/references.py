@@ -15,6 +15,7 @@ from fastro.engine.spec import Ref, RepoPath, SpecError
 
 if TYPE_CHECKING:
     from fastro.engine.blueprint import Blueprint, Contribution, Contributions, Slot
+    from fastro.engine.project import Project
 
 BUILT_IN_FIELDS = frozenset({"name", "ref", "module", "attr", "value"})
 ONE_SLOT_KINDS = ("value", "reexport")
@@ -25,6 +26,14 @@ def problems(catalog: Blueprint) -> list[Problem]:
     or contribution that doesn't fit the others (spec 2.3 and 2.6), a path declared twice (1.1), or a feature
     command whose module sits outside its feature's paths (2.9)."""
     return list(_Checker(catalog).run())
+
+
+def project_problems(project: Project, catalog: Blueprint) -> list[Problem]:
+    """Every name in ``project`` that its ``catalog`` doesn't declare, and a pin that doesn't match it (spec 3).
+
+    Against a catalog that extends another, only the pin is checked: its names wait for the merge with its base.
+    """
+    return list(_ProjectChecker(catalog, project).run())
 
 
 class _Checker:
@@ -302,3 +311,45 @@ def _closest(name: str, names: Collection[str], listing: str) -> str:
     """A fix suggesting the name closest to ``name``, or else ``listing`` filled with every name."""
     close = difflib.get_close_matches(name, names, n=1)
     return f"Did you mean {close[0]!r}?" if close else listing.format(", ".join(names))
+
+
+class _ProjectChecker(_Checker):
+    def __init__(self, catalog: Blueprint, project: Project) -> None:
+        super().__init__(catalog)
+        self.project = project
+
+    def problem(self, path: KeyPath, message: str, fix: str) -> Problem:
+        return self.project.document.problem(path, message, fix)
+
+    def run(self) -> Iterator[Problem]:
+        pin, info, project = self.project.blueprint, self.catalog.info, self.project
+        if pin.name != info.name:
+            fix = f"Set blueprint.name in fastro.toml to {info.name!r}, the catalog's name."
+            yield self.problem(("blueprint", "name"), f"is {pin.name!r}, and the catalog is {info.name!r}.", fix)
+        if pin.version != info.version:
+            fix = f"Set blueprint.version in fastro.toml to {info.version}, the catalog's version."
+            yield self.problem(("blueprint", "version"), f"is {pin.version}, and the catalog is {info.version}.", fix)
+        if info.extends is not None:
+            return
+        for index, name in enumerate(project.features):
+            yield from self.feature(("features", index), name)
+        for index, name in enumerate(project.app.requires):
+            yield from self.feature(("app", "requires", index), name)
+        for (feature, option), value in project.options.items():
+            path = ("options", f"{feature}.{option}")
+            if feature in self.features:
+                yield from self.option(path, conditions.Option(feature, option, value))
+            else:
+                yield from self.feature(path, feature)
+        yield from self.contributions(("app", "contributes"), project.app.contributes)
+        yield from self.app_paths()
+
+    def app_paths(self) -> Iterator[Problem]:
+        first = {path.text: f"{key_name(at)} in the catalog" for at, path in self.declarations()}
+        for index, path in enumerate(self.project.app.paths):
+            at = ("app", "paths", index)
+            if path.text in first:
+                fix = "A path belongs to one declaration: drop one of them."
+                yield self.problem(at, f"{path.text!r} is declared by {first[path.text]} already.", fix)
+            else:
+                first[path.text] = key_name(at)

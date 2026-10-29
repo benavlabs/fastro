@@ -11,8 +11,8 @@ from typing import Any
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from fastro.engine import spec
-from fastro.engine.blueprint import Contributions, Reader
+from fastro.engine import references, spec
+from fastro.engine.blueprint import Blueprint, Contributions, CrossReferenceError, Reader
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, read
 from fastro.engine.spec import RepoPath, SpecError
@@ -74,13 +74,18 @@ class Project:
         return re.sub(r"[-_.]+", "-", self.name).lower()
 
 
-def load(file: str, text: str) -> Project:
-    """``text`` as the ``fastro.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it."""
+def load(file: str, text: str, catalog: Blueprint | None = None) -> Project:
+    """``text`` as the ``fastro.toml`` named ``file``, or a :class:`CatalogError` naming every problem in it.
+
+    With ``catalog``, the names in it are checked against that catalog once every key reads cleanly (spec 3).
+    """
     document = read(file, text)
     reader = _ProjectReader(document)
     project = reader.project(document.data)
     if reader.problems or project is None:
         raise CatalogError(reader.problems)
+    if catalog is not None and (found := references.project_problems(project, catalog)):
+        raise CrossReferenceError(found)
     return project
 
 

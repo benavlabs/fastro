@@ -4,7 +4,8 @@ import pytest
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from fastro.engine.blueprint import Contribution
+from fastro.engine import blueprint
+from fastro.engine.blueprint import Blueprint, Contribution
 from fastro.engine.problems import CatalogError
 from fastro.engine.project import App, Pin, Plugin, Project, load
 from fastro.engine.spec import RepoPath
@@ -233,3 +234,151 @@ def test_the_boilerplates_own_fastro_toml_loads() -> None:
 )
 def test_a_key_that_breaks_its_rule_is_refused_at_its_line(text: str, problem: str) -> None:
     assert _problems(text) == [f"fastro.toml:{problem}"]
+
+
+CATALOG = """\
+[blueprint]
+name = "mini"
+version = "0.1.0"
+schema = 1
+requires_fastro = ">=0.1.0.dev0"
+
+[points.routers]
+cardinality = "many"
+
+[points.cache]
+cardinality = "one"
+
+[features.accounts]
+summary = "Users and login"
+paths = ["backend/src/modules/user/"]
+
+[features.taskiq]
+summary = "Background tasks"
+
+[features.taskiq.options.broker]
+choices = ["redis", "rabbitmq"]
+default = "redis"
+
+[[wiring]]
+path = "backend/src/wiring.py"
+doc = "Wiring."
+
+[[wiring.slots]]
+kind = "tuple"
+name = "ROUTERS"
+point = "routers"
+annotation = "tuple[object, ...]"
+
+[[wiring.slots]]
+kind = "value"
+name = "CACHE"
+point = "cache"
+annotation = "object"
+fallback = "None"
+"""
+
+
+def _catalog(text: str = CATALOG) -> Blueprint:
+    return blueprint.load("blueprint.toml", text, Version("0.1.0"))
+
+
+def _for_mini(top: str = "", tables: str = "") -> str:
+    return _text(top, tables).replace('name = "fastro", version = "0.21.0"', 'name = "mini", version = "0.1.0"')
+
+
+def _refused(text: str, catalog: Blueprint | None = None) -> CatalogError:
+    with pytest.raises(CatalogError) as caught:
+        load("fastro.toml", text, catalog or _catalog())
+    return caught.value
+
+
+def _checked(text: str, catalog: Blueprint | None = None) -> list[str]:
+    return [str(problem) for problem in _refused(text, catalog).problems]
+
+
+def test_a_project_whose_names_its_catalog_declares_loads() -> None:
+    text = _for_mini().replace("features = []", 'features = ["accounts", "taskiq"]') + (
+        '[options]\n"taskiq.broker" = "rabbitmq"\n'
+        '[app]\nrequires = ["accounts"]\npaths = ["backend/src/app/", "backend/src/modules/user"]\n'
+        'contributes = { routers = [{ ref = "src.app:router", if = "taskiq.broker=rabbitmq" }], cache = ["src.app:cache"] }\n'
+    )
+
+    assert load("fastro.toml", text, _catalog()).app.requires == ("accounts",)
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        (
+            _for_mini().replace('name = "mini"', 'name = "fastro"'),
+            "1: blueprint.name: is 'fastro', and the catalog is 'mini'.\n"
+            "  Set blueprint.name in fastro.toml to 'mini', the catalog's name.",
+        ),
+        (
+            _for_mini().replace('version = "0.1.0"', 'version = "0.1.1"'),
+            "1: blueprint.version: is 0.1.1, and the catalog is 0.1.0.\n"
+            "  Set blueprint.version in fastro.toml to 0.1.0, the catalog's version.",
+        ),
+        (
+            _for_mini().replace("features = []", 'features = ["acounts"]'),
+            "2: features[0]: 'acounts' isn't a feature of this catalog.\n  Did you mean 'accounts'?",
+        ),
+        (
+            _for_mini(tables='[app]\nrequires = ["taskq"]\n'),
+            "6: app.requires[0]: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+        ),
+        (
+            _for_mini(tables='[options]\n"taskq.broker" = "redis"\n'),
+            "6: options.\"taskq.broker\": 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+        ),
+        (
+            _for_mini(tables='[options]\n"taskiq.brokr" = "redis"\n'),
+            "6: options.\"taskiq.brokr\": 'taskiq.brokr' isn't an option of taskiq.\n  Did you mean 'broker'?",
+        ),
+        (
+            _for_mini(tables='[options]\n"taskiq.broker" = "kafka"\n'),
+            "6: options.\"taskiq.broker\": 'kafka' isn't a choice of taskiq.broker.\n  The choices are redis, rabbitmq.",
+        ),
+        (
+            _for_mini(tables='[app]\ncontributes = { router = ["src.app:r"] }\n'),
+            "6: app.contributes.router: 'router' isn't a declared point.\n  Did you mean 'routers'?",
+        ),
+        (
+            _for_mini(tables='[app]\ncontributes = { routers = [{ value = "x" }] }\n'),
+            "6: app.contributes.routers[0]: should be a ref, since routers is collected by a tuple slot.",
+        ),
+        (
+            _for_mini(tables='[app]\ncontributes = { routers = [{ ref = "src.app:r", if = "taskq" }] }\n'),
+            "6: app.contributes.routers[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+        ),
+        (
+            _for_mini(tables='[app]\npaths = ["backend/src/app/", "backend/src/app/"]\n'),
+            "6: app.paths[1]: 'backend/src/app/' is declared by app.paths[0] already.\n"
+            "  A path belongs to one declaration: drop one of them.",
+        ),
+        (
+            _for_mini(tables='[app]\npaths = ["backend/src/modules/user/"]\n'),
+            "6: app.paths[0]: 'backend/src/modules/user/' is declared by features.accounts.paths[0] in the catalog "
+            "already.\n  A path belongs to one declaration: drop one of them.",
+        ),
+    ],
+)
+def test_a_name_its_catalog_doesnt_declare_is_refused_at_its_line(text: str, problem: str) -> None:
+    assert _checked(text) == [f"fastro.toml:{problem}"]
+
+
+def test_names_are_checked_only_once_every_key_reads_cleanly() -> None:
+    text = _for_mini().replace("features = []", 'features = ["acounts"]').replace('"api"', '"-api"')
+
+    assert [problem.key for problem in _refused(text).problems] == ["project.name"]
+
+
+def test_against_a_catalog_that_extends_another_only_the_pin_is_checked() -> None:
+    extending = _catalog(CATALOG.replace("schema = 1\n", 'schema = 1\nextends = { name = "fastro", version = "0.21.0" }\n'))
+    text = _for_mini().replace("features = []", 'features = ["jwt"]')
+
+    assert load("fastro.toml", text, extending).features == ("jwt",)
+    refused = _refused(text.replace('version = "0.1.0"', 'version = "9.0"'), extending)
+
+    assert [problem.key for problem in refused.problems] == ["blueprint.version"]
