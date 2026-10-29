@@ -24,6 +24,7 @@ FULLY_COVERED = {
     "conditions": ("test_engine_conditions.py",),
     "positions": ("test_engine_positions.py",),
     "problems": ("test_engine_problems.py",),
+    "project": ("test_engine_project.py",),
     "references": ("test_engine_references.py",),
 }
 

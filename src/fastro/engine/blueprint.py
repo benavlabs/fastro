@@ -92,7 +92,6 @@ PARAM_TYPES = ("bool", "choice", "cidr", "int", "str")
 MODULE_GENERATOR = "module"
 TEMPLATE_FIELDS = {"name": "sample_name", "name_dashed": "sample-name", "Name": "SampleName"}
 COMMAND_WORDS = re.compile(r"[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*")
-CHECK_CODE = re.compile(r"[A-Z]+[0-9]+")
 CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
 SCHEMA = 1
@@ -351,7 +350,7 @@ def load(file: str, text: str, tool: Version) -> Blueprint:
     that refer to another section are checked once every key reads cleanly, unless the catalog extends another.
     """
     document = read(file, text)
-    reader = _Reader(document)
+    reader = Reader(document)
     if not reader.gate(document.data, tool):
         raise IncompatibleCatalog(reader.problems)
     blueprint = reader.blueprint(document.data)
@@ -380,7 +379,7 @@ def _kind(value: object) -> str:
     return "a date or time"
 
 
-class _Reader:
+class Reader:
     """Reads tables key by key, collecting a problem for each key that breaks its rule.
 
     Each accessor takes the table's path, the table and a key, and returns ``None`` when the key is
@@ -757,7 +756,7 @@ class _Reader:
         codes = {key: item for key, item in table.items() if key != "toolchain"}
         checks = {
             code: item
-            for at, code, item in self.named((), {"checks": codes}, "checks", _check_code)
+            for at, code, item in self.named((), {"checks": codes}, "checks", spec.check_code)
             if self.table(at, item) is not None
         }
         return checks, env
@@ -1120,12 +1119,6 @@ def _public(text: str) -> str:
     parts = text.removesuffix(".*").split(".")
     if not all(spec.identifier(part) for part in parts):
         raise SpecError(f"{text!r} isn't a module, or a package followed by '.*', such as 'src.infrastructure.composition'.")
-    return text
-
-
-def _check_code(text: str) -> str:
-    if not CHECK_CODE.fullmatch(text):
-        raise SpecError(f"{text!r} isn't a check code, such as 'FR013'.")
     return text
 
 

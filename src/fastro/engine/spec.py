@@ -21,6 +21,13 @@ RESERVED = {
 }
 CHOICE = re.compile(r"[^\s()=]+")
 GLOB = re.compile(r"[*?\[\]]")
+CHECK_CODE = re.compile(r"[A-Z]+[0-9]+")
+SOURCE = re.compile(
+    r"/.*|\.\.?(/.*)?"
+    r"|gh:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(@[^@\s]+)?"
+    r"|git\+(ssh|https)://\S+"
+    r"|[a-z][a-z0-9_-]*"
+)
 
 
 class SpecError(ValueError):
@@ -165,3 +172,29 @@ def allows(spec: SpecifierSet, candidate: Version) -> bool:
 def tool_allowed(requires_fastro: SpecifierSet, tool: Version) -> bool:
     """Whether a catalog's ``requires_fastro`` lets this tool read it, development builds included."""
     return requires_fastro.contains(tool, prereleases=True)
+
+
+def check_code(text: str) -> str:
+    """``text``, if it's a check code such as ``FR013``: capitals, then digits."""
+    if not CHECK_CODE.fullmatch(text):
+        raise SpecError(f"{text!r} isn't a check code, such as 'FR013'.")
+    return text
+
+
+def source(text: str) -> str:
+    """``text``, if it reads as a source (spec 1.7). Nothing is fetched, so this checks only how it's written."""
+    where, hash_, subdir = text.partition("#")
+    if not SOURCE.fullmatch(where) or (hash_ and not _subdir(subdir)):
+        raise SpecError(
+            f"{text!r} isn't a source: write a path (absolute, ./ or ../), gh:OWNER/REPO[@REF], git+ssh://… or "
+            "git+https://…, or a registry name, then an optional #SUBDIR."
+        )
+    return text
+
+
+def _subdir(text: str) -> bool:
+    try:
+        repo_path(text)
+    except SpecError:
+        return False
+    return True

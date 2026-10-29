@@ -13,12 +13,14 @@ from fastro.engine.spec import (
     SpecError,
     allows,
     blueprint_name,
+    check_code,
     choice,
     feature_name,
     label,
     option_name,
     repo_path,
     requirement,
+    source,
     specifier,
     tool_allowed,
     version,
@@ -222,3 +224,54 @@ def test_a_dependency_is_a_pep_508_requirement(text: str) -> None:
 def test_any_other_dependency_is_refused(text: str) -> None:
     with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a PEP 508 requirement")):
         requirement(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/home/me/blueprints/fastro",
+        "./plugins/audit",
+        "../audit#plugin",
+        ".",
+        "gh:benavlabs/FastAPI-boilerplate",
+        "gh:benavlabs/fastro-stripe@v1.2.0",
+        "gh:benavlabs/fastro-plugins@main#stripe",
+        "git+ssh://git@github.com/benavlabs/fastroai@v0.3.0",
+        "git+https://github.com/benavlabs/fastroai",
+        "stripe",
+        "fastro",
+        "stripe-billing",
+    ],
+)
+def test_a_source_is_a_path_a_github_repo_a_git_url_or_a_name(text: str) -> None:
+    assert source(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "https://github.com/benavlabs/x",
+        "gh:benavlabs",
+        "gh:benavlabs/x@",
+        "git+ssh://",
+        "Stripe",
+        "plugins/audit",
+        "../audit#",
+        "../audit#../up",
+    ],
+)
+def test_any_other_source_is_refused(text: str) -> None:
+    with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a source")):
+        source(text)
+
+
+@pytest.mark.parametrize("text", ["FR013", "A1", "TOOL22"])
+def test_a_check_code_is_capitals_then_digits(text: str) -> None:
+    assert check_code(text) == text
+
+
+@pytest.mark.parametrize("text", ["fr013", "FR", "013", "FR-013", ""])
+def test_any_other_check_code_is_refused(text: str) -> None:
+    with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a check code, such as 'FR013'.")):
+        check_code(text)
