@@ -7,7 +7,8 @@ from packaging.version import Version
 
 from fastro.engine import blueprint, conditions
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.resolve import OptionError, SelectionError, UnknownFeature, select
+from fastro.engine.resolve import OptionError, Ownership, SelectionError, UnknownFeature, select
+from fastro.engine.spec import RepoPath
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini" / "blueprint.toml"
 
@@ -213,3 +214,49 @@ def test_a_condition_keeps_the_text_the_catalog_wrote(mini: Blueprint) -> None:
 
     assert billing.when[0].condition_text == "billing.provider=paddle"
     assert (files["frontend/menu.ts"], files["backend/src/wiring/app.py"]) == ("admin", "")
+
+
+@pytest.mark.parametrize(
+    ("path", "origin", "when"),
+    [
+        ("backend/src/modules/billing/routes.py", "feature:billing", None),
+        ("backend/src/modules/billing/paddle.py", "feature:billing", 0),
+        ("backend/tests/test_accounts.py", "feature:accounts", None),
+        ("backend/src/wiring/app.py", "core", None),
+        ("backend/src/app.py", "core", None),
+        ("README.md", "core", None),
+    ],
+)
+def test_a_file_belongs_to_the_longest_path_that_covers_it(mini: Blueprint, path: str, origin: str, when: int | None) -> None:
+    owner = Ownership(mini).of(RepoPath(path))
+
+    assert (owner.origin, owner.when) == (origin, when)
+
+
+def test_a_when_path_belongs_to_its_when_whatever_the_options(mini: Blueprint) -> None:
+    owner = Ownership(mini).of(RepoPath("backend/src/modules/billing/paddle.py"))
+
+    assert (owner.feature, owner.when, owner.at) == ("billing", 0, ("features", "billing", "when", 0, "paths", 0))
+
+
+@pytest.mark.parametrize(
+    ("app_paths", "path", "origin"),
+    [
+        (("backend/src/custom/",), "backend/src/custom/views.py", "app"),
+        (("backend/src/modules/billing/custom.py",), "backend/src/modules/billing/custom.py", "app"),
+        (("backend/src/modules/billing/custom.py",), "backend/src/modules/billing/routes.py", "feature:billing"),
+        (("backend/src/",), "backend/src/app.py", "app"),
+        (("backend/src/",), "backend/src/modules/billing/routes.py", "feature:billing"),
+        (("backend/src",), "backend/src/app.py", "core"),
+    ],
+)
+def test_app_paths_take_part_in_the_contest(mini: Blueprint, app_paths: tuple[str, ...], path: str, origin: str) -> None:
+    assert Ownership(mini, tuple(RepoPath(text) for text in app_paths)).of(RepoPath(path)).origin == origin
+
+
+def test_an_owner_names_where_its_path_is_declared(mini: Blueprint) -> None:
+    ownership = Ownership(mini, (RepoPath("backend/src/custom/"),))
+
+    assert ownership.of(RepoPath("backend/tests/test_accounts.py")).at == ("features", "accounts", "paths", 1)
+    assert ownership.of(RepoPath("backend/src/custom/a.py")).at == ("app", "paths", 0)
+    assert ownership.of(RepoPath("backend/src/app.py")).at == ()

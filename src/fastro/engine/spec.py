@@ -95,6 +95,10 @@ class RepoPath:
     def subtree(self) -> bool:
         return self.text.endswith("/")
 
+    def covers(self, target: str) -> bool:
+        """Whether this path takes in ``target``: a subtree everything under it, and a file only itself."""
+        return target.startswith(self.text) if self.subtree else target == self.text
+
 
 def repo_path(text: str, root: str = "the repo root") -> RepoPath:
     """``text`` as a :class:`RepoPath`, if it's POSIX, relative to ``root``, and names files literally."""

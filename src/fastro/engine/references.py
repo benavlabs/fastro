@@ -303,13 +303,8 @@ def _fields(item: str) -> list[str]:
 
 def _owner(declarations: list[tuple[KeyPath, RepoPath]], target: str) -> KeyPath | None:
     """Where the declaration that owns ``target`` is: the one with the longest path that takes it in (spec 1.1)."""
-    matches = [(len(path.text), at) for at, path in declarations if _covers(path, target)]
+    matches = [(len(path.text), at) for at, path in declarations if path.covers(target)]
     return max(matches, key=lambda match: match[0])[1] if matches else None
-
-
-def _covers(path: RepoPath, target: str) -> bool:
-    """Whether ``path``, a file or a subtree, takes in ``target``."""
-    return target.startswith(path.text) if path.subtree else target == path.text
 
 
 def _closest(name: str, names: Collection[str], listing: str) -> str:

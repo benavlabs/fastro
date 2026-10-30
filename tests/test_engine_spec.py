@@ -321,3 +321,18 @@ def test_command_words_are_lowercase_words_one_space_apart(text: str) -> None:
 def test_any_other_command_words_are_refused(text: str) -> None:
     with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a command: write its words in lowercase letters")):
         command_words(text)
+
+
+@pytest.mark.parametrize(
+    ("path", "target", "covers"),
+    [
+        ("backend/src/", "backend/src/app.py", True),
+        ("backend/src/", "backend/src/modules/x/y.py", True),
+        ("backend/src/", "backend/srcs/app.py", False),
+        ("backend/src/app.py", "backend/src/app.py", True),
+        ("backend/src/app.py", "backend/src/app.pyc", False),
+        ("backend/src", "backend/src/app.py", False),
+    ],
+)
+def test_a_subtree_covers_everything_under_it_and_a_file_only_itself(path: str, target: str, covers: bool) -> None:
+    assert RepoPath(path).covers(target) is covers

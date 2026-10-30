@@ -1,4 +1,4 @@
-"""Resolving what a project selects against its catalog: the closure under ``requires``."""
+"""Resolving what a project selects against its catalog: the closure under ``requires``, and who owns a file."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from fastro.engine import conditions
 from fastro.engine.blueprint import Blueprint, Feature
 from fastro.engine.conditions import Condition
+from fastro.engine.positions import KeyPath
+from fastro.engine.spec import RepoPath
 
 APP = "app"
 
@@ -124,3 +126,50 @@ def _options(
         for feature in selected
         for name, option in declared[feature].options.items()
     }
+
+
+@dataclass(frozen=True)
+class Owner:
+    """Who a file belongs to (spec 1.1): a feature, through its own ``paths`` or a ``when``, ``[app]``, or else core.
+
+    ``at`` is where the path that won is declared, and is empty for core.
+    """
+
+    feature: str = ""
+    when: int | None = None
+    app: bool = False
+    at: KeyPath = ()
+
+    @property
+    def origin(self) -> str:
+        """The plan's ``origin`` for the file (spec 7): ``feature:<name>``, ``app`` or ``core``."""
+        if self.app:
+            return APP
+        return f"feature:{self.feature}" if self.feature else "core"
+
+
+class Ownership:
+    """Who owns each file: the declaration with the longest path that takes it in (spec 1.1).
+
+    Conditions play no part, so a ``when`` path owns its files whether or not its ``if`` holds.
+    """
+
+    def __init__(self, catalog: Blueprint, app_paths: Iterable[RepoPath] = ()) -> None:
+        self.declarations: list[tuple[RepoPath, Owner]] = []
+        for feature in catalog.features:
+            for index, path in enumerate(feature.paths):
+                self.declarations.append((path, Owner(feature.name, at=(*feature.at, "paths", index))))
+            for number, when in enumerate(feature.when):
+                for index, path in enumerate(when.paths):
+                    at = (*feature.at, "when", number, "paths", index)
+                    self.declarations.append((path, Owner(feature.name, number, at=at)))
+        for index, path in enumerate(app_paths):
+            self.declarations.append((path, Owner(app=True, at=(APP, "paths", index))))
+
+    def of(self, path: RepoPath) -> Owner:
+        """The owner of the file at ``path``, or core when no declared path takes it in."""
+        best: tuple[RepoPath, Owner] | None = None
+        for declared, owner in self.declarations:
+            if declared.covers(path.text) and (best is None or len(declared.text) > len(best[0].text)):
+                best = (declared, owner)
+        return best[1] if best is not None else Owner()
