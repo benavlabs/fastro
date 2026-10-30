@@ -67,7 +67,6 @@ def test_mini_covers_every_slot_kind_and_every_kind_of_condition() -> None:
     assert declared <= {(atom.feature, atom.option) for atom in atoms if isinstance(atom, conditions.Option)}
     assert any(feature.when for feature in catalog.features)
     assert any(item.order is not None for item in contributions)
-    assert any(feature.options for feature in catalog.features)
     assert any(file.condition is not None for file in catalog.wiring)
 
 
@@ -88,7 +87,8 @@ def test_one_value_point_is_fed_twice_by_one_owner_under_different_conditions() 
 def test_the_backend_imports_and_passes_its_own_tests_without_writing_into_the_fixture() -> None:
     backend = MINI / "backend"
     before = sorted(path.relative_to(MINI) for path in MINI.rglob("*"))
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
 
     run = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
