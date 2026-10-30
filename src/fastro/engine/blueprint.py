@@ -247,6 +247,17 @@ class Wiring:
 
 
 @dataclass(frozen=True)
+class Prefix:
+    """The widest network a cidr param accepts, as the shortest prefix length allowed in each address family (2.9)."""
+
+    v4: int
+    v6: int
+
+    def limit(self, version: int) -> int:
+        return self.v4 if version == 4 else self.v6
+
+
+@dataclass(frozen=True)
 class Param:
     """A generator's parameter (2.9)."""
 
@@ -256,7 +267,7 @@ class Param:
     help: str = ""
     choices: tuple[str, ...] = ()
     private_only: bool = False
-    max_prefix: int | None = None
+    max_prefix: Prefix | None = None
     at: KeyPath = ()
 
 
@@ -674,16 +685,36 @@ class Reader:
             self.fail((*path, "choices"), "is required for a choice param.", f"Add choices to [{key_name(path)}].")
         choices = self.choices(path, table) if kind == "choice" and "choices" in table else ()
         private_only = self.flag(path, table, "private_only") is True if kind == "cidr" else False
-        max_prefix = self.number(path, table, "max_prefix") if kind == "cidr" else None
-        if max_prefix is not None and not 0 <= max_prefix <= 128:
-            self.fail((*path, "max_prefix"), f"should be from 0 to 128, not {max_prefix}.")
-        bound = max_prefix if max_prefix is not None and 0 <= max_prefix <= 128 else None
+        max_prefix = (
+            self.prefix((*path, "max_prefix"), table["max_prefix"]) if kind == "cidr" and "max_prefix" in table else None
+        )
         default = (
-            self.default(path, table, kind, choices, private_only, bound) if kind is not None and "default" in table else None
+            self.default(path, table, kind, choices, private_only, max_prefix)
+            if kind is not None and "default" in table
+            else None
         )
         if kind is None or default is None:
             return None
         return Param(name, kind, default, self.text(path, table, "help", str) or "", choices, private_only, max_prefix, path)
+
+    def prefix(self, path: KeyPath, value: object) -> Prefix | None:
+        """``max_prefix``: an integer for both families, or a table with both ``v4`` and ``v6`` (2.9)."""
+        if isinstance(value, int) and not isinstance(value, bool):
+            if not 0 <= value <= 128:
+                self.fail(path, f"should be from 0 to 128, not {value}.")
+                return None
+            return Prefix(value, value)
+        if not isinstance(value, dict):
+            self.wrong(path, "an integer or a table with v4 and v6", value)
+            return None
+        table = self.table(path, value, ("v4", "v6"), ("v4", "v6")) or {}
+        limits = {key: self.number(path, table, key) for key in ("v4", "v6")}
+        for key, top in (("v4", 32), ("v6", 128)):
+            if (limit := limits[key]) is not None and not 0 <= limit <= top:
+                self.fail((*path, key), f"should be from 0 to {top}, not {limit}.")
+                limits[key] = None
+        v4, v6 = limits["v4"], limits["v6"]
+        return Prefix(v4, v6) if v4 is not None and v6 is not None else None
 
     def default(
         self,
@@ -692,7 +723,7 @@ class Reader:
         kind: str,
         choices: tuple[str, ...],
         private_only: bool,
-        max_prefix: int | None,
+        max_prefix: Prefix | None,
     ) -> str | int | bool | None:
         if kind == "int":
             return self.number(path, table, "default")
@@ -1062,7 +1093,7 @@ def _param_type(text: str) -> str:
     return text
 
 
-def _network(text: str, private_only: bool, max_prefix: int | None) -> str:
+def _network(text: str, private_only: bool, max_prefix: Prefix | None) -> str:
     """``text`` if it's a network address no wider than ``max_prefix`` allows, and private when ``private_only``."""
     try:
         network = ipaddress.ip_network(text, strict=True)
@@ -1070,14 +1101,14 @@ def _network(text: str, private_only: bool, max_prefix: int | None) -> str:
         raise SpecError(f"{text!r} isn't a network address, such as '172.31.240.0/24'.") from None
     if private_only and not network.is_private:
         raise SpecError(f"{text!r} isn't a private network, and private_only is set.")
-    if max_prefix is not None and max_prefix > network.max_prefixlen:
+    limit = max_prefix.limit(network.version) if max_prefix is not None else None
+    if limit is not None and limit > network.max_prefixlen:
         raise SpecError(
-            f"{text!r} is an IPv4 network, and max_prefix = {max_prefix} needs an IPv6 one, since IPv4 prefixes stop at /32."
+            f"{text!r} is an IPv4 network, and max_prefix = {limit} needs an IPv6 one, since IPv4 prefixes stop at /32."
         )
-    if max_prefix is not None and network.prefixlen < max_prefix:
+    if limit is not None and network.prefixlen < limit:
         raise SpecError(
-            f"{text!r} is wider than max_prefix allows: it's /{network.prefixlen}, "
-            f"and this param takes /{max_prefix} or longer."
+            f"{text!r} is wider than max_prefix allows: it's /{network.prefixlen}, and this param takes /{limit} or longer."
         )
     return text
 

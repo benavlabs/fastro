@@ -3,7 +3,7 @@
 import pytest
 from packaging.version import Version
 
-from fastro.engine.blueprint import Blueprint, Command, Generator, Param, PluginApi, Register, load
+from fastro.engine.blueprint import Blueprint, Command, Generator, Param, PluginApi, Prefix, Register, load
 from fastro.engine.problems import CatalogError
 from fastro.engine.spec import RepoPath
 
@@ -133,7 +133,12 @@ def test_generators_are_read_with_their_params() -> None:
             "domain": Param("domain", "str", "example.com", at=(*params, "domain")),
             "proxy": Param("proxy", "choice", "nginx", choices=("nginx", "caddy"), at=(*params, "proxy")),
             "internal_subnet": Param(
-                "internal_subnet", "cidr", "172.31.240.0/24", private_only=True, max_prefix=16, at=(*params, "internal_subnet")
+                "internal_subnet",
+                "cidr",
+                "172.31.240.0/24",
+                private_only=True,
+                max_prefix=Prefix(16, 16),
+                at=(*params, "internal_subnet"),
             ),
         },
         register=None,
@@ -170,7 +175,14 @@ def test_the_module_generator_also_has_register_and_types() -> None:
 def test_a_cidr_default_as_narrow_as_max_prefix_or_narrower_loads(default: str, max_prefix: str) -> None:
     body = PARAM + f'type = "cidr"\ndefault = "{default}"\nmax_prefix = {max_prefix}\n'
 
-    assert _load(MINIMAL + body).generators["deploy"].params["p"].max_prefix == int(max_prefix)
+    assert _load(MINIMAL + body).generators["deploy"].params["p"].max_prefix == Prefix(int(max_prefix), int(max_prefix))
+
+
+@pytest.mark.parametrize("default", ["172.31.240.0/24", "10.0.0.0/8", "fd00::/48", "fd00:1::/64"])
+def test_a_table_max_prefix_limits_each_family_on_its_own(default: str) -> None:
+    body = PARAM + f'type = "cidr"\ndefault = "{default}"\nmax_prefix = {{ v4 = 8, v6 = 48 }}\n'
+
+    assert _load(MINIMAL + body).generators["deploy"].params["p"].max_prefix == Prefix(8, 48)
 
 
 def test_without_max_prefix_any_cidr_default_loads() -> None:
@@ -403,6 +415,45 @@ PATTERN = "isn't a module, or a package followed by '.*', such as 'src.infrastru
             PARAM + 'type = "cidr"\ndefault = "fd00::/48"\nmax_prefix = 64\n',
             "10: generators.deploy.params.p.default: 'fd00::/48' is wider than max_prefix allows: it's /48, "
             "and this param takes /64 or longer.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "2001::/16"\nmax_prefix = { v4 = 8, v6 = 48 }\n',
+            "10: generators.deploy.params.p.default: '2001::/16' is wider than max_prefix allows: it's /16, "
+            "and this param takes /48 or longer.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = { v4 = 16, v6 = 48 }\n',
+            "10: generators.deploy.params.p.default: '10.0.0.0/8' is wider than max_prefix allows: it's /8, "
+            "and this param takes /16 or longer.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = { v4 = 8 }\n',
+            "11: generators.deploy.params.p.max_prefix.v6: is required.\n  Add v6 to [generators.deploy.params.p.max_prefix].",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = { v4 = 33, v6 = 48 }\n',
+            "11: generators.deploy.params.p.max_prefix.v4: should be from 0 to 32, not 33.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = { v4 = 8, v6 = 129 }\n',
+            "11: generators.deploy.params.p.max_prefix.v6: should be from 0 to 128, not 129.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = { v4 = 8, v6 = 48, v5 = 1 }\n',
+            "11: generators.deploy.params.p.max_prefix.v5: isn't a key of [generators.deploy.params.p.max_prefix].\n"
+            "  The keys of [generators.deploy.params.p.max_prefix] are v4, v6.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = true\n',
+            "11: generators.deploy.params.p.max_prefix: should be an integer or a table with v4 and v6, not a boolean.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = "8"\n',
+            "11: generators.deploy.params.p.max_prefix: should be an integer or a table with v4 and v6, not a string.",
+        ),
+        (
+            PARAM + 'type = "cidr"\ndefault = "10.0.0.0/8"\nmax_prefix = { v4 = "8", v6 = 48 }\n',
+            "11: generators.deploy.params.p.max_prefix.v4: should be an integer, not a string.",
         ),
         (
             PARAM + 'type = "cidr"\ndefault = "10.0.0.0/24"\nmax_prefix = 33\n',
