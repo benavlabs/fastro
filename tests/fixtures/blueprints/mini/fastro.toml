@@ -1,0 +1,10 @@
+blueprint = { name = "mini", version = "0.1.0" }
+source = true
+features = ["accounts", "billing", "cache", "tasks", "admin"]
+
+[project]
+name = "mini"
+
+[options]
+"billing.provider" = "stripe"
+"cache.backend" = "memory"
