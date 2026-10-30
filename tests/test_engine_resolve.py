@@ -1,13 +1,24 @@
 """Resolving a selection against a catalog (A2): closure under ``requires``."""
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 from packaging.version import Version
 
-from fastro.engine import blueprint, conditions
+from fastro.engine import blueprint, conditions, project
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.resolve import OptionError, Ownership, SelectionError, UnknownFeature, select
+from fastro.engine.resolve import (
+    OptionError,
+    Ownership,
+    SelectionError,
+    Taken,
+    TooManyContributions,
+    UnknownFeature,
+    check_one_points,
+    select,
+    taken,
+)
 from fastro.engine.spec import RepoPath
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini" / "blueprint.toml"
@@ -260,3 +271,124 @@ def test_an_owner_names_where_its_path_is_declared(mini: Blueprint) -> None:
     assert ownership.of(RepoPath("backend/tests/test_accounts.py")).at == ("features", "accounts", "paths", 1)
     assert ownership.of(RepoPath("backend/src/custom/a.py")).at == ("app", "paths", 0)
     assert ownership.of(RepoPath("backend/src/app.py")).at == ()
+
+
+def _points(found: Mapping[str, tuple[Taken, ...]]) -> dict[str, list[tuple[str, str]]]:
+    return {point: [(item.owner, str(item.contribution.target)) for item in items] for point, items in found.items()}
+
+
+def test_the_full_preset_takes_each_contribution_whose_conditions_hold(mini: Blueprint) -> None:
+    found = taken(mini, select(mini, mini.presets["full"]))
+
+    assert _points(found) == {
+        "health_checks": [("core", "src.health:database")],
+        "routers": [
+            ("feature:accounts", "src.modules.accounts.routes:router as accounts_router"),
+            ("feature:billing", "src.modules.billing.routes:router as billing_router"),
+        ],
+        "email_sender": [("feature:accounts", "src.modules.accounts.email:send_queued")],
+        "settings": [("feature:cache", "src.modules.cache.settings:CacheSettings")],
+        "task_modules": [("feature:tasks", "src.modules.tasks.jobs")],
+        "admin_site": [("feature:admin", "src.modules.admin.site:site")],
+        "menu": [("feature:admin", "{'href': '/admin', 'label': 'Admin'}")],
+    }
+    check_one_points(mini, found)
+
+
+@pytest.mark.parametrize(("requested", "sender"), [(("accounts",), "send_now"), (("accounts", "tasks"), "send_queued")])
+def test_one_owner_feeding_a_one_point_under_exclusive_conditions_gives_it_one(
+    mini: Blueprint, requested: tuple[str, ...], sender: str
+) -> None:
+    found = taken(mini, select(mini, requested))
+    check_one_points(mini, found)
+
+    assert [str(item.contribution.target) for item in found["email_sender"]] == [f"src.modules.accounts.email:{sender}"]
+
+
+def test_app_contributions_are_taken_when_their_if_holds(mini: Blueprint) -> None:
+    app = project.load(
+        "fastro.toml",
+        'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+        '[app]\ncontributes = { routers = [{ ref = "src.app:r", prefix = "/a", if = "billing" }, '
+        '{ ref = "src.app:s", prefix = "/s", if = "cache" }] }\n',
+    ).app.contributes
+
+    found = taken(mini, select(mini, ("billing",)), app)
+
+    assert [item.owner for item in found["routers"]] == ["feature:accounts", "feature:billing", "app"]
+
+
+CLASH = """\
+[blueprint]
+name = "clash"
+version = "0.1.0"
+schema = 1
+requires_fastro = ">=0.1.0.dev0"
+
+[points.sender]
+cardinality = "one"
+
+[[wiring]]
+path = "backend/src/wiring.py"
+doc = "Wiring."
+
+[[wiring.slots]]
+kind = "value"
+name = "SENDER"
+point = "sender"
+annotation = "object"
+fallback = "None"
+
+[features.mail]
+summary = "Mail"
+
+[features.mail.contributes]
+sender = [{ ref = "src.mail:smtp", if = "queue" }]
+
+[[features.mail.when]]
+if = "queue"
+contributes = { sender = ["src.mail:queued"] }
+
+[features.queue]
+summary = "Queue"
+"""
+
+
+def test_a_one_point_given_two_contributions_by_the_selection_is_refused() -> None:
+    clash = blueprint.load("blueprint.toml", CLASH, Version("0.1.0"))
+    found = taken(clash, select(clash, ("mail", "queue")))
+
+    with pytest.raises(TooManyContributions) as caught:
+        check_one_points(clash, found)
+
+    assert str(caught.value) == (
+        "'sender' is a one point, and this selection gives it 2 contributions: "
+        "feature:mail at features.mail.contributes.sender[0] and "
+        "feature:mail at features.mail.when[0].contributes.sender[0]. "
+        "Change the selection or an option so only one of their conditions holds."
+    )
+    assert isinstance(caught.value, SelectionError)
+
+
+def test_a_feature_and_app_giving_a_one_point_a_contribution_each_is_refused() -> None:
+    once = CLASH.replace('[[features.mail.when]]\nif = "queue"\ncontributes = { sender = ["src.mail:queued"] }\n', "")
+    clash = blueprint.load("blueprint.toml", once, Version("0.1.0"))
+    app = project.load(
+        "fastro.toml",
+        'blueprint = { name = "clash", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+        '[app]\ncontributes = { sender = ["src.app:mine"] }\n',
+    ).app.contributes
+
+    with pytest.raises(TooManyContributions) as caught:
+        check_one_points(clash, taken(clash, select(clash, ("mail", "queue")), app))
+
+    assert "2 contributions: feature:mail at features.mail.contributes.sender[0] and app at app.contributes.sender[0]." in str(
+        caught.value
+    )
+
+
+def test_a_one_point_given_one_contribution_or_none_passes() -> None:
+    clash = blueprint.load("blueprint.toml", CLASH, Version("0.1.0"))
+
+    for requested in ((), ("mail",), ("queue",)):
+        check_one_points(clash, taken(clash, select(clash, requested)))

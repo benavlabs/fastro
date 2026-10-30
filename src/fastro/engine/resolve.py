@@ -1,4 +1,5 @@
-"""Resolving what a project selects against its catalog: the closure under ``requires``, and who owns a file."""
+"""Resolving what a project selects against its catalog: the closure under ``requires``, the contributions it
+takes, and who owns a file."""
 
 from __future__ import annotations
 
@@ -8,9 +9,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from fastro.engine import conditions
-from fastro.engine.blueprint import Blueprint, Feature
+from fastro.engine.blueprint import Blueprint, Contribution, Contributions, Feature
 from fastro.engine.conditions import Condition
 from fastro.engine.positions import KeyPath
+from fastro.engine.problems import key_name
 from fastro.engine.spec import RepoPath
 
 APP = "app"
@@ -32,6 +34,10 @@ class UnknownFeature(SelectionError):
 
 class OptionError(SelectionError):
     """An option a selected feature doesn't declare, or a value that isn't one of its choices."""
+
+
+class TooManyContributions(SelectionError):
+    """A ``one`` point the selection gives more than one contribution (spec 2.3)."""
 
 
 @dataclass(frozen=True)
@@ -126,6 +132,49 @@ def _options(
         for feature in selected
         for name, option in declared[feature].options.items()
     }
+
+
+@dataclass(frozen=True)
+class Taken:
+    """A contribution the selection takes, and who made it: ``core``, ``feature:<name>`` or ``app``."""
+
+    contribution: Contribution
+    owner: str
+
+
+def taken(catalog: Blueprint, selection: Selection, app: Contributions | None = None) -> dict[str, tuple[Taken, ...]]:
+    """Every contribution ``selection`` takes, by point, in declaration order.
+
+    That's ``[core]``'s, each selected feature's own and those of its ``when`` tables whose ``if`` holds, then
+    the project's ``[app]``. Each counts only when its own ``if`` holds too. Sorting them is rendering's job (2.7).
+    """
+    groups: list[tuple[str, Contributions]] = [("core", catalog.core)]
+    for feature in catalog.features:
+        if feature.name in selection.pulled_by:
+            groups.append((f"feature:{feature.name}", feature.contributes))
+            groups += [
+                (f"feature:{feature.name}", when.contributes) for when in feature.when if selection.holds(when.condition)
+            ]
+    groups.append((APP, app or {}))
+    found: dict[str, list[Taken]] = {}
+    for owner, contributes in groups:
+        for point, items in contributes.items():
+            for item in items:
+                if item.condition is None or selection.holds(item.condition):
+                    found.setdefault(point, []).append(Taken(item, owner))
+    return {point: tuple(items) for point, items in found.items()}
+
+
+def check_one_points(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]]) -> None:
+    """Refuse a ``one`` point that ``found`` gives more than one contribution (spec 2.3)."""
+    for point, items in found.items():
+        if point in catalog.points and catalog.points[point].cardinality == "one" and len(items) > 1:
+            listed = [f"{item.owner} at {key_name(item.contribution.at)}" for item in items]
+            given = f"{', '.join(listed[:-1])} and {listed[-1]}"
+            raise TooManyContributions(
+                f"{point!r} is a one point, and this selection gives it {len(items)} contributions: {given}. "
+                "Change the selection or an option so only one of their conditions holds."
+            )
 
 
 @dataclass(frozen=True)
