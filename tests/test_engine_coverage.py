@@ -32,6 +32,7 @@ FULLY_COVERED = {
     "problems": ("test_engine_problems.py",),
     "project": ("test_engine_project.py",),
     "references": ("test_engine_references.py", "test_engine_project.py"),
+    "spec": ("test_engine_spec.py",),
 }
 
 

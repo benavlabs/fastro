@@ -16,9 +16,11 @@ from fastro.engine.spec import (
     blueprint_name,
     check_code,
     choice,
+    command_words,
     feature_name,
     generator_name,
     label,
+    option_key,
     option_name,
     repo_path,
     requirement,
@@ -289,3 +291,33 @@ def test_generator_and_starter_names_follow_the_blueprint_name_rule_in_their_own
         SpecError, match=re.escape(f"'B2B' isn't a valid {kind} name: use lowercase letters, digits and hyphens")
     ):
         rule("B2B")
+
+
+@pytest.mark.parametrize(("text", "pair"), [("cache.backend", ("cache", "backend")), ("taskiq.broker", ("taskiq", "broker"))])
+def test_an_option_key_is_a_feature_and_an_option_split_at_the_first_dot(text: str, pair: tuple[str, str]) -> None:
+    assert option_key(text) == pair
+
+
+@pytest.mark.parametrize(
+    ("text", "why"),
+    [
+        ("cache", "'cache' isn't a feature.option key, such as 'cache.backend'."),
+        ("Cache.backend", "'Cache' isn't a valid name"),
+        ("cache.Backend", "'Backend' isn't a valid name"),
+        ("core.backend", "'core' is reserved"),
+    ],
+)
+def test_any_other_option_key_is_refused_by_the_rule_it_breaks(text: str, why: str) -> None:
+    with pytest.raises(SpecError, match=re.escape(why)):
+        option_key(text)
+
+
+@pytest.mark.parametrize("text", ["env", "env validate", "db baseline-check", "make v2"])
+def test_command_words_are_lowercase_words_one_space_apart(text: str) -> None:
+    assert command_words(text) == text
+
+
+@pytest.mark.parametrize("text", ["", "Env", "env  validate", " env", "env ", "env_validate", "2fa setup"])
+def test_any_other_command_words_are_refused(text: str) -> None:
+    with pytest.raises(SpecError, match=re.escape(f"{text!r} isn't a command: write its words in lowercase letters")):
+        command_words(text)

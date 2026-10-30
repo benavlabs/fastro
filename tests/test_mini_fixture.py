@@ -1,8 +1,8 @@
 """``tests/fixtures/blueprints/mini``: the synthetic blueprint every engine task plans and renders against.
 
-Its ``fastro.toml`` selects all five features with their default options, so the committed ``backend/``
-is the ``full`` preset as built. It has no ``billing/paddle.py``, because ``billing.provider`` is
-``stripe``: don't add one.
+It's a blueprint repo, so it holds every path the catalog declares, whatever its own ``fastro.toml``
+selects: ``billing/paddle.py`` is there although ``billing.provider`` is ``stripe``. The wiring in
+``backend/src/wiring/`` is the ``full`` preset with the default options, as built.
 """
 
 import os
@@ -51,6 +51,14 @@ def test_the_catalogs_version_is_the_backends_project_version() -> None:
     project = tomllib.loads((MINI / "backend" / "pyproject.toml").read_text())["project"]
 
     assert Version(project["version"]) == _catalog().info.version
+
+
+def test_every_path_the_catalog_declares_is_in_mini() -> None:
+    catalog = _catalog()
+    declared = [path for feature in catalog.features for path in feature.paths]
+    declared += [path for feature in catalog.features for when in feature.when for path in when.paths]
+
+    assert [path.text for path in declared if not (MINI / path.text).exists()] == []
 
 
 def test_mini_covers_every_slot_kind_and_every_kind_of_condition() -> None:
