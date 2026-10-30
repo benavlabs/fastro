@@ -169,6 +169,7 @@ def test_wiring_files_are_read_with_every_slot_kind() -> None:
             Slot("raw", code="settings = Settings()\n", at=(*slot, 5)),
         ),
         at=("wiring", 0),
+        condition_text="accounts",
     )
     assert menu == Wiring(
         path=RepoPath("frontend/src/wiring/menu.ts"),

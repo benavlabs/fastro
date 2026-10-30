@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from packaging.version import Version
 
-from fastro.engine import blueprint
+from fastro.engine import blueprint, conditions
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.resolve import UnknownFeature, select
+from fastro.engine.resolve import OptionError, SelectionError, UnknownFeature, select
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini" / "blueprint.toml"
 
@@ -135,3 +135,81 @@ def test_app_requires_are_credited_in_catalog_order_whatever_order_they_are_list
     mini: Blueprint, app_requires: tuple[str, ...]
 ) -> None:
     assert select(mini, (), app_requires=app_requires).chain("accounts") == ("app", "billing", "accounts")
+
+
+@pytest.mark.parametrize(
+    ("requested", "options", "chosen"),
+    [
+        (("billing",), {}, {("billing", "provider"): "stripe"}),
+        (("billing",), {("billing", "provider"): "paddle"}, {("billing", "provider"): "paddle"}),
+        (("billing",), {("cache", "backend"): "redis"}, {("billing", "provider"): "stripe"}),
+        (("accounts",), {}, {}),
+        (
+            ("accounts", "billing", "cache", "tasks", "admin"),
+            {("cache", "backend"): "redis"},
+            {("billing", "provider"): "stripe", ("cache", "backend"): "redis"},
+        ),
+    ],
+)
+def test_each_selected_feature_gets_its_options_with_defaults_and_unselected_ones_are_dropped(
+    mini: Blueprint, requested: tuple[str, ...], options: dict[tuple[str, str], str], chosen: dict[tuple[str, str], str]
+) -> None:
+    assert select(mini, requested, options=options).options == chosen
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({("billing", "provider"): "square"}, "'square' isn't a choice of billing.provider. The choices are stripe, paddle."),
+        (
+            {("billing", "currency"): "eur"},
+            "'billing.currency' isn't an option of billing. The options of billing are provider.",
+        ),
+        ({("billing", "provder"): "paddle"}, "'billing.provder' isn't an option of billing. Did you mean 'provider'?"),
+        ({("accounts", "mode"): "fast"}, "'accounts.mode' isn't an option of accounts. accounts has no options."),
+        ({("cache", "backend"): "valkey"}, "'valkey' isn't a choice of cache.backend. The choices are memory, redis."),
+        ({("tasks", "queue"): "x"}, "'tasks.queue' isn't an option of tasks. tasks has no options."),
+    ],
+)
+def test_an_option_a_selected_feature_doesnt_have_is_refused(
+    mini: Blueprint, options: dict[tuple[str, str], str], message: str
+) -> None:
+    with pytest.raises(OptionError) as caught:
+        select(mini, ("billing",), options=options)
+
+    assert str(caught.value) == message
+    assert isinstance(caught.value, SelectionError)
+
+
+def test_an_option_of_a_feature_the_catalog_doesnt_declare_is_refused(mini: Blueprint) -> None:
+    with pytest.raises(UnknownFeature, match="'payments' isn't a feature of this catalog"):
+        select(mini, ("billing",), options={("payments", "provider"): "stripe"})
+
+
+@pytest.mark.parametrize(
+    ("condition", "holds"),
+    [
+        ("billing", True),
+        ("cache", False),
+        ("not cache", True),
+        ("billing and accounts", True),
+        ("billing and cache", False),
+        ("cache or billing", True),
+        ("billing.provider=paddle", True),
+        ("billing.provider=stripe", False),
+        ("cache.backend=memory", False),
+        ("not (cache or billing.provider=stripe)", True),
+    ],
+)
+def test_a_condition_holds_against_the_selection_and_its_options(mini: Blueprint, condition: str, holds: bool) -> None:
+    selection = select(mini, ("billing",), options={("billing", "provider"): "paddle"})
+
+    assert selection.holds(conditions.parse(condition)) is holds
+
+
+def test_a_condition_keeps_the_text_the_catalog_wrote(mini: Blueprint) -> None:
+    billing = next(feature for feature in mini.features if feature.name == "billing")
+    files = {file.path.text: file.condition_text for file in mini.wiring}
+
+    assert billing.when[0].condition_text == "billing.provider=paddle"
+    assert (files["frontend/menu.ts"], files["backend/src/wiring/app.py"]) == ("admin", "")

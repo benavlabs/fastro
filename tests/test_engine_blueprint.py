@@ -268,6 +268,7 @@ def test_when_tables_are_read() -> None:
                 )
             },
             at=at,
+            condition_text="accounts and taskiq.broker=redis",
         ),
     )
 

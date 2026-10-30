@@ -192,6 +192,7 @@ class When:
     services: tuple[str, ...]
     contributes: Contributions
     at: KeyPath
+    condition_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,7 @@ class Wiring:
     imports: tuple[str, ...]
     slots: tuple[Slot, ...]
     at: KeyPath
+    condition_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -609,7 +611,7 @@ class Reader:
                 self.fail((*path, "path"), f"{file.text!r} doesn't end in .py, and its slots are Python.")
         if file is None or doc is None or not slots:
             return None
-        return Wiring(file, doc, condition, imports, slots, path)
+        return Wiring(file, doc, condition, imports, slots, path, _source(table, "if"))
 
     def slot(self, path: KeyPath, table: dict[str, Any]) -> Slot | None:
         if "kind" not in table:
@@ -945,7 +947,7 @@ class Reader:
         contributes = self.contributes(path, table)
         if condition is None:
             return None
-        return When(condition, paths, dependencies, dev_dependencies, services, contributes, path)
+        return When(condition, paths, dependencies, dev_dependencies, services, contributes, path, _source(table, "if"))
 
     def contributes(self, path: KeyPath, table: dict[str, Any]) -> Contributions:
         contributes: dict[str, tuple[Contribution, ...]] = {}
@@ -980,6 +982,12 @@ class Reader:
         if target is None or (via == "data" and not isinstance(value[via], dict)):
             return None
         return Contribution(target, via, order, condition, call is True, fields, path)
+
+
+def _source(table: dict[str, Any], key: str) -> str:
+    """The text ``table`` gives ``key``, as the catalog wrote it, or ``""`` when it doesn't give one."""
+    value = table.get(key, "")
+    return value if isinstance(value, str) else ""
 
 
 def _requires(text: str) -> SpecifierSet:
