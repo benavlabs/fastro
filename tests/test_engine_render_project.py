@@ -25,8 +25,11 @@ def _catalog() -> Blueprint:
 
 
 def _selection(catalog: Blueprint, name: str) -> Selection:
+    """A preset, ``paddle`` (billing through Paddle), or a selection no feature gives a router: core alone, or cache."""
     if name == "paddle":
         return select(catalog, ("billing",), options={("billing", "provider"): "paddle"})
+    if name in ("core", "cache"):
+        return select(catalog, () if name == "core" else ("cache",))
     return select(catalog, catalog.presets[name])
 
 
@@ -41,7 +44,7 @@ def _build(catalog: Blueprint, selection: Selection, root: Path) -> None:
         (root / path).write_text(text)
 
 
-@pytest.mark.parametrize(("name", "passed"), [("minimal", 4), ("full", 11), ("paddle", 6)])
+@pytest.mark.parametrize(("name", "passed"), [("minimal", 4), ("full", 11), ("paddle", 6), ("core", 2), ("cache", 3)])
 def test_a_planned_and_rendered_project_passes_its_backend_tests(tmp_path: Path, name: str, passed: int) -> None:
     catalog = _catalog()
     _build(catalog, _selection(catalog, name), tmp_path)

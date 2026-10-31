@@ -118,7 +118,7 @@ fastro.toml (or [app] in it, for your own code) and run `fastro sync`.
 [[wiring]]
 path = "backend/src/wiring/app.py"
 doc = "The app's routers, email sender and settings."
-imports = ["from collections.abc import Callable"]
+imports = ["from collections.abc import Callable", "from ..mount import Mount"]
 
 [[wiring.slots]]
 kind = "tuple"
@@ -126,7 +126,6 @@ name = "ROUTERS"
 point = "routers"
 annotation = "tuple[Mount, ...]"
 item = 'Mount({name}, "{prefix}")'
-item_imports = ["from ..mount import Mount"]
 
 [[wiring.slots]]
 kind = "value"
