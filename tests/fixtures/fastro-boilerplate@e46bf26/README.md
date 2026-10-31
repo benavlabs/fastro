@@ -1,9 +1,12 @@
 # Track B's catalog and committed wiring at e46bf26
 
-B's `blueprint.toml`, and every file its `[[wiring]]` declares, as committed at FastAPI-boilerplate
-commit `e46bf26` ("give taskiq's reload extra to the taskiq feature, and drop the example's em
-dash"). It's the first commit with `line_length = 128` in `[wiring_defaults]`, and it comes before
-B sets `overlay`, which the engine handles from A5.
+B's `blueprint.toml`, every file its `[[wiring]]` declares, and its `backend/pyproject.toml`, as
+committed at FastAPI-boilerplate commit `e46bf26` ("give taskiq's reload extra to the taskiq
+feature, and drop the example's em dash"). It's the first commit with `line_length = 128` in
+`[wiring_defaults]`, and it comes before B sets `overlay`, which the engine handles from A5.
+`tests/test_engine_render_ruff.py` checks the rendered wiring against that `pyproject.toml`'s ruff
+configuration. It's kept here as `backend-pyproject.toml`: at its own path, ruff would take the
+fixture for a project, and lint these files under B's configuration with its cache beside them.
 
 `tests/test_engine_render_boilerplate.py` renders the catalog with every feature selected, through
 `plan` and `render`, and compares each file byte for byte with the copy here (spec 2.8: B's
@@ -14,6 +17,7 @@ fastro repo root, with FastAPI-boilerplate checked out beside it:
 
 ```sh
 git -C ../FastAPI-boilerplate show e46bf26:blueprint.toml > 'tests/fixtures/fastro-boilerplate@e46bf26/blueprint.toml'
+git -C ../FastAPI-boilerplate show e46bf26:backend/pyproject.toml > 'tests/fixtures/fastro-boilerplate@e46bf26/backend-pyproject.toml'
 git -C ../FastAPI-boilerplate show e46bf26:backend/src/wiring/settings.py > 'tests/fixtures/fastro-boilerplate@e46bf26/backend/src/wiring/settings.py'
 git -C ../FastAPI-boilerplate show e46bf26:backend/src/wiring/app.py > 'tests/fixtures/fastro-boilerplate@e46bf26/backend/src/wiring/app.py'
 git -C ../FastAPI-boilerplate show e46bf26:backend/src/wiring/hooks.py > 'tests/fixtures/fastro-boilerplate@e46bf26/backend/src/wiring/hooks.py'

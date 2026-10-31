@@ -26,7 +26,7 @@ def test_every_feature_renders_every_wiring_file_the_catalog_declares() -> None:
 def test_the_fixture_holds_every_wiring_file_and_nothing_else() -> None:
     copied = sorted(str(path.relative_to(BOILERPLATE)) for path in BOILERPLATE.rglob("*") if path.is_file())
 
-    assert copied == sorted([*WIRING, "README.md", "blueprint.toml"])
+    assert copied == sorted([*WIRING, "README.md", "blueprint.toml", "backend-pyproject.toml"])
 
 
 @pytest.mark.parametrize("path", WIRING)
