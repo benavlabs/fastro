@@ -1,0 +1,230 @@
+{
+  "schema": 1,
+  "blueprint": {
+    "name": "mini",
+    "version": "0.1.0"
+  },
+  "selection": {
+    "features": [
+      "accounts"
+    ],
+    "options": {},
+    "plugins": [],
+    "modules": []
+  },
+  "ops": [
+    {
+      "op": "copy",
+      "path": "backend/pyproject.toml",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/__init__.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/admin_default.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/app.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/email.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/health.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/modules/__init__.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/modules/accounts/__init__.py",
+      "origin": "feature:accounts",
+      "reason": "feature accounts is selected"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/modules/accounts/email.py",
+      "origin": "feature:accounts",
+      "reason": "feature accounts is selected"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/modules/accounts/routes.py",
+      "origin": "feature:accounts",
+      "reason": "feature accounts is selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/admin/__init__.py",
+      "origin": "feature:admin",
+      "reason": "feature admin isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/admin/site.py",
+      "origin": "feature:admin",
+      "reason": "feature admin isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/billing/__init__.py",
+      "origin": "feature:billing",
+      "reason": "feature billing isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/billing/paddle.py",
+      "origin": "feature:billing",
+      "reason": "feature billing isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/billing/routes.py",
+      "origin": "feature:billing",
+      "reason": "feature billing isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/cache/__init__.py",
+      "origin": "feature:cache",
+      "reason": "feature cache isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/cache/settings.py",
+      "origin": "feature:cache",
+      "reason": "feature cache isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/tasks/__init__.py",
+      "origin": "feature:tasks",
+      "reason": "feature tasks isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/src/modules/tasks/jobs.py",
+      "origin": "feature:tasks",
+      "reason": "feature tasks isn't selected"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/mount.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "copy",
+      "path": "backend/src/wiring/__init__.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "render",
+      "path": "backend/src/wiring/admin.py",
+      "origin": "wiring",
+      "reason": "generated wiring"
+    },
+    {
+      "op": "render",
+      "path": "backend/src/wiring/app.py",
+      "origin": "wiring",
+      "reason": "generated wiring"
+    },
+    {
+      "op": "render",
+      "path": "backend/src/wiring/health.py",
+      "origin": "wiring",
+      "reason": "generated wiring"
+    },
+    {
+      "op": "render",
+      "path": "backend/src/wiring/tasks.py",
+      "origin": "wiring",
+      "reason": "generated wiring"
+    },
+    {
+      "op": "copy",
+      "path": "backend/tests/test_accounts.py",
+      "origin": "feature:accounts",
+      "reason": "feature accounts is selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/tests/test_admin.py",
+      "origin": "feature:admin",
+      "reason": "feature admin isn't selected"
+    },
+    {
+      "op": "copy",
+      "path": "backend/tests/test_app.py",
+      "origin": "core",
+      "reason": "no feature owns it"
+    },
+    {
+      "op": "skip",
+      "path": "backend/tests/test_billing.py",
+      "origin": "feature:billing",
+      "reason": "feature billing isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/tests/test_cache.py",
+      "origin": "feature:cache",
+      "reason": "feature cache isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "backend/tests/test_tasks.py",
+      "origin": "feature:tasks",
+      "reason": "feature tasks isn't selected"
+    },
+    {
+      "op": "skip",
+      "path": "blueprint.toml",
+      "origin": "core",
+      "reason": "it's blueprint_only"
+    },
+    {
+      "op": "skip",
+      "path": "fastro.toml",
+      "origin": "core",
+      "reason": "it's blueprint_only"
+    },
+    {
+      "op": "skip",
+      "path": "frontend/menu.ts",
+      "origin": "wiring",
+      "reason": "the wiring file's if, admin, doesn't hold"
+    }
+  ],
+  "dependencies": {
+    "add": [],
+    "remove": []
+  },
+  "migrations": {
+    "drops": [],
+    "adds": []
+  },
+  "next": []
+}
