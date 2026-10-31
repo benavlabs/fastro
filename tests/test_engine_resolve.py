@@ -17,8 +17,8 @@ from fastro.engine.resolve import (
     Taken,
     TooManyContributions,
     UnknownFeature,
+    check_fallback_slots,
     check_one_points,
-    check_value_slots,
     select,
     taken,
 )
@@ -402,29 +402,55 @@ EMPTY = CLASH.replace('fallback = "None"\n', "").replace(
 )
 
 
-@pytest.mark.parametrize("requested", [(), ("mail",), ("queue",)])
-def test_a_value_slot_whose_point_the_selection_leaves_empty_needs_a_fallback(requested: tuple[str, ...]) -> None:
-    empty = blueprint.load("blueprint.toml", EMPTY, Version("0.1.0"))
+REEXPORT = EMPTY.replace(
+    'kind = "value"\nname = "SENDER"\npoint = "sender"\nannotation = "object"\n',
+    'kind = "reexport"\nname = "SENDER"\npoint = "sender"\n',
+)
+GUARDED = EMPTY.replace('path = "backend/src/wiring.py"\n', 'path = "backend/src/wiring.py"\nif = "mail"\n')
 
+
+def _check(text: str, requested: tuple[str, ...]) -> None:
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    selection = select(catalog, requested)
+    check_fallback_slots(catalog, selection, taken(catalog, selection))
+
+
+@pytest.mark.parametrize(("text", "kind"), [(EMPTY, "value"), (REEXPORT, "reexport")])
+@pytest.mark.parametrize("requested", [(), ("mail",), ("queue",)])
+def test_a_slot_without_a_fallback_whose_point_the_selection_leaves_empty_is_refused(
+    text: str, kind: str, requested: tuple[str, ...]
+) -> None:
     with pytest.raises(NoContribution) as caught:
-        check_value_slots(empty, taken(empty, select(empty, requested)))
+        _check(text, requested)
 
     assert str(caught.value) == (
-        "SENDER at wiring[0].slots[0] in backend/src/wiring.py is a value slot with no fallback, and this selection "
+        f"SENDER at wiring[0].slots[0] in backend/src/wiring.py is a {kind} slot with no fallback, and this selection "
         "gives its point, 'sender', no contribution. Select a feature that contributes to it, or give the slot a fallback."
     )
     assert isinstance(caught.value, SelectionError)
 
 
-def test_a_value_slot_with_a_contribution_or_a_fallback_passes() -> None:
-    empty = blueprint.load("blueprint.toml", EMPTY, Version("0.1.0"))
-    clash = blueprint.load("blueprint.toml", CLASH, Version("0.1.0"))
-
-    check_value_slots(empty, taken(empty, select(empty, ("mail", "queue"))))
-    for requested in ((), ("mail",), ("queue",)):
-        check_value_slots(clash, taken(clash, select(clash, requested)))
+@pytest.mark.parametrize("text", [EMPTY, REEXPORT])
+def test_a_slot_without_a_fallback_passes_when_the_selection_contributes(text: str) -> None:
+    _check(text, ("mail", "queue"))
 
 
-def test_mini_s_value_slots_pass_under_every_preset(mini: Blueprint) -> None:
+@pytest.mark.parametrize("requested", [(), ("mail",), ("queue",)])
+def test_a_slot_with_a_fallback_passes_whatever_the_selection(requested: tuple[str, ...]) -> None:
+    _check(CLASH, requested)
+
+
+@pytest.mark.parametrize("requested", [(), ("queue",)])
+def test_a_file_whose_if_fails_isnt_rendered_so_its_empty_slot_passes(requested: tuple[str, ...]) -> None:
+    _check(GUARDED, requested)
+
+
+def test_a_file_whose_if_holds_is_rendered_so_its_empty_slot_is_refused() -> None:
+    with pytest.raises(NoContribution):
+        _check(GUARDED, ("mail",))
+
+
+def test_mini_s_fallback_slots_pass_under_every_preset(mini: Blueprint) -> None:
     for features in mini.presets.values():
-        check_value_slots(mini, taken(mini, select(mini, features)))
+        selection = select(mini, features)
+        check_fallback_slots(mini, selection, taken(mini, selection))

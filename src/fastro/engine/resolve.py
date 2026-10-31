@@ -16,6 +16,7 @@ from fastro.engine.problems import key_name
 from fastro.engine.spec import RepoPath
 
 APP = "app"
+FALLBACK_KINDS = ("value", "reexport")
 
 
 class SelectionError(ValueError):
@@ -41,7 +42,7 @@ class TooManyContributions(SelectionError):
 
 
 class NoContribution(SelectionError):
-    """A ``value`` slot with no fallback whose point the selection gives no contribution (spec 2.6)."""
+    """A ``value`` or ``reexport`` slot with no fallback whose point the selection gives no contribution (spec 2.6)."""
 
 
 @dataclass(frozen=True)
@@ -188,14 +189,17 @@ def check_one_points(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]])
             )
 
 
-def check_value_slots(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]]) -> None:
-    """Refuse a ``value`` slot with no fallback whose point ``found`` gives no contribution (spec 2.6)."""
+def check_fallback_slots(catalog: Blueprint, selection: Selection, found: Mapping[str, tuple[Taken, ...]]) -> None:
+    """Refuse a ``value`` or ``reexport`` slot with no fallback, in a file ``selection`` renders, whose point ``found``
+    gives no contribution (spec 2.6)."""
     for i, file in enumerate(catalog.wiring):
+        if file.condition is not None and not selection.holds(file.condition):
+            continue
         for j, slot in enumerate(file.slots):
-            if slot.kind == "value" and slot.fallback is None and not found.get(slot.point):
+            if slot.kind in FALLBACK_KINDS and slot.fallback is None and not found.get(slot.point):
                 raise NoContribution(
-                    f"{slot.name} at {key_name(('wiring', i, 'slots', j))} in {file.path.text} is a value slot with no "
-                    f"fallback, and this selection gives its point, {slot.point!r}, no contribution. "
+                    f"{slot.name} at {key_name(('wiring', i, 'slots', j))} in {file.path.text} is a {slot.kind} slot "
+                    f"with no fallback, and this selection gives its point, {slot.point!r}, no contribution. "
                     "Select a feature that contributes to it, or give the slot a fallback."
                 )
 

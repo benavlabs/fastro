@@ -153,7 +153,7 @@ def render_python(catalog: Blueprint, file: Wiring, found: Mapping[str, tuple[Ta
     """The text of the Python wiring ``file``, from each point's ordered contributions in ``found`` (2.6, 2.8).
 
     ``found`` is what ``ordered`` returns for a selection that has passed ``check_one_points`` and
-    ``check_value_slots``.
+    ``check_fallback_slots``.
     """
     imports = list(file.imports)
     slots = []
