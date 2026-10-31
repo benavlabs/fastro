@@ -40,6 +40,10 @@ class TooManyContributions(SelectionError):
     """A ``one`` point the selection gives more than one contribution (spec 2.3)."""
 
 
+class NoContribution(SelectionError):
+    """A ``value`` slot with no fallback whose point the selection gives no contribution (spec 2.6)."""
+
+
 @dataclass(frozen=True)
 class Selection:
     """The features a project gets, closed under ``requires`` and in catalog order.
@@ -182,6 +186,18 @@ def check_one_points(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]])
                 f"{point!r} is a one point, and this selection gives it {len(items)} contributions: {given}. "
                 "Drop one of them, or give them conditions that exclude each other."
             )
+
+
+def check_value_slots(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]]) -> None:
+    """Refuse a ``value`` slot with no fallback whose point ``found`` gives no contribution (spec 2.6)."""
+    for i, file in enumerate(catalog.wiring):
+        for j, slot in enumerate(file.slots):
+            if slot.kind == "value" and slot.fallback is None and not found.get(slot.point):
+                raise NoContribution(
+                    f"{slot.name} at {key_name(('wiring', i, 'slots', j))} in {file.path.text} is a value slot with no "
+                    f"fallback, and this selection gives its point, {slot.point!r}, no contribution. "
+                    "Select a feature that contributes to it, or give the slot a fallback."
+                )
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from packaging.version import Version
 from fastro.engine import blueprint, conditions, project
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.resolve import (
+    NoContribution,
     OptionError,
     Ownership,
     SelectionError,
@@ -17,6 +18,7 @@ from fastro.engine.resolve import (
     TooManyContributions,
     UnknownFeature,
     check_one_points,
+    check_value_slots,
     select,
     taken,
 )
@@ -393,3 +395,36 @@ def test_a_one_point_given_one_contribution_or_none_passes() -> None:
 
     for requested in ((), ("mail",), ("queue",)):
         check_one_points(clash, taken(clash, select(clash, requested)))
+
+
+EMPTY = CLASH.replace('fallback = "None"\n', "").replace(
+    '[[features.mail.when]]\nif = "queue"\ncontributes = { sender = ["src.mail:queued"] }\n', ""
+)
+
+
+@pytest.mark.parametrize("requested", [(), ("mail",), ("queue",)])
+def test_a_value_slot_whose_point_the_selection_leaves_empty_needs_a_fallback(requested: tuple[str, ...]) -> None:
+    empty = blueprint.load("blueprint.toml", EMPTY, Version("0.1.0"))
+
+    with pytest.raises(NoContribution) as caught:
+        check_value_slots(empty, taken(empty, select(empty, requested)))
+
+    assert str(caught.value) == (
+        "SENDER at wiring[0].slots[0] in backend/src/wiring.py is a value slot with no fallback, and this selection "
+        "gives its point, 'sender', no contribution. Select a feature that contributes to it, or give the slot a fallback."
+    )
+    assert isinstance(caught.value, SelectionError)
+
+
+def test_a_value_slot_with_a_contribution_or_a_fallback_passes() -> None:
+    empty = blueprint.load("blueprint.toml", EMPTY, Version("0.1.0"))
+    clash = blueprint.load("blueprint.toml", CLASH, Version("0.1.0"))
+
+    check_value_slots(empty, taken(empty, select(empty, ("mail", "queue"))))
+    for requested in ((), ("mail",), ("queue",)):
+        check_value_slots(clash, taken(clash, select(clash, requested)))
+
+
+def test_mini_s_value_slots_pass_under_every_preset(mini: Blueprint) -> None:
+    for features in mini.presets.values():
+        check_value_slots(mini, taken(mini, select(mini, features)))

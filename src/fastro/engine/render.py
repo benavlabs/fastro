@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from fastro.engine.blueprint import Blueprint, Info
+from fastro.engine.blueprint import Blueprint, Info, Slot, Wiring
 from fastro.engine.resolve import APP, Taken
 from fastro.engine.spec import Ref, RepoPath
 
@@ -147,3 +147,78 @@ def _line(statement: _Import, line_length: int) -> str:
     if len(line) <= line_length:
         return line
     return f"from {module} import (\n" + "".join(f"    {name},\n" for name in names) + ")"
+
+
+def render_python(catalog: Blueprint, file: Wiring, found: Mapping[str, tuple[Taken, ...]]) -> str:
+    """The text of the Python wiring ``file``, from each point's ordered contributions in ``found`` (2.6, 2.8).
+
+    ``found`` is what ``ordered`` returns for a selection that has passed ``check_one_points`` and
+    ``check_value_slots``.
+    """
+    imports = list(file.imports)
+    slots = []
+    for slot in file.slots:
+        text, needed = _ASSIGNMENTS[slot.kind](catalog, file, slot, found.get(slot.point, ()))
+        slots.append(text)
+        imports += needed
+    block = import_block(imports, catalog.info.import_root, catalog.line_length)
+    return _docstring(file.doc, catalog.header) + "\n" + (block + "\n" if block else "") + "".join(slots)
+
+
+def _docstring(doc: str, header: str) -> str:
+    """The module docstring: ``doc``, then the header after a blank line, each with its outer newlines stripped (2.8)."""
+    doc, header = doc.strip("\n"), header.strip("\n")
+    return f'"""{doc}\n\n{header}\n"""\n' if header else f'"""{doc}"""\n'
+
+
+def _item(catalog: Blueprint, file: Wiring, slot: Slot, item: Taken) -> tuple[str, list[str]]:
+    """One entry of a ``tuple`` or ``list`` slot, and the import it needs (2.6)."""
+    contribution = item.contribution
+    fields: dict[str, object] = {**slot.defaults, **contribution.fields}
+    if slot.literal:
+        return (slot.item or '"{value}"').format(**fields, value=contribution.target), []
+    ref = _ref(contribution.target)
+    fields.update(name=ref.alias or ref.attr, ref=str(ref), module=ref.module, attr=ref.attr)
+    template = slot.item or ("{name}()" if contribution.call else "{name}")
+    return template.format(**fields), [ref_import(ref, file.path, catalog.info)]
+
+
+def _ref(target: object) -> Ref:
+    """A contribution's target as a ref: parsed already for a ``ref`` table, or parsed here from a bare string."""
+    return target if isinstance(target, Ref) else Ref.parse(str(target))
+
+
+def _collection(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...], brackets: str) -> tuple[str, list[str]]:
+    """A ``tuple`` or ``list`` slot in ``brackets``, with its item imports only when it has entries (2.6)."""
+    entries = [_item(catalog, file, slot, item) for item in items]
+    imports = [line for _, needed in entries for line in needed] + (list(slot.item_imports) if entries else [])
+    texts = [text for text, _ in entries]
+    start = f"{slot.name}: {slot.annotation} = {brackets[0]}"
+    if not texts:
+        return f"{start}{brackets[1]}\n", imports
+    if brackets == "()" and len(texts) == 1:
+        return f"{start}{texts[0]},)\n", imports
+    return start + "\n" + "".join(f"    {text},\n" for text in texts) + f"{brackets[1]}\n", imports
+
+
+def _tuple(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
+    """``NAME: ANN = (...)``: one line for one entry, exploded for more (2.6)."""
+    return _collection(catalog, file, slot, items, "()")
+
+
+def _list(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
+    """``NAME: ANN = [...]``, always exploded (2.6)."""
+    return _collection(catalog, file, slot, items, "[]")
+
+
+def _value(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
+    """``NAME: ANN = name`` for its one contribution, or ``= FALLBACK`` with its imports when there's none (2.6)."""
+    if items:
+        ref = _ref(items[0].contribution.target)
+        return f"{slot.name}: {slot.annotation} = {ref.alias or ref.attr}\n", [ref_import(ref, file.path, catalog.info)]
+    if slot.fallback is None:
+        raise ValueError(f"{slot.name} has no contribution and no fallback.")
+    return f"{slot.name}: {slot.annotation} = {slot.fallback}\n", list(slot.fallback_imports)
+
+
+_ASSIGNMENTS = {"tuple": _tuple, "list": _list, "value": _value}
