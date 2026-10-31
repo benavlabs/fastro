@@ -642,6 +642,7 @@ annotation = "tuple[object, ...]"
 kind = "class"
 name = "Settings"
 point = "settings"
+doc = "The settings."
 
 [[wiring.slots]]
 kind = "reexport"
@@ -657,7 +658,7 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
     body += '[features.accounts.contributes]\nrouters = ["src.wiring:router"]\n'
 
     assert _problems(MINIMAL + body) == [
-        "blueprint.toml:39: features.accounts.contributes.routers[0]: 'src.wiring:router' is a ref to src.wiring, the module "
+        "blueprint.toml:40: features.accounts.contributes.routers[0]: 'src.wiring:router' is a ref to src.wiring, the module "
         "wiring[0].slots[0] is generated into.\n" + OWN_FIX
     ]
 
@@ -667,7 +668,7 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
     [
         (
             OWN + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
-            "39: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
+            "40: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
             "wiring[0].slots[0] is generated into.\n" + OWN_FIX,
         ),
         (
@@ -675,12 +676,12 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
                 'annotation = "tuple[object, ...]"', 'annotation = "tuple[object, ...]"\nitem = "Mount({name}, {prefix})"'
             )
             + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
-            "40: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
+            "41: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
             "wiring[0].slots[0] is generated into.\n" + OWN_FIX,
         ),
         (
             OWN + '[features.accounts.contributes]\nrouters = [{ ref = "src.wiring.app:router as r" }]\n',
-            "39: features.accounts.contributes.routers[0]: 'src.wiring.app:router as r' is a ref to src.wiring.app, the "
+            "40: features.accounts.contributes.routers[0]: 'src.wiring.app:router as r' is a ref to src.wiring.app, the "
             "module wiring[0].slots[0] is generated into.\n" + OWN_FIX,
         ),
         (
@@ -695,7 +696,7 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
         ),
         (
             OWN.replace('fallback = "src.admin:site"', 'fallback = "src.wiring.app:site"'),
-            "37: wiring[0].slots[2].fallback: 'src.wiring.app:site' is a ref to src.wiring.app, the module this slot is "
+            "38: wiring[0].slots[2].fallback: 'src.wiring.app:site' is a ref to src.wiring.app, the module this slot is "
             "generated into.\n" + OWN_FIX,
         ),
     ],

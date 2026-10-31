@@ -79,7 +79,7 @@ SLOT_REQUIRED = {
     "tuple": ("name", "point", "annotation"),
     "list": ("name", "point", "annotation"),
     "value": ("name", "point", "annotation"),
-    "class": ("name", "point"),
+    "class": ("name", "point", "doc"),
     "reexport": ("name", "point"),
     "raw": ("code",),
     "data": ("name", "point", "format"),
@@ -612,6 +612,7 @@ class Reader:
             self.fail((*path, "slots"), "should list at least one slot.")
         slots = tuple(slot for slot in found if slot is not None)
         self.duplicates([(slot.at, slot.name) for slot in slots if slot.kind != "raw"], "name", "is defined by {} already.")
+        self.dunder_all(slots)
         family = [(slot, slot.kind == "data") for slot in slots]
         for slot, data in family[1:]:
             if data != family[0][1]:
@@ -627,6 +628,27 @@ class Reader:
         if file is None or doc is None or not slots:
             return None
         return Wiring(file, doc, condition, imports, slots, path, _source(table, "if"))
+
+    def dunder_all(self, slots: tuple[Slot, ...]) -> None:
+        """Refuse a second ``reexport`` slot, and ``raw`` code assigning ``__all__`` beside one: the reexport renders the
+        file's ``__all__`` (2.6)."""
+        reexports = [slot for slot in slots if slot.kind == "reexport"]
+        if not reexports:
+            return
+        first = key_name(reexports[0].at)
+        for slot in reexports[1:]:
+            self.fail(
+                slot.at,
+                f"is a second reexport slot in this file, after {first}, and each would render the file's __all__.",
+                "Keep one reexport slot in each file.",
+            )
+        for slot in slots:
+            if _assigns_all(slot.code):
+                self.fail(
+                    (*slot.at, "code"),
+                    f"assigns __all__, and {first}, a reexport slot, renders the file's __all__.",
+                    "Drop the assignment: the reexport's __all__ lists its name.",
+                )
 
     def slot(self, path: KeyPath, table: dict[str, Any]) -> Slot | None:
         if "kind" not in table:
@@ -1081,6 +1103,31 @@ def _code(text: str) -> str:
     except SyntaxError as error:
         raise SpecError(f"isn't Python: {error.msg} on its line {error.lineno}.") from None
     return text
+
+
+def _assigns_all(code: str) -> bool:
+    """Whether module-level ``code`` assigns ``__all__``, by ``=``, an annotation or an augmented assignment."""
+    for node in ast.parse(code).body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(_binds_all(target) for target in targets):
+            return True
+    return False
+
+
+def _binds_all(target: ast.expr) -> bool:
+    """Whether an assignment ``target`` binds the name ``__all__``, directly or by unpacking into it."""
+    if isinstance(target, ast.Name):
+        return target.id == "__all__"
+    if isinstance(target, ast.Starred):
+        return _binds_all(target.value)
+    if isinstance(target, ast.Tuple | ast.List):
+        return any(_binds_all(element) for element in target.elts)
+    return False
 
 
 def _item(text: str) -> str:

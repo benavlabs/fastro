@@ -1,5 +1,7 @@
 """Loading ``[[wiring]]``, its slots and ``[wiring_defaults]`` (spec 2.6, 2.6.1, the header rules of 2.8, and 2.12)."""
 
+import json
+
 import pytest
 from packaging.version import Version
 
@@ -313,12 +315,12 @@ IMPORT_RULE = "isn't one import statement, such as 'from fastapi import APIRoute
             "14: wiring[0].slots[0].fallback_imports: should be a list of strings, not a string.",
         ),
         (
-            FILE + "[[wiring.slots]]\nkind = 'class'\nname = 'S'\npoint = 's'\nfallback = 'Base'\n",
+            FILE + "[[wiring.slots]]\nkind = 'class'\nname = 'S'\npoint = 's'\nfallback = 'Base'\ndoc = 'S.'\n",
             "13: wiring[0].slots[0].fallback: 'Base' isn't a ref: expected 'package.module:name' or "
             "'package.module:name as alias'.",
         ),
         (
-            FILE + "[[wiring.slots]]\nkind = 'class'\nname = 'S'\npoint = 's'\nappend = ['m:A', 'B']\n",
+            FILE + "[[wiring.slots]]\nkind = 'class'\nname = 'S'\npoint = 's'\nappend = ['m:A', 'B']\ndoc = 'S.'\n",
             "13: wiring[0].slots[0].append[1]: 'B' isn't a ref: expected 'package.module:name' or "
             "'package.module:name as alias'.",
         ),
@@ -411,6 +413,64 @@ def test_header_lines_are_measured_after_leading_and_trailing_newlines_are_strip
     header = "\n" + "x" * 100 + "\n" + "y" * 100 + "\n\n"
 
     assert _load(MINIMAL + f'[wiring_defaults]\nline_length = 128\nheader = """\n{header}"""\n').header == header
+
+
+REEXPORT = "[[wiring.slots]]\nkind = 'reexport'\nname = 'C'\npoint = 'c'\n"
+
+
+def _points(*names: str) -> str:
+    return "".join(f"[points.{name}]\ncardinality = 'one'\n" for name in names)
+
+
+def _raw(code: str) -> str:
+    return f"[[wiring.slots]]\nkind = 'raw'\ncode = {json.dumps(code)}\n"
+
+
+def test_a_class_slot_needs_a_doc() -> None:
+    assert _problems(MINIMAL + FILE + CLASS + _points("s")) == [
+        "blueprint.toml:9: wiring[0].slots[0].doc: is required for a class slot.\n  Add doc to [wiring[0].slots[0]]."
+    ]
+
+
+def test_a_file_holds_one_reexport_slot_at_most() -> None:
+    assert _problems(MINIMAL + FILE + REEXPORT + REEXPORT.replace("'C'", "'D'").replace("'c'", "'d'") + _points("c", "d")) == [
+        "blueprint.toml:13: wiring[0].slots[1]: is a second reexport slot in this file, after wiring[0].slots[0], "
+        "and each would render the file's __all__.\n  Keep one reexport slot in each file."
+    ]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        '__all__ = ["C"]',
+        "__all__: list[str] = []",
+        '__all__ += ["x"]',
+        "x = __all__ = []",
+        "__all__, x = [], 1",
+        "[x, *__all__] = [1]",
+    ],
+)
+@pytest.mark.parametrize("reexport_first", [True, False])
+def test_a_file_with_a_reexport_has_no_raw_slot_that_assigns_all(code: str, reexport_first: bool) -> None:
+    slots = REEXPORT + _raw(code) if reexport_first else _raw(code) + REEXPORT
+    reexport, raw, line = ("[0]", "[1]", 15) if reexport_first else ("[1]", "[0]", 11)
+
+    assert _problems(MINIMAL + FILE + slots + _points("c")) == [
+        f"blueprint.toml:{line}: wiring[0].slots{raw}.code: assigns __all__, and wiring[0].slots{reexport}, a reexport "
+        "slot, renders the file's __all__.\n  Drop the assignment: the reexport's __all__ lists its name."
+    ]
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["x = __all__", "x[__all__] = 1", "__all__.x = 1", "def f():\n    __all__ = []", "class K:\n    __all__ = []"],
+)
+def test_raw_code_that_reads_all_or_assigns_it_in_a_nested_scope_sits_beside_a_reexport(code: str) -> None:
+    assert len(_load(MINIMAL + FILE + REEXPORT + _raw(code) + _points("c")).wiring[0].slots) == 2
+
+
+def test_a_raw_slot_may_assign_all_in_a_file_without_a_reexport() -> None:
+    assert _load(MINIMAL + FILE + _raw('__all__ = ["C"]')).wiring[0].slots[0].code == '__all__ = ["C"]'
 
 
 def test_a_file_may_hold_several_raw_slots() -> None:

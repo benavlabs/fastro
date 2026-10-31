@@ -100,6 +100,7 @@ annotation = "tuple[object, ...]"
 kind = "class"
 name = "Settings"
 point = "settings"
+doc = "The settings."
 """
 
 
