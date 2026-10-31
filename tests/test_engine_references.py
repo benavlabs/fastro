@@ -613,3 +613,102 @@ def test_a_wiring_path_outside_blueprint_only_loads() -> None:
     text = MINIMAL + 'blueprint_only = ["docs/"]\n' + KEPT.replace("PATH", "frontend/menu.json")
 
     assert [file.path.text for file in _load(text).wiring] == ["frontend/menu.json"]
+
+
+OWN = """\
+[points.routers]
+cardinality = "many"
+
+[points.settings]
+cardinality = "many"
+
+[points.site]
+cardinality = "one"
+
+[features.accounts]
+summary = "Users and login"
+
+[[wiring]]
+path = "backend/src/wiring/app.py"
+doc = "W."
+
+[[wiring.slots]]
+kind = "tuple"
+name = "ROUTERS"
+point = "routers"
+annotation = "tuple[object, ...]"
+
+[[wiring.slots]]
+kind = "class"
+name = "Settings"
+point = "settings"
+
+[[wiring.slots]]
+kind = "reexport"
+name = "SITE"
+point = "site"
+fallback = "src.admin:site"
+"""
+OWN_FIX = "  Point it at the module that defines it."
+
+
+def test_a_package_wiring_file_is_its_package_s_module() -> None:
+    body = OWN.replace("backend/src/wiring/app.py", "backend/src/wiring/__init__.py")
+    body += '[features.accounts.contributes]\nrouters = ["src.wiring:router"]\n'
+
+    assert _problems(MINIMAL + body) == [
+        "blueprint.toml:39: features.accounts.contributes.routers[0]: 'src.wiring:router' is a ref to src.wiring, the module "
+        "wiring[0].slots[0] is generated into.\n" + OWN_FIX
+    ]
+
+
+@pytest.mark.parametrize(
+    ("body", "problem"),
+    [
+        (
+            OWN + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
+            "39: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
+            "wiring[0].slots[0] is generated into.\n" + OWN_FIX,
+        ),
+        (
+            OWN.replace(
+                'annotation = "tuple[object, ...]"', 'annotation = "tuple[object, ...]"\nitem = "Mount({name}, {prefix})"'
+            )
+            + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
+            "40: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
+            "wiring[0].slots[0] is generated into.\n" + OWN_FIX,
+        ),
+        (
+            OWN + '[features.accounts.contributes]\nrouters = [{ ref = "src.wiring.app:router as r" }]\n',
+            "39: features.accounts.contributes.routers[0]: 'src.wiring.app:router as r' is a ref to src.wiring.app, the "
+            "module wiring[0].slots[0] is generated into.\n" + OWN_FIX,
+        ),
+        (
+            OWN.replace('point = "settings"\n', 'point = "settings"\nfallback = "src.wiring.app:Base"\n'),
+            "32: wiring[0].slots[1].fallback: 'src.wiring.app:Base' is a ref to src.wiring.app, the module this slot is "
+            "generated into.\n" + OWN_FIX,
+        ),
+        (
+            OWN.replace('point = "settings"\n', 'point = "settings"\nappend = ["src.base:A", "src.wiring.app:B"]\n'),
+            "32: wiring[0].slots[1].append[1]: 'src.wiring.app:B' is a ref to src.wiring.app, the module this slot is "
+            "generated into.\n" + OWN_FIX,
+        ),
+        (
+            OWN.replace('fallback = "src.admin:site"', 'fallback = "src.wiring.app:site"'),
+            "37: wiring[0].slots[2].fallback: 'src.wiring.app:site' is a ref to src.wiring.app, the module this slot is "
+            "generated into.\n" + OWN_FIX,
+        ),
+    ],
+)
+def test_a_ref_to_the_module_its_slot_is_generated_into_is_refused(body: str, problem: str) -> None:
+    assert _problems(MINIMAL + body) == [f"blueprint.toml:{problem}"]
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["src.wiring:router", "src.wiring.other:router", "src:router", "src.wiring.app_extra:router"],
+)
+def test_a_ref_to_any_other_module_loads(ref: str) -> None:
+    text = MINIMAL + OWN + f'[features.accounts.contributes]\nrouters = ["{ref}"]\n'
+
+    assert _load(text).features[0].contributes["routers"][0].target == ref

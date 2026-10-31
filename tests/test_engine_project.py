@@ -353,6 +353,11 @@ def test_a_project_whose_names_its_catalog_declares_loads() -> None:
             "6: app.contributes.routers[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),
         (
+            _for_mini(tables='[app]\ncontributes = { routers = ["src.wiring:r"] }\n'),
+            "6: app.contributes.routers[0]: 'src.wiring:r' is a ref to src.wiring, the module blueprint.toml's "
+            "wiring[0].slots[0] is generated into.\n  Point it at the module that defines it.",
+        ),
+        (
             _for_mini(tables='[app]\npaths = ["backend/src/"]\n'),
             "6: app.paths[0]: 'backend/src/' covers 'backend/src/wiring.py', a wiring file the tool generates.\n"
             "  Narrow [app].paths so they leave the wiring files out.",

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 BUILT_IN_FIELDS = frozenset({"name", "ref", "module", "attr", "value"})
 ONE_SLOT_KINDS = ("value", "reexport")
+OWN_MODULE = "Point it at the module that defines it."
 
 
 def problems(catalog: Blueprint) -> list[Problem]:
@@ -43,10 +44,13 @@ class _Checker:
         self.features = {feature.name: feature for feature in catalog.features}
         self.points = catalog.points
         self.slots: dict[str, Slot] = {}
+        self.modules: dict[str, str | None] = {}
         for file in catalog.wiring:
+            module = _module_of(file.path, catalog.info.python_root)
             for slot in file.slots:
                 if slot.kind != "raw" and slot.point in self.points:
                     self.slots.setdefault(slot.point, slot)
+                    self.modules.setdefault(slot.point, module)
 
     def problem(self, path: KeyPath, message: str, fix: str) -> Problem:
         return self.catalog.document.problem(path, message, fix)
@@ -127,12 +131,18 @@ class _Checker:
         if item.via not in forms:
             yield self.problem(path, f"should be {wanted}, since {slot.point} is collected by a {kind} slot.", "")
             return
+        ref = item.target if isinstance(item.target, Ref) else None
         if item.via == "" and not slot.literal and isinstance(item.target, str):
             try:
-                Ref.parse(item.target)
+                ref = Ref.parse(item.target)
             except SpecError as error:
                 yield self.problem(path, str(error), "")
                 return
+        module = self.modules.get(slot.point)
+        if ref is not None and ref.module == module:
+            message = f"{str(ref)!r} is a ref to {module}, the module {self.place(slot.at)} is generated into."
+            yield self.problem(path, message, OWN_MODULE)
+            return
         given = BUILT_IN_FIELDS | set(slot.defaults) | set(item.fields)
         for name in _fields(slot.item):
             if name not in given:
@@ -177,6 +187,15 @@ class _Checker:
                         message = f"{slot.point!r} is a many point, and a {slot.kind} slot collects a one point."
                         fix = f'Set cardinality = "one" in [points.{slot.point}], or collect it with a tuple or list slot.'
                         yield self.problem(path, message, fix)
+        for file in self.catalog.wiring:
+            module = _module_of(file.path, self.catalog.info.python_root)
+            for slot in file.slots:
+                refs = [((*slot.at, "fallback"), slot.fallback)] if isinstance(slot.fallback, Ref) else []
+                refs += [((*slot.at, "append", index), ref) for index, ref in enumerate(slot.append)]
+                for at, ref in refs:
+                    if ref.module == module:
+                        message = f"{str(ref)!r} is a ref to {module}, the module this slot is generated into."
+                        yield self.problem(at, message, OWN_MODULE)
         for name, point in self.points.items():
             if name not in seen:
                 fix = f"Add a slot with point = {name!r} to a [[wiring]] file, or drop the point."
@@ -300,6 +319,15 @@ class _Checker:
                     yield self.problem(path, f"{target!r} closes a cycle: {loop}.", "Drop one of the requires in that cycle.")
                 else:
                     stack.append((target, 0))
+
+
+def _module_of(path: RepoPath, python_root: RepoPath) -> str | None:
+    """The dotted module a generated Python file under ``python_root`` is, or ``None`` for a data file (2.8)."""
+    root = python_root.text.removesuffix("/") + "/"
+    if not path.text.startswith(root) or not path.text.endswith(".py"):
+        return None
+    parts = path.text[len(root) : -len(".py")].split("/")
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
 def _fields(item: str) -> list[str]:

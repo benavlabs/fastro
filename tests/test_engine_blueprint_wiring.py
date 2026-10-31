@@ -352,9 +352,30 @@ IMPORT_RULE = "isn't one import statement, such as 'from fastapi import APIRoute
         ),
         (
             '[wiring_defaults]\nfooter = ""\n',
-            "7: wiring_defaults.footer: isn't a key of [wiring_defaults].\n  The keys of [wiring_defaults] are header.",
+            "7: wiring_defaults.footer: isn't a key of [wiring_defaults].\n"
+            "  The keys of [wiring_defaults] are header, line_length.",
         ),
         ("[wiring_defaults]\nheader = 1\n", "7: wiring_defaults.header: should be a string, not an integer."),
+        ("[wiring_defaults]\nline_length = 0\n", "7: wiring_defaults.line_length: should be from 1 to 320, not 0."),
+        (
+            '[wiring_defaults]\nline_length = 0\nheader = "Generated."\n',
+            "7: wiring_defaults.line_length: should be from 1 to 320, not 0.",
+        ),
+        (
+            '[wiring_defaults]\nline_length = 500\nheader = "' + "x" * 95 + '"\n',
+            "7: wiring_defaults.line_length: should be from 1 to 320, not 500.",
+        ),
+        ("[wiring_defaults]\nline_length = 321\n", "7: wiring_defaults.line_length: should be from 1 to 320, not 321."),
+        ("[wiring_defaults]\nline_length = '88'\n", "7: wiring_defaults.line_length: should be an integer, not a string."),
+        ("[wiring_defaults]\nline_length = true\n", "7: wiring_defaults.line_length: should be an integer, not a boolean."),
+        (
+            '[wiring_defaults]\nline_length = 60\nheader = "' + "x" * 70 + '"\n',
+            "8: wiring_defaults.header: line 1 is 70 characters long, and line_length is 60.",
+        ),
+        (
+            '[wiring_defaults]\nline_length = 128\nheader = "' + "x" * 101 + '"\n',
+            "8: wiring_defaults.header: line 1 is 101 characters long, and header lines are at most 100.",
+        ),
     ],
 )
 def test_a_wiring_key_that_breaks_its_rule_is_refused_at_its_line(body: str, problem: str) -> None:
@@ -389,7 +410,7 @@ def test_text_that_goes_into_a_docstring_cant_end_it(body: str, problem: str) ->
 def test_header_lines_are_measured_after_leading_and_trailing_newlines_are_stripped() -> None:
     header = "\n" + "x" * 100 + "\n" + "y" * 100 + "\n\n"
 
-    assert _load(MINIMAL + f'[wiring_defaults]\nheader = """\n{header}"""\n').header == header
+    assert _load(MINIMAL + f'[wiring_defaults]\nline_length = 128\nheader = """\n{header}"""\n').header == header
 
 
 def test_a_file_may_hold_several_raw_slots() -> None:
@@ -402,3 +423,22 @@ def test_a_long_header_line_is_numbered_from_the_first_line_with_text() -> None:
     assert _problems(text) == [
         "blueprint.toml:7: wiring_defaults.header: line 1 is 101 characters long, and header lines are at most 100."
     ]
+
+
+@pytest.mark.parametrize(
+    ("body", "length"),
+    [
+        ("", 88),
+        ("[wiring_defaults]\nline_length = 128\n", 128),
+        ("[wiring_defaults]\nline_length = 1\n", 1),
+        ("[wiring_defaults]\nline_length = 320\n", 320),
+    ],
+)
+def test_the_line_length_is_read_with_ruffs_default(body: str, length: int) -> None:
+    assert _load(MINIMAL + body).line_length == length
+
+
+def test_a_header_line_up_to_the_line_length_loads() -> None:
+    text = MINIMAL + '[wiring_defaults]\nline_length = 128\nheader = "' + "x" * 95 + '"\n'
+
+    assert _load(text).header == "x" * 95
