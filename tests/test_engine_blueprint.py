@@ -129,6 +129,47 @@ def _problems(text: str, tool: Version = TOOL) -> list[str]:
     return [str(problem) for problem in caught.value.problems]
 
 
+DATA = (
+    MINIMAL
+    + """
+[points.menu]
+cardinality = "many"
+
+[[wiring]]
+path = "frontend/menu.ts"
+doc = "The menu."
+
+[[wiring.slots]]
+kind = "data"
+name = "MENU"
+point = "menu"
+format = "ts"
+
+[features.a]
+summary = "A"
+
+[[features.a.contributes.menu]]
+order = 1
+if = "a"
+data = { label = "A", weight = 1.5, count = 2, shown = true, tags = ["x", 2], link = { href = "/a" }, none = [] }
+"""
+)
+
+
+def test_a_data_table_holds_every_value_json_can() -> None:
+    (contribution,) = _load(DATA).features[0].contributes["menu"]
+
+    assert contribution.target == {
+        "label": "A",
+        "weight": 1.5,
+        "count": 2,
+        "shown": True,
+        "tags": ["x", 2],
+        "link": {"href": "/a"},
+        "none": [],
+    }
+
+
 def test_the_blueprint_table_is_read_with_every_key() -> None:
     info = _load(FULL).info
 
@@ -558,6 +599,49 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
         (
             FEATURE + 'contributes = { r = [{ ref = "m:x", call = 1 }] }',
             "8: features.a.contributes.r[0].call: should be true or false, not an integer.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { a = 1 }, call = true }] }",
+            "8: features.a.contributes.r[0].call: isn't a key of a data contribution.\n"
+            "  The keys of a data contribution are data, if, order.",
+        ),
+        (
+            FEATURE + 'contributes = { r = [{ data = { a = 1 }, prefix = "/a" }] }',
+            "8: features.a.contributes.r[0].prefix: isn't a key of a data contribution.\n"
+            "  The keys of a data contribution are data, if, order.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { a = 1 }, tags = [1] }] }",
+            "8: features.a.contributes.r[0].tags: isn't a key of a data contribution.\n"
+            "  The keys of a data contribution are data, if, order.",
+        ),
+        (
+            FEATURE + 'contributes = { r = [{ data = { href = "/a", feature = "a" } }] }',
+            "8: features.a.contributes.r[0].data.feature: is added to each item by fastro, so a data table can't "
+            "give it.\n  Rename the key.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { at = 1979-05-27 } }] }",
+            "8: features.a.contributes.r[0].data.at: "
+            "should be a string, an integer, a float, true or false, a list or a table, not a date or time.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { links = [{ at = 07:32:00 }] } }] }",
+            "8: features.a.contributes.r[0].data.links[0].at: "
+            "should be a string, an integer, a float, true or false, a list or a table, not a date or time.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { sizes = [1, nan] } }] }",
+            "8: features.a.contributes.r[0].data.sizes[1]: is nan, which JSON can't hold.\n"
+            "  Use a number, or write it as a string.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { n = -inf } }] }",
+            "8: features.a.contributes.r[0].data.n: is -inf, which JSON can't hold.\n  Use a number, or write it as a string.",
+        ),
+        (
+            FEATURE + "contributes = { r = [{ data = { n = inf } }] }",
+            "8: features.a.contributes.r[0].data.n: is inf, which JSON can't hold.\n  Use a number, or write it as a string.",
         ),
         (
             FEATURE + 'contributes = { r = [{ ref = "m:x", prefix = ["/a"] }] }',

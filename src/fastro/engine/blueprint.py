@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import difflib
 import ipaddress
+import math
 import re
 import string
 import sys
@@ -92,6 +93,7 @@ MODULE_GENERATOR = "module"
 TEMPLATE_FIELDS = {"name": "sample_name", "name_dashed": "sample-name", "Name": "SampleName"}
 CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
+DATA_CONTRIBUTION_KEYS = ("data", "order", "if")
 SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
 KEPT = (RepoPath("blueprint.toml"), RepoPath("fastro.toml"), RepoPath(".fastro/"))
@@ -996,6 +998,25 @@ class Reader:
             contributes[point] = tuple(item for item in found if item is not None)
         return contributes
 
+    def data(self, path: KeyPath, table: dict[str, Any]) -> None:
+        """Refuse a ``feature`` key, which fastro adds to each item, and any value JSON can't hold (2.6.1)."""
+        if "feature" in table:
+            self.fail((*path, "feature"), "is added to each item by fastro, so a data table can't give it.", "Rename the key.")
+        for key, item in table.items():
+            self.json_value((*path, key), item)
+
+    def json_value(self, path: KeyPath, value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                self.json_value((*path, key), item)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                self.json_value((*path, index), item)
+        elif isinstance(value, float) and not math.isfinite(value):
+            self.fail(path, f"is {value}, which JSON can't hold.", "Use a number, or write it as a string.")
+        elif not isinstance(value, str | int | float):
+            self.wrong(path, "a string, an integer, a float, true or false, a list or a table", value)
+
     def contribution(self, path: KeyPath, value: object) -> Contribution | None:
         if isinstance(value, str):
             return Contribution(value, "", at=path)
@@ -1013,6 +1034,13 @@ class Reader:
         condition = self.text(path, value, "if", conditions.parse)
         call = self.flag(path, value, "call")
         fields = {key: item for key, item in value.items() if key not in CONTRIBUTION_KEYS and key != via}
+        if via == "data":
+            for key in value:
+                if key not in DATA_CONTRIBUTION_KEYS:
+                    self.unknown(path, key, DATA_CONTRIBUTION_KEYS, "a data contribution")
+            fields = {}
+            if isinstance(value[via], dict):
+                self.data((*path, via), value[via])
         for key, item in fields.items():
             if not isinstance(item, str | int):
                 self.wrong((*path, key), "a string, an integer or true or false", item)
