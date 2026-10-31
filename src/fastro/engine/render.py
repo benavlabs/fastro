@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 from collections.abc import Iterable, Mapping
@@ -279,3 +280,38 @@ def _raw(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...])
 
 
 _SLOTS = {"tuple": _tuple, "list": _list, "value": _value, "class": _class, "reexport": _reexport, "raw": _raw}
+
+
+def render_data(catalog: Blueprint, file: Wiring, found: Mapping[str, tuple[Taken, ...]]) -> str:
+    """The text of the data wiring ``file`` (2.6.1): a ``ts`` file's comment and one export per slot, or a ``json``
+    file's object of every slot, with each item its ``data`` table followed by the owner as ``"feature"``."""
+    lists = {slot.name: [_data_item(item) for item in found.get(slot.point, ())] for slot in file.slots}
+    if file.slots[0].format == "json":
+        return json.dumps(lists, indent=2, ensure_ascii=False) + "\n"
+    lines = _comment(file.doc)
+    if catalog.header.strip("\n"):
+        lines += ["//", *_comment(catalog.header)]
+    exports = "".join(f"export const {name} = {_inline(items)} as const;\n" for name, items in lists.items())
+    return "\n".join(lines) + "\n\n" + exports
+
+
+def _data_item(item: Taken) -> dict[str, object]:
+    """A contribution's ``data`` table, in the order written, then ``"feature"``: the feature, ``core`` or ``app``."""
+    target = item.contribution.target
+    assert isinstance(target, Mapping)
+    return {**target, "feature": item.owner.removeprefix("feature:")}
+
+
+def _comment(text: str) -> list[str]:
+    """Each line of ``text``, its outer newlines stripped, as a ``//`` comment, with a bare ``//`` for an empty one."""
+    return [f"// {line}" if line else "//" for line in text.strip("\n").split("\n")]
+
+
+def _inline(value: object) -> str:
+    """``value`` as JSON on one line: ``{ "k": v }`` for a table, ``[a, b]`` for a list, ``[]`` and ``{}`` when empty."""
+    if isinstance(value, Mapping):
+        pairs = ", ".join(f"{json.dumps(key, ensure_ascii=False)}: {_inline(item)}" for key, item in value.items())
+        return f"{{ {pairs} }}" if pairs else "{}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_inline(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False)

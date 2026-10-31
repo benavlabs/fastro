@@ -14,7 +14,7 @@ from packaging.version import Version
 
 from fastro.engine import blueprint, project
 from fastro.engine.blueprint import Blueprint, Contributions, Info
-from fastro.engine.render import feature_indexes, import_block, ordered, ref_import, render_python
+from fastro.engine.render import feature_indexes, import_block, ordered, ref_import, render_data, render_python
 from fastro.engine.resolve import select, taken
 from fastro.engine.spec import Ref, RepoPath
 
@@ -819,3 +819,149 @@ def test_raw_code_that_is_only_a_comment_sits_beside_the_next_slot() -> None:
     assert "\n# Kept.\nsettings = Settings()\n" in _python(
         CLASSES.replace(RAW_SLOT, RAW_SLOT.replace("settings = Settings()", "# Kept.") + RAW_SLOT), ()
     )
+
+
+DATA = '''\
+[blueprint]
+name = "data"
+version = "0.1.0"
+schema = 1
+requires_fastro = ">=0.1.0.dev0"
+
+[wiring_defaults]
+header = """
+Generated.
+Don't edit.
+"""
+
+[points.menu]
+cardinality = "many"
+
+[points.flags]
+cardinality = "many"
+
+[core.contributes]
+menu = [{ data = { label = "Home", href = "/" }, order = 1 }]
+
+[[wiring]]
+path = "frontend/src/wiring.ts"
+doc = "The frontend's wiring."
+
+[[wiring.slots]]
+kind = "data"
+name = "MENU"
+point = "menu"
+format = "ts"
+
+[[wiring.slots]]
+kind = "data"
+name = "FLAGS"
+point = "flags"
+format = "ts"
+
+[features.a]
+summary = "A"
+
+[[features.a.contributes.menu]]
+
+[features.a.contributes.menu.data]
+zone = "top"
+label = "Café \\"A\\" \\\\ ✓"
+href = "/a/b"
+weight = 1e16
+shown = true
+tags = ["x", 2]
+none = []
+empty = {}
+
+[features.a.contributes.menu.data.link]
+rel = "next"
+'''
+
+
+def _data(text: str, features: tuple[str, ...], app: Contributions | None = None) -> str:
+    catalog = _catalog(text)
+    found = ordered(catalog, taken(catalog, select(catalog, features), app))
+    return render_data(catalog, catalog.wiring[0], found)
+
+
+def test_a_ts_data_file_is_a_comment_then_one_export_per_slot() -> None:
+    assert _data(DATA, ("a",)) == (
+        "// The frontend's wiring.\n"
+        "//\n"
+        "// Generated.\n"
+        "// Don't edit.\n"
+        "\n"
+        'export const MENU = [{ "label": "Home", "href": "/", "feature": "core" }, '
+        '{ "zone": "top", "label": "Café \\"A\\" \\\\ ✓", "href": "/a/b", "weight": 1e+16, "shown": true, '
+        '"tags": ["x", 2], "none": [], "empty": {}, "link": { "rel": "next" }, "feature": "a" }] as const;\n'
+        "export const FLAGS = [] as const;\n"
+    )
+
+
+def test_an_items_keys_stay_in_the_order_written_and_feature_comes_last() -> None:
+    text = DATA.replace('{ label = "Home", href = "/" }', "{ z = 1, a = 2, m = 3 }")
+
+    assert 'export const MENU = [{ "z": 1, "a": 2, "m": 3, "feature": "core" }] as const;\n' in _data(text, ())
+
+
+def test_an_app_contribution_s_feature_is_app() -> None:
+    app = project.load(
+        "fastro.toml",
+        'blueprint = { name = "data", version = "0.1.0" }\nfeatures = []\n[project]\nname = "p"\n'
+        '[app]\ncontributes = { flags = [{ data = { name = "beta" } }] }\n',
+    ).app.contributes
+
+    assert 'export const FLAGS = [{ "name": "beta", "feature": "app" }] as const;\n' in _data(DATA, (), app)
+
+
+def test_a_ts_doc_of_several_paragraphs_keeps_its_empty_lines_as_bare_comments() -> None:
+    text = DATA.replace('doc = "The frontend\'s wiring."', 'doc = """\nThe wiring.\n\nSecond paragraph.\n"""')
+
+    assert _data(text, ()).startswith("// The wiring.\n//\n// Second paragraph.\n//\n// Generated.\n")
+
+
+def test_without_a_header_a_ts_comment_is_the_doc_alone() -> None:
+    text = DATA.replace('[wiring_defaults]\nheader = """\nGenerated.\nDon\'t edit.\n"""\n', "")
+
+    assert _data(text, ()).startswith("// The frontend's wiring.\n\nexport const MENU")
+
+
+def test_a_json_data_file_is_the_object_of_every_slot_without_a_header() -> None:
+    text = DATA.replace('format = "ts"', 'format = "json"').replace("wiring.ts", "wiring.json")
+
+    assert _data(text, ()) == (
+        "{\n"
+        '  "MENU": [\n'
+        "    {\n"
+        '      "label": "Home",\n'
+        '      "href": "/",\n'
+        '      "feature": "core"\n'
+        "    }\n"
+        "  ],\n"
+        '  "FLAGS": []\n'
+        "}\n"
+    )
+
+
+def test_a_json_data_file_keeps_non_ascii_and_slashes_as_written() -> None:
+    text = DATA.replace('format = "ts"', 'format = "json"').replace("wiring.ts", "wiring.json")
+
+    rendered = _data(text, ("a",))
+
+    assert '"label": "Café \\"A\\" \\\\ ✓",\n' in rendered
+    assert '"href": "/a/b",\n' in rendered
+
+
+def test_mini_s_data_wiring_renders_as_committed() -> None:
+    mini = blueprint.load("blueprint.toml", MINI.read_text(), Version("0.1.0"))
+    file = next(file for file in mini.wiring if file.path.text == "frontend/menu.ts")
+    found = ordered(mini, taken(mini, select(mini, mini.presets["full"])))
+
+    assert render_data(mini, file, found) == (MINI.parent / file.path.text).read_text()
+
+
+def test_a_ts_item_keeps_a_non_ascii_key_as_written() -> None:
+    text = DATA.replace('{ label = "Home", href = "/" }', '{ "café" = "/c" }')
+
+    assert '[{ "café": "/c", "feature": "core" }]' in _data(text, ())
