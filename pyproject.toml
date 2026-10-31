@@ -42,6 +42,7 @@ python_files = ["test_*.py"]
 
 [tool.ruff]
 line-length = 128
+extend-exclude = ["tests/fixtures/drill/*/backend"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
@@ -52,6 +53,7 @@ known-first-party = ["fastro"]
 
 [tool.mypy]
 python_version = "3.11"
+exclude = ["^tests/fixtures/drill/[^/]+/"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true

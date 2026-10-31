@@ -1,0 +1,43 @@
+{
+  "core-only": [],
+  "core-taskiq": [
+    "taskiq"
+  ],
+  "accounts-only": [
+    "accounts"
+  ],
+  "accounts-rbac": [
+    "accounts",
+    "rbac"
+  ],
+  "accounts-admin": [
+    "accounts",
+    "admin"
+  ],
+  "accounts-api-keys": [
+    "accounts",
+    "api_keys"
+  ],
+  "accounts-rbac-tiers": [
+    "accounts",
+    "ratelimit",
+    "rbac",
+    "tiers"
+  ],
+  "accounts-cache-taskiq": [
+    "accounts",
+    "cache",
+    "taskiq"
+  ],
+  "everything": [
+    "accounts",
+    "admin",
+    "api_keys",
+    "cache",
+    "ratelimit",
+    "rbac",
+    "taskiq",
+    "tier_limits",
+    "tiers"
+  ]
+}

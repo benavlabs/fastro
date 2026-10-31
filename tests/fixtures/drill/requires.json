@@ -1,0 +1,24 @@
+{
+  "accounts": [],
+  "rbac": [
+    "accounts"
+  ],
+  "ratelimit": [
+    "accounts"
+  ],
+  "tiers": [
+    "accounts"
+  ],
+  "tier_limits": [
+    "ratelimit",
+    "tiers"
+  ],
+  "api_keys": [
+    "accounts"
+  ],
+  "admin": [
+    "accounts"
+  ],
+  "cache": [],
+  "taskiq": []
+}
