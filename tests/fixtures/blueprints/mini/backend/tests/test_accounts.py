@@ -1,10 +1,18 @@
-"""Accounts sends email through the queue when tasks is selected."""
+"""Accounts mounts its router and sends email."""
 
 from src.modules.accounts import email
-from src.wiring import app
+from src.wiring import app as wiring
+
+from src import app
 
 
-def test_email_goes_through_the_queue() -> None:
-    app.EMAIL_SENDER("hello")
+def test_accounts_mounts_its_router() -> None:
+    assert "/accounts" in app.prefixes()
 
-    assert email.SENT[-1] == "queued: hello"
+
+def test_accounts_sends_email() -> None:
+    sent = len(email.SENT)
+
+    wiring.EMAIL_SENDER("hello")
+
+    assert len(email.SENT) == sent + 1

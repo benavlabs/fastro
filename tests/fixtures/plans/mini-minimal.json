@@ -171,6 +171,12 @@
     },
     {
       "op": "skip",
+      "path": "backend/tests/test_accounts_queued.py",
+      "origin": "feature:accounts",
+      "reason": "tasks doesn't hold"
+    },
+    {
+      "op": "skip",
       "path": "backend/tests/test_admin.py",
       "origin": "feature:admin",
       "reason": "feature admin isn't selected"

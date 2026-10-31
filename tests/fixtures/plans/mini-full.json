@@ -178,6 +178,12 @@
     },
     {
       "op": "copy",
+      "path": "backend/tests/test_accounts_queued.py",
+      "origin": "feature:accounts",
+      "reason": "feature accounts is selected and tasks holds"
+    },
+    {
+      "op": "copy",
       "path": "backend/tests/test_admin.py",
       "origin": "feature:admin",
       "reason": "feature admin is selected"

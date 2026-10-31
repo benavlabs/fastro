@@ -58,6 +58,7 @@ email_sender = [{ ref = "src.modules.accounts.email:send_now", if = "not tasks" 
 
 [[features.accounts.when]]
 if = "tasks"
+paths = ["backend/tests/test_accounts_queued.py"]
 contributes = { email_sender = ["src.modules.accounts.email:send_queued"] }
 
 [features.billing]

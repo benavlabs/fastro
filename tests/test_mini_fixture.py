@@ -17,8 +17,12 @@ from packaging.version import Version
 from fastro.engine import blueprint, catalog_check, conditions
 from fastro.engine.blueprint import SLOT_KEYS, Blueprint, Contributions
 from fastro.engine.conditions import Condition
+from fastro.engine.plan import plan
+from fastro.engine.resolve import select
+from fastro.engine.spec import RepoPath
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
+QUEUED = "backend/tests/test_accounts_queued.py"
 
 
 def _catalog() -> Blueprint:
@@ -107,5 +111,17 @@ def test_the_backend_imports_and_passes_its_own_tests_without_writing_into_the_f
     )
 
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.splitlines()[-1].startswith("8 passed")
+    assert run.stdout.splitlines()[-1].startswith("11 passed")
     assert sorted(path.relative_to(MINI) for path in MINI.rglob("*")) == before
+
+
+@pytest.mark.parametrize(
+    ("preset", "op", "reason"),
+    [("minimal", "skip", "tasks doesn't hold"), ("full", "copy", "feature accounts is selected and tasks holds")],
+)
+def test_the_queued_email_test_comes_only_with_tasks(preset: str, op: str, reason: str) -> None:
+    catalog = _catalog()
+    files = tuple(RepoPath(str(path.relative_to(MINI))) for path in sorted(MINI.rglob("*")) if path.is_file())
+    ops = {item.path: item for item in plan(catalog, select(catalog, catalog.presets[preset]), files).ops}
+
+    assert (ops[QUEUED].op, ops[QUEUED].reason) == (op, reason)
