@@ -157,6 +157,12 @@ class _Checker:
     def wiring(self) -> Iterator[Problem]:
         seen: dict[str, KeyPath] = {}
         for file in self.catalog.wiring:
+            for only in self.catalog.info.all_blueprint_only:
+                if only.covers(file.path.text):
+                    where = "is" if only.text == file.path.text else f"sits under {only.text!r}, which is"
+                    message = f"{file.path.text!r} {where} blueprint_only, and the tool generates this wiring file in projects."
+                    yield self.problem((*file.at, "path"), message, "Give the wiring file a path outside blueprint_only.")
+                    break
             for slot in file.slots:
                 if slot.kind == "raw":
                     continue
@@ -351,6 +357,11 @@ class _ProjectChecker(_Checker):
         first = {path.text: self.place(at) for at, path in self.declarations()}
         for index, path in enumerate(self.project.app.paths):
             at = ("app", "paths", index)
+            covered = next((file.path.text for file in self.catalog.wiring if path.covers(file.path.text)), None)
+            if covered is not None:
+                what = "is" if covered == path.text else f"covers {covered!r},"
+                message = f"{path.text!r} {what} a wiring file the tool generates."
+                yield self.problem(at, message, "Narrow [app].paths so they leave the wiring files out.")
             if path.text in first:
                 fix = "A path belongs to one declaration: drop one of them."
                 yield self.problem(at, f"{path.text!r} is declared by {first[path.text]} already.", fix)

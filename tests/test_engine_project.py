@@ -353,6 +353,16 @@ def test_a_project_whose_names_its_catalog_declares_loads() -> None:
             "6: app.contributes.routers[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),
         (
+            _for_mini(tables='[app]\npaths = ["backend/src/"]\n'),
+            "6: app.paths[0]: 'backend/src/' covers 'backend/src/wiring.py', a wiring file the tool generates.\n"
+            "  Narrow [app].paths so they leave the wiring files out.",
+        ),
+        (
+            _for_mini(tables='[app]\npaths = ["backend/src/wiring.py"]\n'),
+            "6: app.paths[0]: 'backend/src/wiring.py' is a wiring file the tool generates.\n"
+            "  Narrow [app].paths so they leave the wiring files out.",
+        ),
+        (
             _for_mini(tables='[app]\npaths = ["backend/src/app/", "backend/src/app/"]\n'),
             "6: app.paths[1]: 'backend/src/app/' is declared by app.paths[0] already.\n"
             "  A path belongs to one declaration: drop one of them.",

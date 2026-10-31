@@ -100,7 +100,14 @@ def test_a_file_owned_by_app_is_skipped_as_the_projects_own_code(mini: Blueprint
 
 
 def test_blueprint_only_comes_before_every_other_skip_cause(mini: Blueprint, files: tuple[RepoPath, ...]) -> None:
-    text = (MINI / "blueprint.toml").read_text().replace('"fastro.toml"]', '"fastro.toml", "backend/src/modules/billing/"]')
+    text = (
+        (MINI / "blueprint.toml")
+        .read_text()
+        .replace(
+            'requires_fastro = ">=0.1.0.dev0"\n',
+            'requires_fastro = ">=0.1.0.dev0"\nblueprint_only = ["backend/src/modules/billing/"]\n',
+        )
+    )
     catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
     ops = _ops(catalog, files, app_paths=(RepoPath("backend/src/modules/billing/routes.py"),))
 
@@ -200,3 +207,13 @@ def test_a_locked_wiring_file_that_is_rendered_again_is_kept(mini: Blueprint, fi
     ops = _ops(mini, files, previous=_previous(("backend/src/wiring/app.py", "wiring")))
 
     assert ops["backend/src/wiring/app.py"] == Op("render", "backend/src/wiring/app.py", "wiring", "generated wiring")
+
+
+@pytest.mark.parametrize("path", ["blueprint.toml", "fastro.toml", ".fastro/lock.toml", ".fastro/blueprint.toml"])
+def test_the_files_every_blueprint_keeps_to_itself_are_skipped_without_being_listed(
+    mini: Blueprint, files: tuple[RepoPath, ...], path: str
+) -> None:
+    ops = _ops(mini, (*files, RepoPath(".fastro/lock.toml"), RepoPath(".fastro/blueprint.toml")))
+
+    assert mini.info.blueprint_only == ()
+    assert ops[path] == Op("skip", path, "core", "it's blueprint_only")

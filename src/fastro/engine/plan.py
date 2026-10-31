@@ -86,7 +86,7 @@ def plan(
 
 def _copy_or_skip(catalog: Blueprint, selection: Selection, path: RepoPath, owner: Owner) -> Op:
     text = path.text
-    if any(only.covers(text) for only in catalog.info.blueprint_only):
+    if any(only.covers(text) for only in catalog.info.all_blueprint_only):
         return Op("skip", text, owner.origin, "it's blueprint_only")
     if owner.app:
         return Op("skip", text, owner.origin, "it's the project's own code")

@@ -92,6 +92,7 @@ CONTRIBUTION_TARGETS = ("ref", "value", "data")
 CONTRIBUTION_KEYS = {"order", "if", "call"}
 SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
+KEPT = (RepoPath("blueprint.toml"), RepoPath("fastro.toml"), RepoPath(".fastro/"))
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,11 @@ class Info:
     extends: Extends | None = None
     dependencies: tuple[Requirement, ...] = ()
     dev_dependencies: tuple[Requirement, ...] = ()
+
+    @property
+    def all_blueprint_only(self) -> tuple[RepoPath, ...]:
+        """``blueprint_only`` with the files every blueprint keeps to itself (2.1) added after the author's own."""
+        return (*self.blueprint_only, *(path for path in KEPT if path not in self.blueprint_only))
 
 
 @dataclass(frozen=True)

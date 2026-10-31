@@ -558,3 +558,58 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
 )
 def test_a_path_owned_twice_or_a_command_outside_its_features_paths_is_refused(body: str, problem: str) -> None:
     assert _problems(MINIMAL + body) == [f"blueprint.toml:{problem}"]
+
+
+KEPT = """\
+[points.menu]
+cardinality = "many"
+
+[[wiring]]
+path = "PATH"
+doc = "Menu."
+
+[[wiring.slots]]
+kind = "data"
+name = "MENU"
+point = "menu"
+format = "json"
+"""
+
+
+@pytest.mark.parametrize(
+    ("only", "path", "problem"),
+    [
+        (
+            'blueprint_only = ["frontend/"]\n',
+            "frontend/menu.json",
+            "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "
+            "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
+        ),
+        (
+            "",
+            ".fastro/menu.json",
+            "10: wiring[0].path: '.fastro/menu.json' sits under '.fastro/', which is blueprint_only, and the tool "
+            "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
+        ),
+        (
+            "",
+            "fastro.toml",
+            "10: wiring[0].path: 'fastro.toml' is blueprint_only, and the tool generates this wiring file in projects.\n"
+            "  Give the wiring file a path outside blueprint_only.",
+        ),
+        (
+            'blueprint_only = ["frontend/", "frontend/menu.json"]\n',
+            "frontend/menu.json",
+            "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "
+            "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
+        ),
+    ],
+)
+def test_a_wiring_path_under_blueprint_only_is_refused(only: str, path: str, problem: str) -> None:
+    assert _problems(MINIMAL + only + KEPT.replace("PATH", path)) == [f"blueprint.toml:{problem}"]
+
+
+def test_a_wiring_path_outside_blueprint_only_loads() -> None:
+    text = MINIMAL + 'blueprint_only = ["docs/"]\n' + KEPT.replace("PATH", "frontend/menu.json")
+
+    assert [file.path.text for file in _load(text).wiring] == ["frontend/menu.json"]
