@@ -156,13 +156,27 @@ def render_python(catalog: Blueprint, file: Wiring, found: Mapping[str, tuple[Ta
     ``check_fallback_slots``.
     """
     imports = list(file.imports)
-    slots = []
+    pieces = []
     for slot in file.slots:
-        text, needed = _ASSIGNMENTS[slot.kind](catalog, file, slot, found.get(slot.point, ()))
-        slots.append(text)
+        text, needed = _SLOTS[slot.kind](catalog, file, slot, found.get(slot.point, ()))
+        pieces.append((text, _spaced(slot)))
         imports += needed
     block = import_block(imports, catalog.info.import_root, catalog.line_length)
-    return _docstring(file.doc, catalog.header) + "\n" + (block + "\n" if block else "") + "".join(slots)
+    rendered = _docstring(file.doc, catalog.header) + "\n" + (block + "\n" if block else "")
+    for index, (text, spaced) in enumerate(pieces):
+        if spaced or (index and pieces[index - 1][1]):
+            rendered += "\n" if index == 0 else "\n\n"
+        rendered += text
+    return rendered
+
+
+def _spaced(slot: Slot) -> bool:
+    """Whether ``slot`` gets two blank lines on each side: a ``class``, or ``raw`` code that starts with a ``def``, an
+    ``async def``, a ``class`` or a decorator (2.8)."""
+    if slot.kind == "class":
+        return True
+    body = ast.parse(slot.code).body if slot.kind == "raw" else []
+    return bool(body) and isinstance(body[0], ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
 
 
 def _docstring(doc: str, header: str) -> str:
@@ -221,4 +235,47 @@ def _value(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...
     return f"{slot.name}: {slot.annotation} = {slot.fallback}\n", list(slot.fallback_imports)
 
 
-_ASSIGNMENTS = {"tuple": _tuple, "list": _list, "value": _value}
+def _class(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
+    """``class NAME(bases):`` and its docstring: the contributions, or else the fallback, then ``append`` (2.6).
+
+    The bases go on one line when it fits in the line length, and one per line with a trailing comma when it doesn't.
+    """
+    refs = [_ref(item.contribution.target) for item in items]
+    if not refs and slot.fallback is not None:
+        refs = [_ref(slot.fallback)]
+    refs += slot.append
+    names = [ref.name for ref in refs]
+    line = f"class {slot.name}({', '.join(names)}):" if names else f"class {slot.name}:"
+    if names and len(line) > catalog.line_length:
+        line = f"class {slot.name}(\n" + "".join(f"    {name},\n" for name in names) + "):"
+    return f"{line}\n{_class_doc(slot.doc)}", [ref_import(ref, file.path, catalog.info) for ref in refs]
+
+
+def _class_doc(doc: str) -> str:
+    """A class docstring, indented: one line between its quotes, or several with the closing quotes on their own."""
+    lines = doc.strip("\n").split("\n")
+    if len(lines) == 1:
+        return f'    """{lines[0]}"""\n'
+    rest = "".join((f"    {line}" if line else "") + "\n" for line in lines[1:])
+    return f'    """{lines[0]}\n{rest}    """\n'
+
+
+def _reexport(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
+    """``__all__ = ["NAME"]``, with ``from M import ATTR as NAME`` for the import block: the contribution, or else the
+    fallback, and no ``as NAME`` when ATTR is NAME (2.6)."""
+    if items:
+        ref = _ref(items[0].contribution.target)
+    elif slot.fallback is not None:
+        ref = _ref(slot.fallback)
+    else:
+        raise ValueError(f"{slot.name} has no contribution and no fallback.")
+    bound = Ref(ref.module, ref.attr, None if ref.attr == slot.name else slot.name)
+    return f'__all__ = ["{slot.name}"]\n', [ref_import(bound, file.path, catalog.info)]
+
+
+def _raw(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
+    """``code`` verbatim, without its outer newlines (2.6)."""
+    return slot.code.strip("\n") + "\n", []
+
+
+_SLOTS = {"tuple": _tuple, "list": _list, "value": _value, "class": _class, "reexport": _reexport, "raw": _raw}

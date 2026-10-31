@@ -1,5 +1,6 @@
 """Rendering the wiring (spec 2.6 to 2.8): first, the order contributions take in a slot (2.7)."""
 
+import json
 import os
 import subprocess
 import sys
@@ -572,10 +573,249 @@ def test_a_value_slot_with_no_contribution_and_no_fallback_is_an_error() -> None
         _python(text, ())
 
 
-@pytest.mark.parametrize("name", ["health.py", "tasks.py"])
-def test_mini_s_assignment_only_wiring_renders_as_committed(name: str) -> None:
+@pytest.mark.parametrize("name", ["app.py", "admin.py", "health.py", "tasks.py"])
+def test_mini_s_python_wiring_renders_as_committed(name: str) -> None:
     mini = blueprint.load("blueprint.toml", MINI.read_text(), Version("0.1.0"))
     file = next(file for file in mini.wiring if file.path.text == f"backend/src/wiring/{name}")
     found = ordered(mini, taken(mini, select(mini, mini.presets["full"])))
 
     assert render_python(mini, file, found) == (MINI.parent / file.path.text).read_text()
+
+
+CLASSES = '''\
+[blueprint]
+name = "classes"
+version = "0.1.0"
+schema = 1
+requires_fastro = ">=0.1.0.dev0"
+
+[wiring_defaults]
+header = """
+Generated.
+"""
+
+[points.settings]
+cardinality = "many"
+
+[points.site]
+cardinality = "one"
+
+[[wiring]]
+path = "backend/src/wiring/app.py"
+doc = "The app."
+
+[[wiring.slots]]
+kind = "class"
+name = "Settings"
+point = "settings"
+fallback = "pydantic:BaseModel"
+append = ["src.core.config:CoreSettings"]
+doc = "Every feature's settings."
+
+[[wiring.slots]]
+kind = "raw"
+code = "settings = Settings()"
+
+[[wiring.slots]]
+kind = "reexport"
+name = "SITE"
+point = "site"
+fallback = "src.admin_default:site"
+
+[features.a]
+summary = "A"
+
+[features.a.contributes]
+settings = ["src.a.settings:ASettings"]
+site = ["src.a.site:site as admin_site"]
+
+[features.b]
+summary = "B"
+
+[features.b.contributes]
+settings = ["src.b.settings:BSettings"]
+'''
+FALLBACK_CLASS = 'fallback = "pydantic:BaseModel"\nappend = ["src.core.config:CoreSettings"]\n'
+REEXPORT_SLOT = '[[wiring.slots]]\nkind = "reexport"\nname = "SITE"\npoint = "site"\nfallback = "src.admin_default:site"\n'
+RAW_SLOT = '[[wiring.slots]]\nkind = "raw"\ncode = "settings = Settings()"\n'
+
+
+def _unexported(text: str) -> str:
+    """``text`` without its reexport slot, the point it collects and the contribution to it."""
+    for piece in (REEXPORT_SLOT, '[points.site]\ncardinality = "one"\n\n', 'site = ["src.a.site:site as admin_site"]\n'):
+        assert piece in text
+        text = text.replace(piece, "")
+    return text
+
+
+def test_with_nothing_contributed_a_class_takes_its_fallback_and_append_and_a_reexport_its_fallback() -> None:
+    assert _python(CLASSES, ()) == (
+        '"""The app.\n\nGenerated.\n"""\n'
+        "\n"
+        "from pydantic import BaseModel\n"
+        "\n"
+        "from ..admin_default import site as SITE\n"
+        "from ..core.config import CoreSettings\n"
+        "\n"
+        "\n"
+        "class Settings(BaseModel, CoreSettings):\n"
+        '    """Every feature\'s settings."""\n'
+        "\n"
+        "\n"
+        "settings = Settings()\n"
+        '__all__ = ["SITE"]\n'
+    )
+
+
+def test_contributions_replace_a_class_s_fallback_and_a_reexport_s_by_their_order() -> None:
+    assert _python(CLASSES, ("a", "b")) == (
+        '"""The app.\n\nGenerated.\n"""\n'
+        "\n"
+        "from ..a.settings import ASettings\n"
+        "from ..a.site import site as SITE\n"
+        "from ..b.settings import BSettings\n"
+        "from ..core.config import CoreSettings\n"
+        "\n"
+        "\n"
+        "class Settings(ASettings, BSettings, CoreSettings):\n"
+        '    """Every feature\'s settings."""\n'
+        "\n"
+        "\n"
+        "settings = Settings()\n"
+        '__all__ = ["SITE"]\n'
+    )
+
+
+def test_a_reexport_whose_attr_is_its_name_imports_it_without_an_alias() -> None:
+    rendered = _python(CLASSES.replace('name = "SITE"', 'name = "site"'), ())
+
+    assert "from ..admin_default import site\n" in rendered
+    assert rendered.endswith('__all__ = ["site"]\n')
+
+
+@pytest.mark.parametrize(("extra", "exploded"), [(0, False), (-1, True)])
+def test_a_class_s_bases_explode_only_past_the_line_length(extra: int, exploded: bool) -> None:
+    line = "class Settings(ASettings, BSettings, CoreSettings):"
+    text = CLASSES.replace("[points.settings]", f"line_length = {len(line) + extra}\n\n[points.settings]")
+
+    rendered = _python(text, ("a", "b"))
+
+    split = "class Settings(\n    ASettings,\n    BSettings,\n    CoreSettings,\n):\n"
+    assert (split in rendered, line + "\n" in rendered) == (exploded, not exploded)
+
+
+@pytest.mark.parametrize(
+    ("bases", "line"),
+    [
+        ('fallback = "pydantic:BaseModel"\n', "class Settings(BaseModel):\n"),
+        ('append = ["src.core.config:CoreSettings"]\n', "class Settings(CoreSettings):\n"),
+        ("", "class Settings:\n"),
+    ],
+)
+def test_a_class_with_nothing_contributed_has_its_fallback_its_append_or_no_bases(bases: str, line: str) -> None:
+    assert line in _python(CLASSES.replace(FALLBACK_CLASS, bases), ())
+
+
+def test_a_class_s_fallback_import_comes_only_with_the_fallback() -> None:
+    assert "pydantic" not in _python(CLASSES, ("b",))
+
+
+def test_a_class_doc_of_several_paragraphs_is_indented_with_its_quotes_on_their_own_line() -> None:
+    text = CLASSES.replace('doc = "Every feature\'s settings."', 'doc = """\nFirst.\n\nSecond line.\nThird.\n"""')
+
+    assert '    """First.\n\n    Second line.\n    Third.\n    """\n\n\nsettings' in _python(text, ())
+
+
+def test_a_class_right_after_the_docstring_gets_two_blank_lines() -> None:
+    text = _unexported(CLASSES.replace(FALLBACK_CLASS, ""))
+
+    assert _python(text, ()) == (
+        '"""The app.\n\nGenerated.\n"""\n\n\nclass Settings:\n    """Every feature\'s settings."""\n\n\nsettings = Settings()\n'
+    )
+
+
+def test_a_file_ending_in_a_class_ends_with_one_newline() -> None:
+    text = _unexported(CLASSES.replace(RAW_SLOT, ""))
+
+    assert _python(text, ()).endswith('class Settings(BaseModel, CoreSettings):\n    """Every feature\'s settings."""\n')
+
+
+def test_raw_code_is_rendered_without_its_outer_newlines() -> None:
+    text = CLASSES.replace('code = "settings = Settings()"', 'code = """\nsettings = Settings()\nready = True\n"""')
+
+    assert _python(text, ()).endswith('"""\n\n\nsettings = Settings()\nready = True\n__all__ = ["SITE"]\n')
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def make() -> int:\n    return 1",
+        "async def make() -> int:\n    return 1",
+        "class Made:\n    pass",
+        "@staticmethod\ndef make() -> int:\n    return 1",
+    ],
+)
+def test_raw_code_that_starts_with_a_def_or_a_class_is_spaced_like_a_class(code: str) -> None:
+    raws = "".join(f'[[wiring.slots]]\nkind = "raw"\ncode = {json.dumps(piece)}\n\n' for piece in ("x = 1", code, "y = 2"))
+    text = _unexported(CLASSES.replace(FALLBACK_CLASS, "").replace(RAW_SLOT, raws))
+
+    assert f'settings."""\n\n\nx = 1\n\n\n{code}\n\n\ny = 2\n' in _python(text, ())
+
+
+def test_raw_code_that_starts_with_an_assignment_sits_beside_the_next_one() -> None:
+    raws = "".join(f'[[wiring.slots]]\nkind = "raw"\ncode = {json.dumps(piece)}\n\n' for piece in ("x = 1", "y = 2"))
+
+    assert "\nx = 1\ny = 2\n" in _python(_unexported(CLASSES.replace(RAW_SLOT, raws)), ())
+
+
+def test_a_reexport_with_no_contribution_and_no_fallback_is_an_error() -> None:
+    text = CLASSES.replace('fallback = "src.admin_default:site"\n', "")
+
+    with pytest.raises(ValueError, match="SITE has no contribution and no fallback"):
+        _python(text, ())
+
+
+LAYOUTS = {
+    "fallback": (CLASSES, ()),
+    "contributed": (CLASSES, ("a", "b")),
+    "class first": (_unexported(CLASSES.replace(FALLBACK_CLASS, "")), ()),
+    "class last": (_unexported(CLASSES.replace(RAW_SLOT, "")), ()),
+    "raw def": (
+        CLASSES.replace(
+            RAW_SLOT,
+            "".join(
+                f'[[wiring.slots]]\nkind = "raw"\ncode = {json.dumps(piece)}\n\n'
+                for piece in ("x = 1", "@staticmethod\ndef make() -> int:\n    return 1", "y = 2")
+            ),
+        ),
+        (),
+    ),
+    "paragraphs": (CLASSES.replace('doc = "Every feature\'s settings."', 'doc = """\nFirst.\n\nSecond line.\n"""'), ()),
+}
+
+
+@pytest.mark.parametrize("name", list(LAYOUTS))
+def test_the_pinned_ruff_formats_each_layout_as_it_is(backend: Path, name: str) -> None:
+    text, features = LAYOUTS[name]
+    file = backend / "src" / "wiring" / "layout.py"
+    file.write_text(_python(text, features))
+
+    run = subprocess.run(
+        [sys.executable, "-m", "ruff", "format", "--no-cache", "--diff", str(file)], cwd=backend, capture_output=True, text=True
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_a_class_without_bases_stays_on_one_line_past_the_line_length() -> None:
+    text = _unexported(
+        CLASSES.replace(FALLBACK_CLASS, "").replace("[points.settings]", "line_length = 10\n\n[points.settings]")
+    )
+
+    assert "\nclass Settings:\n" in _python(text, ())
+
+
+def test_raw_code_that_is_only_a_comment_sits_beside_the_next_slot() -> None:
+    assert "\n# Kept.\nsettings = Settings()\n" in _python(
+        CLASSES.replace(RAW_SLOT, RAW_SLOT.replace("settings = Settings()", "# Kept.") + RAW_SLOT), ()
+    )
