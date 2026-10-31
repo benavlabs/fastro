@@ -1,14 +1,21 @@
 """Rendering the wiring (spec 2.6 to 2.8): first, the order contributions take in a slot (2.7)."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 from fastro.engine import blueprint, project
-from fastro.engine.blueprint import Blueprint, Contributions
-from fastro.engine.render import feature_indexes, ordered
+from fastro.engine.blueprint import Blueprint, Contributions, Info
+from fastro.engine.render import feature_indexes, import_block, ordered, ref_import
 from fastro.engine.resolve import select, taken
+from fastro.engine.spec import Ref, RepoPath
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini" / "blueprint.toml"
 
@@ -150,3 +157,251 @@ def test_the_feature_index_is_minus_one_for_core_then_each_feature_then_app() ->
 @pytest.mark.parametrize("features", [("a", "b"), ("b", "a")])
 def test_the_order_doesnt_depend_on_the_order_features_were_asked_for(features: tuple[str, ...]) -> None:
     assert _routers(_catalog(), features)[0:2] == ["src.core:health", "src.b:early"]
+
+
+INFO = Info("mini", Version("0.1.0"), 1, SpecifierSet(">=0.1"))
+
+
+@pytest.mark.parametrize(
+    ("ref", "file", "line"),
+    [
+        (
+            "src.modules.tier.routes:router as tiers_router",
+            "backend/src/wiring/app.py",
+            "from ..modules.tier.routes import router as tiers_router",
+        ),
+        ("src.modules.tier.routes:router", "backend/src/app.py", "from .modules.tier.routes import router"),
+        ("src.wiring.mount:Mount", "backend/src/wiring/app.py", "from .mount import Mount"),
+        ("src.wiring.sub.thing:Thing", "backend/src/wiring/app.py", "from .sub.thing import Thing"),
+        ("src:app", "backend/src/wiring/app.py", "from .. import app"),
+        ("src.wiring:router", "backend/src/wiring/app.py", "from . import router"),
+        ("fastapi:APIRouter", "backend/src/wiring/app.py", "from fastapi import APIRouter"),
+        ("srcs.thing:x", "backend/src/wiring/app.py", "from srcs.thing import x"),
+        ("src.modules.tier.routes:router", "backend/tests/wiring.py", "from src.modules.tier.routes import router"),
+        ("src.modules.tier.routes:router", "backend/scripts/seed.py", "from src.modules.tier.routes import router"),
+    ],
+)
+def test_a_ref_under_import_root_is_imported_relative_to_its_files_package(ref: str, file: str, line: str) -> None:
+    assert ref_import(Ref.parse(ref), RepoPath(file), INFO) == line
+
+
+def test_a_ref_honours_a_python_root_and_import_root_of_its_own() -> None:
+    info = Info("mini", Version("0.1.0"), 1, SpecifierSet(">=0.1"), python_root=RepoPath("server"), import_root="app")
+
+    assert (
+        ref_import(Ref.parse("app.core.db:engine"), RepoPath("server/app/wiring/db.py"), info) == "from ..core.db import engine"
+    )
+
+
+def _block(*lines: str, line_length: int = 128) -> str:
+    return import_block(lines, "src", line_length)
+
+
+def test_2_8s_role_and_tier_examples_order_statements_from_one_module_by_their_first_name() -> None:
+    block = _block(
+        "from ..modules.role.routes import router as roles_router",
+        "from ..modules.role.routes import user_roles_router",
+        "from ..modules.role.routes import permissions_router",
+        "from ..modules.tier.routes import user_tier_router",
+        "from ..modules.tier.routes import router as tiers_router",
+    )
+
+    assert block == (
+        "from ..modules.role.routes import permissions_router, user_roles_router\n"
+        "from ..modules.role.routes import router as roles_router\n"
+        "from ..modules.tier.routes import router as tiers_router\n"
+        "from ..modules.tier.routes import user_tier_router\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("lines", "block"),
+    [
+        (("from os import APIRouter, Ab",), "from os import Ab, APIRouter\n"),
+        (("from os import b, B, a",), "from os import B, a, b\n"),
+        (("from m import ab, aB",), "from m import aB, ab\n"),
+        (("from m import aB, ab",), "from m import aB, ab\n"),
+        (("import src as M2", "import src"), "import src\nimport src as M2\n"),
+    ],
+)
+def test_names_compare_without_regard_to_case_first_and_a_plain_import_comes_before_its_alias(
+    lines: tuple[str, ...], block: str
+) -> None:
+    assert _block(*lines) == block
+
+
+def test_names_from_one_module_merge_as_constants_then_classes_then_functions() -> None:
+    assert _block(
+        "from fastapi import FastAPI", "from fastapi import Depends", "from fastapi import APIRouter, status, HTTP_OK"
+    ) == ("from fastapi import HTTP_OK, APIRouter, Depends, FastAPI, status\n")
+
+
+def test_the_sections_come_in_order_with_plain_imports_first_in_each() -> None:
+    block = _block(
+        "from ..mount import Mount",
+        "from src.core import settings",
+        "import logging",
+        "from collections.abc import Callable",
+        "from fastapi import APIRouter",
+        "import httpx",
+        "from .local import thing",
+        "from __future__ import annotations",
+        "from scripts.seed import seed",
+        "import tests.wiring",
+    )
+
+    assert block == (
+        "from __future__ import annotations\n"
+        "\n"
+        "import logging\n"
+        "from collections.abc import Callable\n"
+        "\n"
+        "import httpx\n"
+        "from fastapi import APIRouter\n"
+        "\n"
+        "import tests.wiring\n"
+        "from scripts.seed import seed\n"
+        "from src.core import settings\n"
+        "\n"
+        "from ..mount import Mount\n"
+        "from .local import thing\n"
+    )
+
+
+def test_a_repeated_import_is_written_once_and_plain_imports_split() -> None:
+    assert _block("import os, sys", "import os", "from os import path", "from os import path") == (
+        "import os\nimport sys\nfrom os import path\n"
+    )
+
+
+def test_modules_sort_without_regard_to_case() -> None:
+    assert _block("from Zeta import z", "from alpha import a") == "from alpha import a\nfrom Zeta import z\n"
+
+
+def test_a_statement_wraps_only_past_the_line_length() -> None:
+    line = "from ..modules.accounts.routes import accounts_router, login_router"
+
+    assert _block(line, line_length=len(line)) == line + "\n"
+    assert _block(line, line_length=len(line) - 1) == (
+        "from ..modules.accounts.routes import (\n    accounts_router,\n    login_router,\n)\n"
+    )
+
+
+def test_an_aliased_import_past_the_line_length_wraps_alone() -> None:
+    assert _block("from ..modules.accounts.routes import router as accounts_router", line_length=40) == (
+        "from ..modules.accounts.routes import (\n    router as accounts_router,\n)\n"
+    )
+
+
+def test_no_imports_make_no_block() -> None:
+    assert _block() == ""
+
+
+def test_names_and_modules_with_numbers_sort_as_numbers_the_way_ruff_does() -> None:
+    assert _block("from api.v10 import r10, r2, r1", "from api.v2 import x") == (
+        "from api.v2 import x\nfrom api.v10 import r1, r2, r10\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("lines", "block"),
+    [
+        (
+            (
+                "from . import router",
+                "from .. import app",
+                "from ..modules.x import y",
+                "from .local import thing",
+                "from .a import b",
+            ),
+            "from .. import app\nfrom ..modules.x import y\nfrom . import router\nfrom .a import b\nfrom .local import thing\n",
+        ),
+        (("from beta import Base, base, BASE, B, b",), "from beta import BASE, B, Base, b, base\n"),
+        (
+            ("import numpy as np", "import os", "import datetime as dt", "from os import path as p", "from os import sep"),
+            "import datetime as dt\nimport os\nfrom os import path as p\nfrom os import sep\n\nimport numpy as np\n",
+        ),
+    ],
+)
+def test_these_blocks_come_out_as_written(lines: tuple[str, ...], block: str) -> None:
+    assert _block(*lines) == block
+
+
+def test_a_line_that_isnt_an_import_is_refused() -> None:
+    with pytest.raises(ValueError, match="'x = 1' isn't an import statement"):
+        _block("x = 1")
+
+
+MODULES = ["os", "typing", "collections.abc", "fastapi", "pydantic", "FastAPI_x", "sqlalchemy.orm", "src", "src.core"]
+MODULES += ["src.Core", "src.modules.r2", "src.modules.r10", "scripts.seed", "tests.wiring", "zlib", "Abc"]
+RELATIVE = ["..", ".", "..modules.tier.routes", "..modules.Tier", ".sibling"]
+PLAIN = ["os", "src", "fastapi"]
+NAMES = ["APIRouter", "AbcClass", "a", "B", "CONST", "C2", "C10", "r2", "r10", "router", "Router", "_private", "_Private"]
+NAMES += ["user_tier_router", "x", "X", "ab", "aB", "Ab"]
+RUFF_CONFIG = """\
+[tool.ruff]
+line-length = 128
+
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+"""
+
+
+@st.composite
+def import_lines(draw: st.DrawFn) -> list[str]:
+    lines = []
+    for _ in range(draw(st.integers(1, 8))):
+        if draw(st.booleans()) and draw(st.booleans()):
+            alias = draw(st.sampled_from(["", " as m", " as M2", " as alias"]))
+            lines.append(f"import {draw(st.sampled_from(PLAIN))}{alias}")
+            continue
+        module = draw(st.sampled_from(RELATIVE + MODULES))
+        names = draw(st.lists(st.sampled_from(NAMES), min_size=1, max_size=4, unique=True))
+        parts = [name + (f" as {name}_alias" if draw(st.booleans()) and draw(st.booleans()) else "") for name in names]
+        lines.append(f"from {module} import {', '.join(parts)}")
+    return lines
+
+
+@pytest.fixture(scope="module")
+def backend(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("isort") / "backend"
+    for package in ("src", "src/wiring", "scripts", "tests"):
+        (root / package).mkdir(parents=True)
+        (root / package / "__init__.py").write_text("")
+    for module in ("scripts/seed.py", "tests/wiring.py"):
+        (root / module).write_text("")
+    (root / "pyproject.toml").write_text(RUFF_CONFIG)
+    return root
+
+
+@settings(database=None, deadline=None, derandomize=True, max_examples=100)
+@given(lines=import_lines())
+def test_the_pinned_ruff_accepts_every_import_block_as_it_is(backend: Path, lines: list[str]) -> None:
+    file = backend / "src" / "wiring" / "x.py"
+    file.write_text('"""Imports."""\n\n' + _block(*lines))
+
+    run = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--no-cache", "--diff", str(file)], cwd=backend, capture_output=True, text=True
+    )
+
+    assert run.returncode == 0, f"{lines}\n{run.stdout}{run.stderr}"
+
+
+def test_an_import_block_is_the_same_whatever_the_hash_seed() -> None:
+    lines = ["from m import ab, aB, Ab, AB", "import os", "import os as o", "from m import x as y", "from m import z as w"]
+    script = f"from fastro.engine.render import import_block; print(import_block({lines!r}, 'src', 128), end='')"
+    outputs = {
+        subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        ).stdout
+        for seed in ("0", "1", "2", "3")
+    }
+
+    assert outputs == {_block(*lines)}
