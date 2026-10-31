@@ -53,7 +53,7 @@ known-first-party = ["fastro"]
 
 [tool.mypy]
 python_version = "3.11"
-exclude = ["^tests/fixtures/drill/[^/]+/"]
+exclude = ["^tests/fixtures/drill/[^/]+/", "^tests/fixtures/fastro-boilerplate@e46bf26/backend/"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true
