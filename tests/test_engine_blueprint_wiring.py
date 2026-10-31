@@ -195,6 +195,7 @@ CLASS = "[[wiring.slots]]\nkind = 'class'\nname = 'S'\npoint = 's'\n"
 BACKSLASH = "can't contain a backslash, which Python would read as an escape inside the docstring."
 QUOTE = "can't end in '\"', which would run into the docstring's closing '\"\"\"'."
 IMPORT_RULE = "isn't one import statement, such as 'from fastapi import APIRouter'."
+DATA_SLOT = "[[wiring.slots]]\nkind = 'data'\nname = '{0}'\npoint = 'm'\nformat = '{1}'\n"
 
 
 @pytest.mark.parametrize(
@@ -349,6 +350,20 @@ IMPORT_RULE = "isn't one import statement, such as 'from fastapi import APIRoute
         ),
         (FILE + TUPLE + TUPLE, "16: wiring[0].slots[1].name: 'ITEMS' is defined by wiring[0].slots[0] already."),
         (
+            FILE.replace("app.py", "menu.ts") + DATA_SLOT.format("M", "ts") + DATA_SLOT.format("N", "json"),
+            "18: wiring[0].slots[1].format: is 'json', and wiring[0].slots[0] is 'ts': a data file's slots all share "
+            "one format.\n  Give it format = 'ts', or move it to a data file of its own.",
+        ),
+        (
+            FILE.replace("app.py", "menu.json") + DATA_SLOT.format("M", "json") + DATA_SLOT.format("N", "ts"),
+            "18: wiring[0].slots[1].format: is 'ts', and wiring[0].slots[0] is 'json': a data file's slots all share "
+            "one format.\n  Give it format = 'json', or move it to a data file of its own.",
+        ),
+        (
+            FILE.replace("app.py", "menu.ts") + DATA_SLOT.format("M", "yaml") + DATA_SLOT.format("N", "json"),
+            "13: wiring[0].slots[0].format: should be 'ts' or 'json', not 'yaml'.",
+        ),
+        (
             '[wiring_defaults]\nheader = "' + "x" * 101 + '"\n',
             "7: wiring_defaults.header: line 1 is 101 characters long, and header lines are at most 100.",
         ),
@@ -471,6 +486,31 @@ def test_raw_code_that_reads_all_or_assigns_it_in_a_nested_scope_sits_beside_a_r
 
 def test_a_raw_slot_may_assign_all_in_a_file_without_a_reexport() -> None:
     assert _load(MINIMAL + FILE + _raw('__all__ = ["C"]')).wiring[0].slots[0].code == '__all__ = ["C"]'
+
+
+def test_each_slot_in_a_data_file_is_held_to_the_first_slot_s_format() -> None:
+    slots = DATA_SLOT.format("M", "ts") + DATA_SLOT.format("N", "json") + DATA_SLOT.format("O", "json")
+
+    assert [problem.split(":")[1] for problem in _problems(MINIMAL + FILE.replace("app.py", "menu.ts") + slots)] == [
+        "18",
+        "23",
+    ]
+    assert all("and wiring[0].slots[0] is 'ts'" in problem for problem in _problems(MINIMAL + FILE + slots))
+
+
+def test_a_data_file_may_hold_several_slots_of_one_format() -> None:
+    second = DATA_SLOT.format("N", "ts").replace("point = 'm'", "point = 'n'")
+    menu = FILE.replace("app.py", "menu.ts") + DATA_SLOT.format("M", "ts") + second
+
+    assert [
+        slot.format
+        for slot in _load(MINIMAL + menu + "[points.m]\ncardinality = 'many'\n[points.n]\ncardinality = 'many'\n")
+        .wiring[0]
+        .slots
+    ] == [
+        "ts",
+        "ts",
+    ]
 
 
 def test_a_file_may_hold_several_raw_slots() -> None:

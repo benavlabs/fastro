@@ -620,6 +620,16 @@ class Reader:
             if data != family[0][1]:
                 kinds = "data" if family[0][1] else "Python"
                 self.fail(slot.at, f"is a {slot.kind} slot in a file of {kinds} slots, and a file is all data or all Python.")
+        formats = [slot for slot in slots if slot.format]
+        for slot in formats[1:]:
+            if slot.format != formats[0].format:
+                first = formats[0].format
+                self.fail(
+                    (*slot.at, "format"),
+                    f"is {slot.format!r}, and {key_name(formats[0].at)} is {first!r}: a data file's slots all share one "
+                    "format.",
+                    f"Give it format = {first!r}, or move it to a data file of its own.",
+                )
         python = bool(family) and not family[0][1]
         if file is not None and python:
             root = python_root.text.rstrip("/")
