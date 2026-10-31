@@ -8,11 +8,12 @@ from typing import Any
 
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.lock import Lock
-from fastro.engine.resolve import Owner, Ownership, Selection
+from fastro.engine.resolve import APP, Owner, Ownership, Selection
 from fastro.engine.spec import RepoPath
 
 PLANNED_ORIGINS = ("core", "wiring")
 DELETED = "in the previous lock, and not in this plan"
+APP_CODE = "it's the project's own code"
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,9 @@ def plan(
 ) -> Plan:
     """The plan for ``selection`` over the source tree's ``files`` (spec 7, rev 1.17).
 
-    Every path gets one op. A file ``previous`` locked that this plan doesn't copy or render is a ``delete``.
-    Only files a plan makes are considered, so a locked file from another step keeps no op.
+    Every path gets one op. A file ``previous`` locked that this plan doesn't copy or render is a ``delete``,
+    unless it's ``[app]`` code, which is skipped and never deleted. Only files a plan makes are considered, so a
+    locked file from another step keeps no op (rev 1.19).
     """
     ownership = Ownership(catalog, app_paths)
     sources = {path.text: path for path in files}
@@ -79,7 +81,11 @@ def plan(
             ops[text] = _copy_or_skip(catalog, selection, path, ownership.of(path))
     for path, locked in previous.files.items() if previous is not None else ():
         kept = path.text in ops and ops[path.text].op in ("copy", "render")
-        if not kept and (locked.origin in PLANNED_ORIGINS or locked.origin.startswith("feature:")):
+        if kept or not (locked.origin in PLANNED_ORIGINS or locked.origin.startswith("feature:")):
+            continue
+        if ownership.of(path).app:
+            ops.setdefault(path.text, Op("skip", path.text, APP, APP_CODE))
+        else:
             ops[path.text] = Op("delete", path.text, locked.origin, DELETED)
     return Plan(catalog, selection, tuple(ops[text] for text in sorted(ops)))
 
@@ -89,7 +95,7 @@ def _copy_or_skip(catalog: Blueprint, selection: Selection, path: RepoPath, owne
     if any(only.covers(text) for only in catalog.info.all_blueprint_only):
         return Op("skip", text, owner.origin, "it's blueprint_only")
     if owner.app:
-        return Op("skip", text, owner.origin, "it's the project's own code")
+        return Op("skip", text, owner.origin, APP_CODE)
     if not owner.feature:
         return Op("copy", text, owner.origin, "no feature owns it")
     if owner.feature not in selection.pulled_by:

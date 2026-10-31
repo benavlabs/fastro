@@ -217,3 +217,55 @@ def test_the_files_every_blueprint_keeps_to_itself_are_skipped_without_being_lis
 
     assert mini.info.blueprint_only == ()
     assert ops[path] == Op("skip", path, "core", "it's blueprint_only")
+
+
+BILLING_ROUTES_AS_APP = Op("skip", "backend/src/modules/billing/routes.py", "app", "it's the project's own code")
+
+
+def test_a_locked_file_the_project_now_claims_as_app_code_is_skipped_not_deleted(
+    mini: Blueprint, files: tuple[RepoPath, ...]
+) -> None:
+    ops = _ops(
+        mini,
+        files,
+        app_paths=(RepoPath("backend/src/modules/billing/routes.py"),),
+        previous=_previous(("backend/src/modules/billing/routes.py", "feature:billing")),
+    )
+
+    assert ops["backend/src/modules/billing/routes.py"] == BILLING_ROUTES_AS_APP
+
+
+def test_a_locked_app_file_the_source_no_longer_has_is_still_skipped(mini: Blueprint, files: tuple[RepoPath, ...]) -> None:
+    source = tuple(path for path in files if path.text != "backend/src/modules/billing/routes.py")
+    ops = _ops(
+        mini,
+        source,
+        app_paths=(RepoPath("backend/src/modules/billing/routes.py"),),
+        previous=_previous(("backend/src/modules/billing/routes.py", "feature:billing")),
+    )
+
+    assert ops["backend/src/modules/billing/routes.py"] == BILLING_ROUTES_AS_APP
+
+
+def test_a_locked_app_file_under_blueprint_only_keeps_the_first_skip_cause(
+    mini: Blueprint, files: tuple[RepoPath, ...]
+) -> None:
+    text = (
+        (MINI / "blueprint.toml")
+        .read_text()
+        .replace(
+            'requires_fastro = ">=0.1.0.dev0"\n',
+            'requires_fastro = ">=0.1.0.dev0"\nblueprint_only = ["backend/src/modules/billing/"]\n',
+        )
+    )
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    ops = _ops(
+        catalog,
+        files,
+        app_paths=(RepoPath("backend/src/modules/billing/routes.py"),),
+        previous=_previous(("backend/src/modules/billing/routes.py", "feature:billing")),
+    )
+
+    assert ops["backend/src/modules/billing/routes.py"] == Op(
+        "skip", "backend/src/modules/billing/routes.py", "app", "it's blueprint_only"
+    )
