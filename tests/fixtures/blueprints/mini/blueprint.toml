@@ -3,6 +3,7 @@ name = "mini"
 version = "0.1.0"
 schema = 1
 requires_fastro = ">=0.1.0.dev0"
+blueprint_only = ["blueprint.toml", "fastro.toml"]
 
 [presets]
 minimal = ["accounts"]
