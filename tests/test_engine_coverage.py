@@ -32,6 +32,7 @@ FULLY_COVERED = {
     "positions": ("test_engine_positions.py",),
     "problems": ("test_engine_problems.py",),
     "project": ("test_engine_project.py",),
+    "render": ("test_engine_render.py",),
     "references": ("test_engine_references.py", "test_engine_project.py"),
     "resolve": ("test_engine_resolve.py",),
     "spec": ("test_engine_spec.py",),

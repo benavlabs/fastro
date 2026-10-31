@@ -136,10 +136,15 @@ def _options(
 
 @dataclass(frozen=True)
 class Taken:
-    """A contribution the selection takes, and who made it: ``core``, ``feature:<name>`` or ``app``."""
+    """A contribution the selection takes, who made it (``core``, ``feature:<name>`` or ``app``), and its position.
+
+    ``position`` is its index in its owner's whole list for that point, the feature's own contributions first and
+    then each ``when``'s, counting the ones the selection doesn't take, so it never depends on the selection (2.7).
+    """
 
     contribution: Contribution
     owner: str
+    position: int
 
 
 def taken(catalog: Blueprint, selection: Selection, app: Contributions | None = None) -> dict[str, tuple[Taken, ...]]:
@@ -148,20 +153,22 @@ def taken(catalog: Blueprint, selection: Selection, app: Contributions | None = 
     That's ``[core]``'s, each selected feature's own and those of its ``when`` tables whose ``if`` holds, then
     the project's ``[app]``. Each counts only when its own ``if`` holds too. Sorting them is rendering's job (2.7).
     """
-    groups: list[tuple[str, Contributions]] = [("core", catalog.core)]
+    groups: list[tuple[str, Contributions, bool]] = [("core", catalog.core, True)]
     for feature in catalog.features:
         if feature.name in selection.pulled_by:
-            groups.append((f"feature:{feature.name}", feature.contributes))
-            groups += [
-                (f"feature:{feature.name}", when.contributes) for when in feature.when if selection.holds(when.condition)
-            ]
-    groups.append((APP, app or {}))
+            owner = f"feature:{feature.name}"
+            groups.append((owner, feature.contributes, True))
+            groups += [(owner, when.contributes, selection.holds(when.condition)) for when in feature.when]
+    groups.append((APP, app or {}, True))
     found: dict[str, list[Taken]] = {}
-    for owner, contributes in groups:
+    positions: dict[tuple[str, str], int] = {}
+    for owner, contributes, active in groups:
         for point, items in contributes.items():
             for item in items:
-                if item.condition is None or selection.holds(item.condition):
-                    found.setdefault(point, []).append(Taken(item, owner))
+                position = positions.get((owner, point), 0)
+                positions[(owner, point)] = position + 1
+                if active and (item.condition is None or selection.holds(item.condition)):
+                    found.setdefault(point, []).append(Taken(item, owner, position))
     return {point: tuple(items) for point, items in found.items()}
 
 
