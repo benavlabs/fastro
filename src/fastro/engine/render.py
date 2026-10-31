@@ -9,8 +9,9 @@ import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from fastro.engine.blueprint import Blueprint, Info, Slot, Wiring
-from fastro.engine.resolve import APP, Taken
+from fastro.engine.blueprint import Blueprint, Contributions, Info, Slot, Wiring
+from fastro.engine.plan import Plan
+from fastro.engine.resolve import APP, Taken, check_fallback_slots, check_one_points, taken
 from fastro.engine.spec import Ref, RepoPath
 
 CORE = "core"
@@ -148,6 +149,25 @@ def _line(statement: _Import, line_length: int) -> str:
     if len(line) <= line_length:
         return line
     return f"from {module} import (\n" + "".join(f"    {name},\n" for name in names) + ")"
+
+
+def render(plan: Plan, app: Contributions | None = None) -> dict[str, str]:
+    """The text of each wiring file ``plan`` renders, by path in the plan's order (2.6 to 2.8).
+
+    The contributions are the catalog's and ``app``'s (the project's ``[app]``) that the plan's selection takes. A
+    ``one`` point given more than one, or a value or reexport slot with no fallback given none, is refused first.
+    """
+    catalog, selection = plan.catalog, plan.selection
+    found = taken(catalog, selection, app)
+    check_one_points(catalog, found)
+    check_fallback_slots(catalog, selection, found)
+    found = ordered(catalog, found)
+    files = {file.path.text: file for file in catalog.wiring}
+    return {
+        op.path: (render_data if files[op.path].slots[0].kind == "data" else render_python)(catalog, files[op.path], found)
+        for op in plan.ops
+        if op.op == "render"
+    }
 
 
 def render_python(catalog: Blueprint, file: Wiring, found: Mapping[str, tuple[Taken, ...]]) -> str:

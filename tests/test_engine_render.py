@@ -14,8 +14,17 @@ from packaging.version import Version
 
 from fastro.engine import blueprint, project
 from fastro.engine.blueprint import Blueprint, Contributions, Info
-from fastro.engine.render import feature_indexes, import_block, ordered, ref_import, render_data, render_python
-from fastro.engine.resolve import select, taken
+from fastro.engine.plan import Plan, plan
+from fastro.engine.render import (
+    feature_indexes,
+    import_block,
+    ordered,
+    ref_import,
+    render,
+    render_data,
+    render_python,
+)
+from fastro.engine.resolve import NoContribution, TooManyContributions, select, taken
 from fastro.engine.spec import Ref, RepoPath
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini" / "blueprint.toml"
@@ -965,3 +974,67 @@ def test_a_ts_item_keeps_a_non_ascii_key_as_written() -> None:
     text = DATA.replace('{ label = "Home", href = "/" }', '{ "café" = "/c" }')
 
     assert '[{ "café": "/c", "feature": "core" }]' in _data(text, ())
+
+
+MINI_FILES = tuple(RepoPath(str(path.relative_to(MINI.parent))) for path in sorted(MINI.parent.rglob("*")) if path.is_file())
+
+
+def _mini_plan(features: tuple[str, ...]) -> Plan:
+    mini = blueprint.load("blueprint.toml", MINI.read_text(), Version("0.1.0"))
+    return plan(mini, select(mini, features), MINI_FILES)
+
+
+def test_rendering_mini_s_full_preset_gives_its_committed_wiring() -> None:
+    mini = blueprint.load("blueprint.toml", MINI.read_text(), Version("0.1.0"))
+    committed = {file.path.text: (MINI.parent / file.path.text).read_text() for file in mini.wiring}
+
+    rendered = render(_mini_plan(tuple(mini.presets["full"])))
+
+    assert rendered == committed
+    assert list(rendered) == sorted(committed)
+
+
+@pytest.mark.parametrize("features", [(), ("accounts",), ("billing", "cache")])
+def test_render_gives_one_text_for_each_render_op_of_the_plan(features: tuple[str, ...]) -> None:
+    made = _mini_plan(features)
+
+    assert list(render(made)) == [op.path for op in made.ops if op.op == "render"]
+
+
+def test_without_admin_its_wiring_files_arent_rendered() -> None:
+    rendered = render(_mini_plan(("accounts",)))
+
+    assert "backend/src/wiring/admin.py" in rendered
+    assert "frontend/menu.ts" not in rendered
+
+
+def test_render_takes_the_app_s_contributions_too() -> None:
+    app = project.load(
+        "fastro.toml",
+        'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+        '[app]\ncontributes = { routers = [{ ref = "src.app_routes:router as app_router", prefix = "/app" }] }\n',
+    ).app.contributes
+
+    app_py = render(_mini_plan(()), app)["backend/src/wiring/app.py"]
+
+    assert "from ..app_routes import router as app_router\n" in app_py
+    assert 'ROUTERS: tuple[Mount, ...] = (Mount(app_router, "/app"),)\n' in app_py
+
+
+def test_render_refuses_a_selection_that_gives_a_one_point_two_contributions() -> None:
+    app = project.load(
+        "fastro.toml",
+        'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+        '[app]\ncontributes = { admin_site = ["src.app_site:site"] }\n',
+    ).app.contributes
+
+    with pytest.raises(TooManyContributions):
+        render(_mini_plan(("admin",)), app)
+
+
+def test_render_refuses_a_selection_that_leaves_a_fallback_less_slot_empty() -> None:
+    text = MINI.read_text().replace('fallback = "src.admin_default:site"\n', "")
+    mini = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+
+    with pytest.raises(NoContribution):
+        render(plan(mini, select(mini, ()), MINI_FILES))
