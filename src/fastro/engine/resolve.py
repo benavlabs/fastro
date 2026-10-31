@@ -173,7 +173,7 @@ def check_one_points(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]])
             given = f"{', '.join(listed[:-1])} and {listed[-1]}"
             raise TooManyContributions(
                 f"{point!r} is a one point, and this selection gives it {len(items)} contributions: {given}. "
-                "Change the selection or an option so only one of their conditions holds."
+                "Drop one of them, or give them conditions that exclude each other."
             )
 
 

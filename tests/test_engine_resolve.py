@@ -1,4 +1,5 @@
-"""Resolving a selection against a catalog (A2): closure under ``requires``."""
+"""Resolving a selection against a catalog: closure under ``requires``, options, conditions, the contributions it
+takes, and who owns each file."""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -365,7 +366,7 @@ def test_a_one_point_given_two_contributions_by_the_selection_is_refused() -> No
         "'sender' is a one point, and this selection gives it 2 contributions: "
         "feature:mail at features.mail.contributes.sender[0] and "
         "feature:mail at features.mail.when[0].contributes.sender[0]. "
-        "Change the selection or an option so only one of their conditions holds."
+        "Drop one of them, or give them conditions that exclude each other."
     )
     assert isinstance(caught.value, SelectionError)
 
