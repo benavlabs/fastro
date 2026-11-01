@@ -252,7 +252,7 @@ kind = "tuple"
 name = "ROUTERS"
 point = "routers"
 annotation = "tuple[object, ...]"
-item = 'Mount({name}, "{prefix}", {weight})'
+item = 'dict(app={name}, prefix="{prefix}", weight={weight})'
 defaults = { weight = 1 }
 
 [[wiring.slots]]
@@ -409,9 +409,11 @@ def test_a_contribution_slot_or_point_that_doesnt_fit_is_refused_at_its_line(bod
 
 
 def test_an_item_may_convert_and_format_its_fields() -> None:
-    text = MINIMAL + WIRED.replace("item = 'Mount({name}, \"{prefix}\", {weight})'", 'item = "Mount({name!r}, {weight:>3})"')
+    text = MINIMAL + WIRED.replace(
+        "item = 'dict(app={name}, prefix=\"{prefix}\", weight={weight})'", 'item = "dict(app={name!r}, weight={weight:>3})"'
+    )
 
-    assert _load(text).wiring[0].slots[0].item == "Mount({name!r}, {weight:>3})"
+    assert _load(text).wiring[0].slots[0].item == "dict(app={name!r}, weight={weight:>3})"
 
 
 def test_a_catalog_without_points_says_so_in_the_fix() -> None:
@@ -673,7 +675,8 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
         ),
         (
             OWN.replace(
-                'annotation = "tuple[object, ...]"', 'annotation = "tuple[object, ...]"\nitem = "Mount({name}, {prefix})"'
+                'annotation = "tuple[object, ...]"',
+                'annotation = "tuple[object, ...]"\nitem = "dict(app={name}, prefix={prefix})"',
             )
             + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
             "41: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "

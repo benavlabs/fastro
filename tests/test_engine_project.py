@@ -386,7 +386,7 @@ def test_a_name_its_catalog_doesnt_declare_is_refused_at_its_line(text: str, pro
 def test_a_catalog_key_in_a_message_about_fastro_toml_names_the_catalog_file() -> None:
     catalog = _catalog(
         CATALOG.replace(
-            'annotation = "tuple[object, ...]"', 'annotation = "tuple[object, ...]"\nitem = "Mount({name}, {prefix})"'
+            'annotation = "tuple[object, ...]"', 'annotation = "tuple[object, ...]"\nitem = "dict(app={name}, prefix={prefix})"'
         )
     )
     text = _for_mini(tables='[app]\ncontributes = { routers = ["src.app:r"] }\n')

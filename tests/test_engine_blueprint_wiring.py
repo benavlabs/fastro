@@ -1,6 +1,7 @@
 """Loading ``[[wiring]]``, its slots and ``[wiring_defaults]`` (spec 2.6, 2.6.1, the header rules of 2.8, and 2.12)."""
 
 import json
+from pathlib import Path
 
 import pytest
 from packaging.version import Version
@@ -10,6 +11,9 @@ from fastro.engine.conditions import parse
 from fastro.engine.problems import CatalogError
 from fastro.engine.spec import Ref, RepoPath
 
+FIXTURES = Path(__file__).parent / "fixtures"
+MINI_CATALOG = FIXTURES / "blueprints" / "mini" / "blueprint.toml"
+BOILERPLATE_CATALOG = FIXTURES / "fastro-boilerplate@e46bf26" / "blueprint.toml"
 MINIMAL = """\
 [blueprint]
 name = "mini"
@@ -29,7 +33,12 @@ fastro.toml (or [app] in it, for your own code) and run `fastro sync`.
 path = "backend/src/wiring/app.py"
 doc = "The composition root."
 if = "accounts"
-imports = ["from fastapi import APIRouter", "import logging"]
+imports = [
+  "from fastapi import APIRouter",
+  "import logging",
+  "from ..infrastructure.composition import RouterMount",
+  "from crudauth import EmailSender",
+]
 
 [[wiring.slots]]
 kind = "tuple"
@@ -134,7 +143,12 @@ def test_wiring_files_are_read_with_every_slot_kind() -> None:
         path=RepoPath("backend/src/wiring/app.py"),
         doc="The composition root.",
         condition=parse("accounts"),
-        imports=("from fastapi import APIRouter", "import logging"),
+        imports=(
+            "from fastapi import APIRouter",
+            "import logging",
+            "from ..infrastructure.composition import RouterMount",
+            "from crudauth import EmailSender",
+        ),
         slots=(
             Slot(
                 "tuple",
@@ -542,3 +556,201 @@ def test_a_header_line_up_to_the_line_length_loads() -> None:
     text = MINIMAL + '[wiring_defaults]\nline_length = 128\nheader = "' + "x" * 95 + '"\n'
 
     assert _load(text).header == "x" * 95
+
+
+UNBOUND = "{0}: uses {1!r}, which this file doesn't bind whatever the selection.\n  {2}"
+IN_IMPORTS = "Import it in the file's imports, or define it in an earlier slot."
+SLOT = "[[wiring.slots]]\nkind = '{0}'\nname = '{1}'\npoint = '{2}'\n"
+
+
+def _bound(slots: str, imports: str = "", points: str = "") -> list[str]:
+    head = FILE + (f"imports = {imports}\n" if imports else "")
+    text = MINIMAL + head + slots + points
+    try:
+        _load(text)
+    except CatalogError as error:
+        return [str(problem) for problem in error.problems]
+    return []
+
+
+@pytest.mark.parametrize(
+    ("annotation", "imports"),
+    [
+        ("tuple[str, ...]", ""),
+        ("Callable[[], int]", '["from collections.abc import Callable"]'),
+        ("tuple[Fn, ...]", '["from collections.abc import Callable as Fn"]'),
+        ("typing.Any", '["import typing"]'),
+        ("collections.abc.Callable[[], None]", '["import collections.abc"]'),
+        ("tuple[Anything, ...]", '["from m import *"]'),
+    ],
+)
+def test_an_annotation_whose_names_are_builtins_or_imported_loads(annotation: str, imports: str) -> None:
+    slot = SLOT.format("tuple", "ITEMS", "items") + f"annotation = {json.dumps(annotation)}\n"
+
+    assert _bound(slot, imports, _points("items")) == []
+
+
+def test_an_annotation_using_a_name_nothing_binds_is_refused_at_its_key() -> None:
+    slot = SLOT.format("tuple", "ITEMS", "items") + "annotation = 'tuple[Mount, ...]'\n"
+
+    assert _bound(slot, points=_points("items")) == [
+        "blueprint.toml:" + UNBOUND.format("13: wiring[0].slots[0].annotation", "Mount", IN_IMPORTS)
+    ]
+
+
+def test_an_annotation_names_each_unbound_name_once() -> None:
+    slot = SLOT.format("value", "V", "v") + "annotation = 'B | A | B'\nfallback = 'None'\n"
+
+    assert sorted(problem.split("uses ")[1].split(",")[0] for problem in _bound(slot, points=_points("v"))) == ["'A'", "'B'"]
+
+
+def test_a_name_an_earlier_slot_defines_binds_a_later_annotation() -> None:
+    slots = (
+        SLOT.format("class", "Settings", "settings")
+        + "doc = 'S.'\n"
+        + SLOT.format("value", "CURRENT", "current")
+        + "annotation = 'Settings'\nfallback = 'None'\n"
+    )
+
+    assert _bound(slots, points=_points("settings", "current")) == []
+
+
+def test_a_name_a_later_slot_defines_doesnt_bind_an_earlier_annotation() -> None:
+    slots = (
+        SLOT.format("value", "CURRENT", "current")
+        + "annotation = 'Settings'\nfallback = 'None'\n"
+        + SLOT.format("class", "Settings", "settings")
+        + "doc = 'S.'\n"
+    )
+
+    assert _bound(slots, points=_points("settings", "current")) == [
+        "blueprint.toml:" + UNBOUND.format("13: wiring[0].slots[0].annotation", "Settings", IN_IMPORTS)
+    ]
+
+
+def test_names_earlier_raw_code_binds_at_module_level_bind_a_later_annotation() -> None:
+    raw = "[[wiring.slots]]\nkind = 'raw'\ncode = \"from m import Job\\nLimit = int\"\n"
+    slot = SLOT.format("tuple", "JOBS", "jobs") + "annotation = 'tuple[Job, Limit]'\n"
+
+    assert _bound(raw + slot, points=_points("jobs")) == []
+
+
+def test_raw_code_that_binds_nothing_binds_nothing_for_a_later_annotation() -> None:
+    raw = "[[wiring.slots]]\nkind = 'raw'\ncode = \"print('ready')\"\n"
+    slot = SLOT.format("tuple", "JOBS", "jobs") + "annotation = 'tuple[Job, ...]'\n"
+
+    assert _bound(raw + slot, points=_points("jobs")) == [
+        "blueprint.toml:" + UNBOUND.format("16: wiring[0].slots[1].annotation", "Job", IN_IMPORTS)
+    ]
+
+
+def test_a_star_import_in_earlier_raw_code_could_bind_any_name_so_nothing_after_it_is_refused() -> None:
+    raw = "[[wiring.slots]]\nkind = 'raw'\ncode = 'from m import *'\n"
+    slot = SLOT.format("tuple", "JOBS", "jobs") + "annotation = 'tuple[Job, ...]'\n"
+
+    assert _bound(raw + slot, points=_points("jobs")) == []
+
+
+def test_a_list_slot_s_annotation_is_checked_too() -> None:
+    slot = SLOT.format("list", "JOBS", "jobs") + "annotation = 'list[Job]'\n"
+
+    assert _bound(slot, points=_points("jobs")) == [
+        "blueprint.toml:" + UNBOUND.format("13: wiring[0].slots[0].annotation", "Job", IN_IMPORTS)
+    ]
+
+
+def test_a_class_earlier_raw_code_defines_binds_a_later_annotation() -> None:
+    raw = "[[wiring.slots]]\nkind = 'raw'\ncode = \"class Job:\\n    pass\"\n"
+    slot = SLOT.format("tuple", "JOBS", "jobs") + "annotation = 'tuple[Job, ...]'\n"
+
+    assert _bound(raw + slot, points=_points("jobs")) == []
+
+
+def test_words_inside_an_item_template_s_strings_arent_names() -> None:
+    slot = SLOT.format("tuple", "MOUNTS", "mounts") + "annotation = 'tuple[object, ...]'\n"
+    slot += "item = 'dict(app={name}, label=\"Label\")'\n"
+
+    assert _bound(slot, points=_points("mounts")) == []
+
+
+@pytest.mark.parametrize("fallback", ["lambda message: message", "[n for n in range(3)]", "(total := 1)"])
+def test_names_an_expression_binds_itself_arent_refused(fallback: str) -> None:
+    slot = SLOT.format("value", "V", "v") + f"annotation = 'object'\nfallback = {json.dumps(fallback)}\n"
+
+    assert _bound(slot, points=_points("v")) == []
+
+
+def test_raw_code_is_never_checked() -> None:
+    assert _bound("[[wiring.slots]]\nkind = 'raw'\ncode = 'x = Undefined()'\n") == []
+
+
+def test_a_value_fallback_may_be_bound_by_its_fallback_imports() -> None:
+    slot = SLOT.format("value", "SENDER", "sender") + "annotation = 'object'\nfallback = 'send_nowhere'\n"
+    imported = slot + "fallback_imports = ['from m import send_nowhere']\n"
+
+    assert _bound(imported, points=_points("sender")) == []
+    assert _bound(slot, points=_points("sender")) == [
+        "blueprint.toml:"
+        + UNBOUND.format(
+            "14: wiring[0].slots[0].fallback",
+            "send_nowhere",
+            "Import it in the file's imports or the slot's fallback_imports, or define it in an earlier slot.",
+        )
+    ]
+
+
+def test_fallback_imports_dont_bind_the_annotation() -> None:
+    slot = SLOT.format("value", "SENDER", "sender") + "annotation = 'Sender'\nfallback = 'None'\n"
+    slot += "fallback_imports = ['from m import Sender']\n"
+
+    assert _bound(slot, points=_points("sender")) == [
+        "blueprint.toml:" + UNBOUND.format("13: wiring[0].slots[0].annotation", "Sender", IN_IMPORTS)
+    ]
+
+
+def test_an_item_template_s_names_outside_its_fields_may_be_bound_by_item_imports() -> None:
+    slot = SLOT.format("tuple", "MOUNTS", "mounts") + "annotation = 'tuple[object, ...]'\n"
+    slot += "item = 'Mount({name}, \"Mount\", prefix=\"{prefix}\")'\ndefaults = { prefix = '' }\n"
+    imported = slot + "item_imports = ['from m import Mount']\n"
+
+    assert _bound(imported, points=_points("mounts")) == []
+    assert _bound(slot, points=_points("mounts")) == [
+        "blueprint.toml:"
+        + UNBOUND.format(
+            "14: wiring[0].slots[0].item",
+            "Mount",
+            "Import it in the file's imports or the slot's item_imports, or define it in an earlier slot.",
+        )
+    ]
+
+
+def test_item_imports_dont_bind_the_annotation() -> None:
+    slot = SLOT.format("tuple", "MOUNTS", "mounts") + "annotation = 'tuple[Mount, ...]'\n"
+    slot += "item = 'Mount({name})'\nitem_imports = ['from m import Mount']\n"
+
+    assert _bound(slot, points=_points("mounts")) == [
+        "blueprint.toml:" + UNBOUND.format("13: wiring[0].slots[0].annotation", "Mount", IN_IMPORTS)
+    ]
+
+
+def test_mini_s_old_catalog_with_mount_only_in_item_imports_is_refused() -> None:
+    mini = MINI_CATALOG.read_text()
+    old = mini.replace(
+        'imports = ["from collections.abc import Callable", "from ..mount import Mount"]',
+        'imports = ["from collections.abc import Callable"]',
+    ).replace(
+        "item = 'Mount({name}, \"{prefix}\")'\n",
+        'item = \'Mount({name}, "{prefix}")\'\nitem_imports = ["from ..mount import Mount"]\n',
+    )
+
+    assert old != mini
+    assert [problem.split(": uses ")[1] for problem in _problems(old)] == [
+        "'Mount', which this file doesn't bind whatever the selection.\n  " + IN_IMPORTS
+    ]
+
+
+@pytest.mark.parametrize("catalog", ["mini", "boilerplate"])
+def test_mini_and_b_s_catalog_at_e46bf26_bind_every_name_they_render(catalog: str) -> None:
+    path = MINI_CATALOG if catalog == "mini" else BOILERPLATE_CATALOG
+
+    assert _load(path.read_text()).wiring

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import difflib
 import ipaddress
 import math
@@ -86,6 +87,11 @@ SLOT_REQUIRED = {
     "data": ("name", "point", "format"),
 }
 HEADER_WIDTH = 100
+BUILTINS = frozenset(dir(builtins))
+FIELD = "__fastro_field__"
+IN_IMPORTS = "Import it in the file's imports, or define it in an earlier slot."
+IN_FALLBACK_IMPORTS = "Import it in the file's imports or the slot's fallback_imports, or define it in an earlier slot."
+IN_ITEM_IMPORTS = "Import it in the file's imports or the slot's item_imports, or define it in an earlier slot."
 LINE_LENGTH = 88
 LINE_LENGTHS = range(1, 321)
 PARAM_TYPES = ("bool", "choice", "cidr", "int", "str")
@@ -615,6 +621,7 @@ class Reader:
         slots = tuple(slot for slot in found if slot is not None)
         self.duplicates([(slot.at, slot.name) for slot in slots if slot.kind != "raw"], "name", "is defined by {} already.")
         self.dunder_all(slots)
+        self.bound_names(imports, slots)
         family = [(slot, slot.kind == "data") for slot in slots]
         for slot, data in family[1:]:
             if data != family[0][1]:
@@ -661,6 +668,32 @@ class Reader:
                     f"assigns __all__, and {first}, a reexport slot, renders the file's __all__.",
                     "Drop the assignment: the reexport's __all__ lists its name.",
                 )
+
+    def bound_names(self, imports: tuple[str, ...], slots: tuple[Slot, ...]) -> None:
+        """Refuse a name an annotation, a value fallback or an item template renders whatever the selection that the
+        file doesn't bind whatever the selection: a builtin, its ``imports``, or an earlier slot (2.6)."""
+        bound = _binds(imports)
+        for slot in slots:
+            if slot.kind in ("tuple", "list", "value"):
+                self.unbound((*slot.at, "annotation"), slot.annotation, bound, IN_IMPORTS)
+            if slot.kind == "value" and isinstance(slot.fallback, str):
+                fallback = _binds(slot.fallback_imports)
+                extra = None if bound is None or fallback is None else bound | fallback
+                self.unbound((*slot.at, "fallback"), slot.fallback, extra, IN_FALLBACK_IMPORTS)
+            if slot.item:
+                items = _binds(slot.item_imports)
+                extra = None if bound is None or items is None else bound | items
+                self.unbound((*slot.at, "item"), _item_expression(slot.item), extra, IN_ITEM_IMPORTS)
+            defined = _defines(slot)
+            bound = None if bound is None or defined is None else bound | defined
+
+    def unbound(self, path: KeyPath, expression: str, bound: frozenset[str] | None, fix: str) -> None:
+        """Refuse each name ``expression`` uses that's neither a builtin nor in ``bound`` (``None``: a star import)."""
+        if bound is None:
+            return
+        for name in _names(expression):
+            if name not in bound and name not in BUILTINS and name != FIELD:
+                self.fail(path, f"uses {name!r}, which this file doesn't bind whatever the selection.", fix)
 
     def slot(self, path: KeyPath, table: dict[str, Any]) -> Slot | None:
         if "kind" not in table:
@@ -1166,6 +1199,57 @@ def _binds_all(target: ast.expr) -> bool:
     if isinstance(target, ast.Tuple | ast.List):
         return any(_binds_all(element) for element in target.elts)
     return False
+
+
+def _binds(lines: tuple[str, ...]) -> frozenset[str] | None:
+    """The names import ``lines`` bind, or ``None`` when one is a star import, which could bind any name."""
+    names: set[str] = set()
+    for line in lines:
+        (node,) = ast.parse(line).body
+        assert isinstance(node, ast.Import | ast.ImportFrom)
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            return None
+        plain = isinstance(node, ast.Import)
+        names.update(alias.asname or (alias.name.split(".")[0] if plain else alias.name) for alias in node.names)
+    return frozenset(names)
+
+
+def _defines(slot: Slot) -> frozenset[str] | None:
+    """The names ``slot`` defines at module level: its ``name``, or what ``raw`` code binds (``None``: a star import)."""
+    if slot.kind != "raw":
+        return frozenset({slot.name})
+    names: set[str] = set()
+    for node in ast.parse(slot.code).body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            imported = _binds((ast.unparse(node),))
+            if imported is None:
+                return None
+            names |= imported
+        elif isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(name.id for target in targets for name in ast.walk(target) if isinstance(name, ast.Name))
+    return frozenset(names)
+
+
+def _item_expression(item: str) -> str:
+    """``item`` as an expression, with each of its fields replaced by a placeholder name."""
+    return "".join(literal + (FIELD if field is not None else "") for literal, field, _, _ in string.Formatter().parse(item))
+
+
+def _names(expression: str) -> list[str]:
+    """The free names ``expression`` uses, once each, in the order they're written; none when it doesn't parse."""
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return []
+    nodes = list(ast.walk(tree))
+    local = {node.arg for node in nodes if isinstance(node, ast.arg)}
+    local |= {node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+    used = [node for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)]
+    used.sort(key=lambda node: (node.lineno, node.col_offset))
+    return list(dict.fromkeys(node.id for node in used if node.id not in local))
 
 
 def _item(text: str) -> str:
