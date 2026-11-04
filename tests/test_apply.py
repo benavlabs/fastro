@@ -15,7 +15,7 @@ from fastro.engine.plan import plan
 from fastro.engine.render import render
 from fastro.engine.resolve import select
 from fastro.engine.spec import RepoPath
-from fastro.runner import MissingToolError
+from fastro.tools import MissingToolError
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 CATALOG = blueprint.load("blueprint.toml", (MINI / "blueprint.toml").read_text(), Version("0.1.0"))

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastro.engine.plan import Plan
 from fastro.engine.spec import RepoPath
-from fastro.runner import MissingToolError
+from fastro.tools import require
 
 
 class RepositoryError(Exception):
@@ -39,9 +39,7 @@ def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
         MissingToolError: ``git`` isn't on ``PATH``.
         RepositoryError: ``repo`` isn't a git repository.
     """
-    git = shutil.which("git")
-    if git is None:
-        raise MissingToolError("git")
+    git = require("git")
     listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z"], capture_output=True, text=True, check=False)
     if listed.returncode != 0:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")

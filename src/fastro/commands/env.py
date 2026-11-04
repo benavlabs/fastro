@@ -19,6 +19,7 @@ import typer
 from .. import runner
 from ..lib.project import discover_project
 from ..lib.prompts import error
+from ..tools import MissingToolError
 
 VALIDATE_MODULE = "scripts.validate_env"
 GEN_SECRET_MODULE = "scripts.gen_secret"
@@ -43,7 +44,7 @@ def _run_script(command: str, backend: Path, module: str, args: list[str]) -> No
 
     try:
         code = runner.run_module(backend, module, args)
-    except runner.MissingToolError as missing:
+    except MissingToolError as missing:
         error(
             f"`fastro env {command}` runs in the project through {missing.tool}, which isn't on PATH. "
             f"Install it: {UV_INSTALL_URL}"
