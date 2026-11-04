@@ -18,6 +18,11 @@ COMMAND = "python -m fastro.engine.blueprint"
 NOT_YET: tuple[str, ...] = ()
 CROSS_REFERENCES_LEFT: tuple[str, ...] = ()
 
+NOT_INSTALLED = (
+    "fastro isn't installed, so this can't tell which catalogs it reads. "
+    "Install it (uv pip install -e PATH_TO_FASTRO), then run this again."
+)
+
 
 def main(argv: list[str]) -> int:
     """Check the ``blueprint.toml`` at ``argv[0]``, a repo or the file itself, and any ``fastro.toml`` next to it."""
@@ -33,11 +38,7 @@ def main(argv: list[str]) -> int:
     try:
         tool = Version(metadata.version("fastro"))
     except metadata.PackageNotFoundError:
-        print(
-            "error: fastro isn't installed, so this can't tell which catalogs it reads. "
-            "Install it (uv pip install -e PATH_TO_FASTRO), then run this again.",
-            file=sys.stderr,
-        )
+        print(f"error: {NOT_INSTALLED}", file=sys.stderr)
         return 3
     beside = file.parent / "fastro.toml"
     try:

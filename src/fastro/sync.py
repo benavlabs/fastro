@@ -5,10 +5,7 @@ from __future__ import annotations
 import difflib
 import os
 from dataclasses import dataclass
-from importlib import metadata
 from pathlib import Path
-
-from packaging.version import Version
 
 from fastro.apply import Change
 from fastro.engine import blueprint, catalog_check, project
@@ -17,6 +14,7 @@ from fastro.engine.plan import plan
 from fastro.engine.project import Project
 from fastro.engine.render import render
 from fastro.engine.resolve import select
+from fastro.tools import installed_version
 
 DEV_NULL = "/dev/null"
 
@@ -61,8 +59,7 @@ def load_source(root: Path) -> Source:
     file = root / "blueprint.toml"
     if not file.is_file():
         raise UsageError("fastro.toml sets source = true, but there's no blueprint.toml beside it.")
-    tool = Version(metadata.version("fastro"))
-    catalog = blueprint.load("blueprint.toml", _read(file), tool)
+    catalog = blueprint.load("blueprint.toml", _read(file), installed_version())
     return Source(root, catalog, project.load("fastro.toml", text, catalog))
 
 

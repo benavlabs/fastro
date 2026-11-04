@@ -6,7 +6,7 @@ import json
 import re
 import tomllib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastro.engine.positions import BARE_KEY, KeyPath, key_lines
@@ -24,6 +24,7 @@ class Problem:
     key: str
     message: str
     fix: str = ""
+    code: str = field(default="", compare=False)
 
     def __str__(self) -> str:
         where = f"{self.file}:{self.line}: {self.key}: " if self.key else f"{self.file}:{self.line}: "
@@ -64,8 +65,9 @@ class Document:
                 return self.lines[path[:end]]
         return 1
 
-    def problem(self, path: KeyPath, message: str, fix: str = "") -> Problem:
-        return Problem(self.file, self.line(path), key_name(path), message, fix)
+    def problem(self, path: KeyPath, message: str, fix: str = "", code: str = "") -> Problem:
+        """A problem at ``path``; ``code`` is the lint code it's reported under when it isn't BP001 (spec 2.13)."""
+        return Problem(self.file, self.line(path), key_name(path), message, fix, code)
 
 
 def read(file: str, text: str) -> Document:

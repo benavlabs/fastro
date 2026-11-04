@@ -10,6 +10,7 @@ from .. import sync as syncing
 from ..apply import ApplyError, apply
 from ..engine.problems import CatalogError
 from ..engine.resolve import SelectionError
+from ..tools import NotInstalled
 
 
 def sync(
@@ -26,7 +27,7 @@ def sync(
     except syncing.UsageError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(2) from None
-    except syncing.Unreadable as error:
+    except (syncing.Unreadable, NotInstalled) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(3) from None
     except (CatalogError, SelectionError) as error:

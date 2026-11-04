@@ -10,6 +10,7 @@ from __future__ import annotations
 import typer
 
 from . import plugins as _plugins
+from .commands import blueprint as _blueprint_cmd
 from .commands import env as _env_cmd
 from .commands import make as _make_cmd
 from .commands import sync as _sync_cmd
@@ -24,6 +25,7 @@ app = typer.Typer(
 app.add_typer(_make_cmd.app, name="make", help="Generate files the project owns, such as the deploy compose files.")
 app.add_typer(_env_cmd.app, name="env", help="Inspect and prepare the runtime environment.")
 app.command(name="sync")(_sync_cmd.sync)
+app.add_typer(_blueprint_cmd.app, name="blueprint", help="Check and verify a blueprint repo.")
 
 
 def _mount_command_plugins() -> None:

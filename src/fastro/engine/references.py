@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 BUILT_IN_FIELDS = frozenset({"name", "ref", "module", "attr", "value"})
 ONE_SLOT_KINDS = ("value", "reexport")
 OWN_MODULE = "Point it at the module that defines it."
+OWNED_TWICE = "BP003"
 
 
 def problems(catalog: Blueprint) -> list[Problem]:
@@ -52,8 +53,8 @@ class _Checker:
                     self.slots.setdefault(slot.point, slot)
                     self.modules.setdefault(slot.point, module)
 
-    def problem(self, path: KeyPath, message: str, fix: str) -> Problem:
-        return self.catalog.document.problem(path, message, fix)
+    def problem(self, path: KeyPath, message: str, fix: str, code: str = "") -> Problem:
+        return self.catalog.document.problem(path, message, fix, code)
 
     def place(self, at: KeyPath) -> str:
         """How a message names the catalog key at ``at``."""
@@ -228,7 +229,7 @@ class _Checker:
         for _, at, text in sorted((line(at), at, path.text) for at, path in self.declarations()):
             if text in first:
                 fix = "A path belongs to one declaration: drop one of them."
-                yield self.problem(at, f"{text!r} is declared by {key_name(first[text])} already.", fix)
+                yield self.problem(at, f"{text!r} is declared by {key_name(first[text])} already.", fix, OWNED_TWICE)
             else:
                 first[text] = at
 
@@ -352,8 +353,8 @@ class _ProjectChecker(_Checker):
         super().__init__(catalog)
         self.project = project
 
-    def problem(self, path: KeyPath, message: str, fix: str) -> Problem:
-        return self.project.document.problem(path, message, fix)
+    def problem(self, path: KeyPath, message: str, fix: str, code: str = "") -> Problem:
+        return self.project.document.problem(path, message, fix, code)
 
     def place(self, at: KeyPath) -> str:
         return f"{PurePath(self.catalog.document.file).name}'s {key_name(at)}"
@@ -392,6 +393,6 @@ class _ProjectChecker(_Checker):
                 yield self.problem(at, message, "Narrow [app].paths so they leave the wiring files out.")
             if path.text in first:
                 fix = "A path belongs to one declaration: drop one of them."
-                yield self.problem(at, f"{path.text!r} is declared by {first[path.text]} already.", fix)
+                yield self.problem(at, f"{path.text!r} is declared by {first[path.text]} already.", fix, OWNED_TWICE)
             else:
                 first[path.text] = key_name(at)
