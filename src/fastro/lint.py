@@ -23,6 +23,7 @@ RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "FR014", "FR016")
 CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
+APP_FIX = "Point app at a module the repo has, or add its file to git."
 REF_FIX = "Define it there, or point the ref at the module that does."
 REF_MODULE_FIX = "Point the ref at a module the repo has, or add its file to git."
 PARSE_FIX = "Fix the module so it parses, then run fastro blueprint lint again."
@@ -192,20 +193,24 @@ def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
 
 
 def _missing_modules(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
-    """BP005: each command whose module, under ``import_root``, ``scripts`` or ``tests``, has no tracked file."""
+    """BP005: each command whose module, under ``import_root``, ``scripts`` or ``tests``, has no tracked file, and
+    ``[verify].app`` when its module has none (2.13)."""
     commands: list[Command] = [*catalog.commands.values()]
     for feature in catalog.features:
         commands += feature.commands.values()
     found = []
-    for command in commands:
-        parts = command.module.split(".")
+    declared = [((*command.at, "module"), command.module, command.cwd, MODULE_FIX) for command in commands]
+    if catalog.verify.app is not None:
+        declared.append((("verify", "app"), catalog.verify.app, None, APP_FIX))
+    for at, name, cwd_path, fix in declared:
+        parts = name.split(".")
         if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
             continue
-        cwd = (command.cwd or catalog.info.python_root).text.rstrip("/")
+        cwd = (cwd_path or catalog.info.python_root).text.rstrip("/")
         module, package = f"{cwd}/{'/'.join(parts)}.py", f"{cwd}/{'/'.join(parts)}/__init__.py"
         if module not in tracked and package not in tracked:
-            message = f"{command.module!r} has no file: neither {module} nor {package} is tracked."
-            found.append(catalog.document.problem((*command.at, "module"), message, MODULE_FIX, "BP005"))
+            message = f"{name!r} has no file: neither {module} nor {package} is tracked."
+            found.append(catalog.document.problem(at, message, fix, "BP005"))
     return found
 
 

@@ -512,7 +512,7 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
         ),
         (
             "[verify]\nmatrix = []",
-            "7: verify.matrix: isn't a key of [verify].\n  The keys of [verify] are checks, include_presets, sets.",
+            "7: verify.matrix: isn't a key of [verify].\n  The keys of [verify] are app, checks, include_presets, sets.",
         ),
         ("[verify]\nchecks = {}", "7: verify.checks: should be a list of tables, not a table."),
         ('[[verify.checks]]\nname = "frontend"', "6: verify.checks[0].run: is required.\n  Add run to [verify.checks[0]]."),
@@ -773,3 +773,32 @@ def test_a_key_that_breaks_its_rule_is_refused_at_its_line(body: str, problem: s
 )
 def test_a_required_key_of_the_blueprint_table_that_breaks_its_rule_is_refused(old: str, new: str, problem: str) -> None:
     assert _problems(MINIMAL.replace(old, new)) == [f"blueprint.toml:{problem}"]
+
+
+def test_verify_app_is_read_and_is_none_without_it() -> None:
+    assert _load(MINIMAL + '[verify]\napp = "src.interfaces.main"\n').verify.app == "src.interfaces.main"
+    assert _load(MINIMAL).verify.app is None
+
+
+@pytest.mark.parametrize(
+    ("app", "problem"),
+    [
+        ("1", "7: verify.app: should be a string, not an integer."),
+        ('"src.1main"', "7: verify.app: 'src.1main' isn't a module name, such as 'scripts.validate_env'."),
+        (
+            '"other.main"',
+            "7: verify.app: 'other.main' doesn't start with 'src', the import_root, and the app is imported from there.",
+        ),
+    ],
+)
+def test_a_verify_app_that_isnt_a_module_under_import_root_is_refused(app: str, problem: str) -> None:
+    problems = _problems(MINIMAL + f"[verify]\napp = {app}\n")
+
+    assert problems[0].split("\n")[0] == f"blueprint.toml:{problem}"
+    assert len(problems) == 1
+
+
+def test_a_verify_app_under_a_custom_import_root_loads() -> None:
+    text = MINIMAL + 'import_root = "app_src"\n[verify]\napp = "app_src.main"\n'
+
+    assert _load(text).verify.app == "app_src.main"

@@ -694,3 +694,26 @@ def test_an_option_without_env_needs_no_marker_and_no_env_example(repo: Path) ->
     assert not (repo / ENV_EXAMPLE).exists()
 
     assert _findings() == []
+
+
+VERIFY = "[verify.sets]\n"
+
+
+@pytest.mark.parametrize("tracked", ["backend/src/main.py", "backend/src/main/__init__.py"])
+def test_a_verify_app_with_a_tracked_file_or_package_is_fine(repo: Path, tracked: str) -> None:
+    _edit(repo / "blueprint.toml", VERIFY, '[verify]\napp = "src.main"\n\n[verify.sets]\n')
+    _track(repo, tracked)
+
+    assert _findings() == []
+
+
+def test_a_verify_app_with_no_file_is_bp005_at_its_key(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", VERIFY, '[verify]\napp = "src.main"\n\n[verify.sets]\n')
+
+    (finding,) = _findings()
+
+    assert (finding["code"], finding["line"]) == ("BP005", 12)
+    assert finding["message"] == (
+        "verify.app: 'src.main' has no file: neither backend/src/main.py nor backend/src/main/__init__.py is tracked."
+    )
+    assert finding["fix"] == "Point app at a module the repo has, or add its file to git."

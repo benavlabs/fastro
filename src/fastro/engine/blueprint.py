@@ -174,6 +174,7 @@ class Verify:
     include_presets: bool = True
     sets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     checks: tuple[Check, ...] = ()
+    app: str | None = None
 
 
 @dataclass(frozen=True)
@@ -558,7 +559,8 @@ class Reader:
         points = [self.point(path, name, item) for path, name, item in self.named((), data, "points", spec.option_name)]
         features = [self.feature(path, name, item) for path, name, item in self.named((), data, "features", spec.feature_name)]
         core = self.subtable((), data, "core", {"contributes"})
-        verify = self.verify(("verify",), self.subtable((), data, "verify", {"include_presets", "sets", "checks"}))
+        verify_table = self.subtable((), data, "verify", {"include_presets", "sets", "checks", "app"})
+        verify = self.verify(("verify",), verify_table, info.import_root if info is not None else None)
         python_root = info.python_root if info is not None else RepoPath("backend")
         wiring = [self.wiring(at, item, python_root) for at, item in self.tables((), data, "wiring")]
         self.duplicates(
@@ -928,7 +930,7 @@ class Reader:
         version = self.text(path, table, "version", spec.version)
         return Extends(name, version) if name is not None and version is not None else None
 
-    def verify(self, path: KeyPath, table: dict[str, Any]) -> Verify:
+    def verify(self, path: KeyPath, table: dict[str, Any], import_root: str | None) -> Verify:
         sets = {}
         for at, name, _ in self.named(path, table, "sets", lambda text: spec.label(text, "verify set")):
             if name == "everything":
@@ -937,7 +939,11 @@ class Reader:
                 sets[name] = self.texts((*path, "sets"), table["sets"], name, spec.feature_name)
         checks = [self.check(at, item) for at, item in self.tables(path, table, "checks")]
         include = self.flag(path, table, "include_presets")
-        return Verify(include is not False, sets, tuple(check for check in checks if check is not None))
+        app = self.text(path, table, "app", _module)
+        if app is not None and import_root is not None and app.split(".")[0] != import_root:
+            message = f"{app!r} doesn't start with {import_root!r}, the import_root, and the app is imported from there."
+            self.fail((*path, "app"), message, f"Name the app's module under {import_root}, such as '{import_root}.main'.")
+        return Verify(include is not False, sets, tuple(check for check in checks if check is not None), app)
 
     def check(self, path: KeyPath, value: dict[str, Any]) -> Check | None:
         table = self.table(path, value, ("name", "run", "cwd", "if"), ("name", "run")) or {}
