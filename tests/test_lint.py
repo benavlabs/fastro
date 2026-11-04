@@ -66,7 +66,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP005"],
+        "rules": ["BP001", "BP002", "BP003", "BP005", "FR014"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -288,10 +288,10 @@ def test_a_declared_file_path_deleted_from_the_working_tree_is_bp002(repo: Path)
 def test_a_declared_directory_that_holds_no_tracked_file_is_bp002(repo: Path) -> None:
     _git(repo, "rm", "-q", "-r", "--cached", "backend/src/modules/cache/")
 
-    (finding,) = _findings()
+    found = {finding["code"]: finding["message"] for finding in _findings()}
 
-    assert finding["code"] == "BP002"
-    assert finding["message"] == "features.cache.paths[0]: 'backend/src/modules/cache/' holds no tracked file."
+    assert found["BP002"] == "features.cache.paths[0]: 'backend/src/modules/cache/' holds no tracked file."
+    assert set(found) == {"BP002", "FR014"}
 
 
 def test_a_when_s_paths_are_checked_too(repo: Path) -> None:
@@ -401,3 +401,179 @@ def test_a_directory_that_isnt_a_git_repo_is_a_usage_error(repo: Path) -> None:
 
     assert code == 2
     assert "isn't a git repository" in err
+
+
+HEALTH = 'health_checks = ["src.health:database"]'
+PROBE = "backend/src/probe.py"
+REF_FIX = "Define it there, or point the ref at the module that does."
+
+
+def _probe(repo: Path, code: str, ref: str = "src.probe:target") -> None:
+    _edit(repo / "blueprint.toml", HEALTH, f'health_checks = ["src.health:database", "{ref}"]')
+    (repo / PROBE).write_text(code)
+    _git(repo, "add", PROBE)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def target(): ...\n",
+        "async def target(): ...\n",
+        "class target: ...\n",
+        "target = 1\n",
+        "target: int = 1\n",
+        "target = 0\ntarget += 1\n",
+        "target += 1\n",
+        "first, target = 1, 2\n",
+        "[first, *target] = [1, 2]\n",
+        "other = target = 1\n",
+        "import target\n",
+        "import os as target\n",
+        "import target.sub\n",
+        "from os import path as target\n",
+        "from os import target\n",
+        "from os import *\n",
+        "import sys\nif sys.platform:\n    target = 1\nelse:\n    pass\n",
+        "import sys\nif sys.platform:\n    pass\nelse:\n    target = 1\n",
+        "try:\n    target = 1\nexcept ImportError:\n    pass\n",
+        "try:\n    import nothing\nexcept ImportError:\n    target = None\n",
+        "try:\n    pass\nexcept ImportError:\n    pass\nelse:\n    target = 1\n",
+        "try:\n    pass\nfinally:\n    target = 1\n",
+        "with open(__file__) as handle:\n    target = handle.read()\n",
+    ],
+)
+def test_a_ref_to_a_name_its_module_binds_at_module_level_is_fine(repo: Path, code: str) -> None:
+    _probe(repo, code)
+
+    assert _findings() == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "",
+        "def other():\n    target = 1\n",
+        "class Other:\n    target = 1\n",
+        "for target in range(3):\n    pass\n",
+        "print(target)\n",
+        "obj = object()\nobj.target = 1\n",
+        "import target_other\n",
+    ],
+)
+def test_a_ref_to_a_name_its_module_doesnt_bind_at_module_level_is_fr014(repo: Path, code: str) -> None:
+    _probe(repo, code)
+
+    (finding,) = _findings()
+
+    assert (finding["code"], finding["line"]) == ("FR014", 48)
+    assert finding["message"] == (
+        "core.contributes.health_checks[1]: 'src.probe:target' names 'target', which backend/src/probe.py doesn't "
+        "define at module level."
+    )
+    assert finding["fix"] == REF_FIX
+
+
+def test_a_package_s_init_is_the_module_it_checks(repo: Path) -> None:
+    _probe(repo, "", "src.pkg:target")
+    _track(repo, "backend/src/pkg/__init__.py")
+    (repo / "backend/src/pkg/__init__.py").write_text("target = 1\n")
+
+    assert _findings() == []
+
+
+def test_a_ref_whose_module_has_no_tracked_file_is_fr014(repo: Path) -> None:
+    _probe(repo, "", "src.missing:target")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR014"
+    assert finding["message"] == (
+        "core.contributes.health_checks[1]: 'src.missing:target' names a module the repo doesn't have: neither "
+        "backend/src/missing.py nor backend/src/missing/__init__.py is tracked."
+    )
+    assert finding["fix"] == "Point the ref at a module the repo has, or add its file to git."
+
+
+def test_a_ref_whose_module_doesnt_parse_is_fr014(repo: Path) -> None:
+    _probe(repo, "def (\n")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR014"
+    assert str(finding["message"]).startswith(
+        "core.contributes.health_checks[1]: 'src.probe:target' can't be checked: backend/src/probe.py doesn't parse ("
+    )
+    assert str(finding["message"]).endswith(" on line 1).")
+
+
+def test_an_aliased_ref_is_checked_by_its_attribute(repo: Path) -> None:
+    _probe(repo, "target = 1\n", "src.probe:target as alias")
+
+    assert _findings() == []
+
+
+def test_a_ref_to_an_installed_package_isnt_checked(repo: Path) -> None:
+    _probe(repo, "", "fastapi:nothing_here")
+
+    assert _findings() == []
+
+
+def test_a_feature_s_and_a_when_s_contributions_are_checked(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        'settings = ["src.modules.cache.settings:CacheSettings"]',
+        'settings = ["src.modules.cache.settings:Nope"]',
+    )
+
+    (finding,) = _findings()
+
+    assert str(finding["message"]).startswith("features.cache.contributes.settings[0]: 'src.modules.cache.settings:Nope'")
+
+    _edit(
+        repo / "blueprint.toml",
+        'settings = ["src.modules.cache.settings:Nope"]',
+        'settings = ["src.modules.cache.settings:CacheSettings"]',
+    )
+    _edit(repo / "blueprint.toml", "src.modules.accounts.email:send_queued", "src.modules.accounts.email:send_later")
+
+    (finding,) = _findings()
+
+    assert str(finding["message"]).startswith("features.accounts.when[0].contributes.email_sender[0]: ")
+
+
+def test_a_reexport_fallback_is_checked(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", 'fallback = "src.admin_default:site"', 'fallback = "src.admin_default:nope"')
+
+    (finding,) = _findings()
+
+    assert str(finding["message"]).startswith("wiring[3].slots[0].fallback: 'src.admin_default:nope' names 'nope'")
+
+
+def test_a_class_s_fallback_and_append_are_checked(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        'doc = "The app\'s settings."',
+        'doc = "The app\'s settings."\nfallback = "src.mount:Base"\nappend = ["src.mount:Last"]',
+    )
+
+    found = sorted(str(finding["message"]).split(":")[0] for finding in _findings())
+
+    assert found == ["wiring[0].slots[2].append[0]", "wiring[0].slots[2].fallback"]
+
+
+def test_a_literal_or_data_slot_s_contributions_arent_refs(repo: Path) -> None:
+    assert '"src.modules.tasks.jobs"' in (repo / "blueprint.toml").read_text()
+
+    assert _findings() == []
+
+
+def test_a_module_python_cant_place_an_error_in_has_no_line_in_its_finding(repo: Path) -> None:
+    _probe(repo, "")
+    (repo / PROBE).write_bytes(b"target = 1\x00\n")
+
+    (finding,) = _findings()
+
+    assert "line None" not in str(finding["message"])
+    assert str(finding["message"]).endswith(
+        "backend/src/probe.py doesn't parse (source code string cannot contain null bytes)."
+    )

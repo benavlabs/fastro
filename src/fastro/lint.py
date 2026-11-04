@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,14 +14,18 @@ from fastro.engine.blueprint import Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Problem
 from fastro.engine.project import Project
-from fastro.engine.spec import RepoPath
+from fastro.engine.spec import Ref, RepoPath
 from fastro.tools import installed_version
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP005")
+RULES = ("BP001", "BP002", "BP003", "BP005", "FR014")
 CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
+REF_FIX = "Define it there, or point the ref at the module that does."
+REF_MODULE_FIX = "Point the ref at a module the repo has, or add its file to git."
+PARSE_FIX = "Fix the module so it parses, then run fastro blueprint lint again."
+ANY_NAME = None
 SOURCE_FIX = "Add source = true to fastro.toml."
 
 
@@ -115,6 +120,7 @@ def lint(root: Path) -> Report:
             raise UsageError(f"{error}. Run fastro blueprint lint in a blueprint repo, which git tracks.") from None
         found.extend(_missing_paths(catalog, tracked))
         found.extend(_missing_modules(catalog, tracked))
+        found.extend(_unresolved_refs(root, catalog, tracked))
     toml = root / "fastro.toml"
     if toml.is_file():
         try:
@@ -201,3 +207,96 @@ def _missing_modules(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
 def _directory(path: RepoPath) -> RepoPath:
     """``path`` as a directory, with one trailing ``/``, whichever way the catalog wrote it."""
     return RepoPath(path.text.rstrip("/") + "/")
+
+
+def _declared_refs(catalog: Blueprint) -> list[tuple[KeyPath, Ref]]:
+    """Every ref the catalog declares (1.4): contributions to a slot that takes refs, and a ``class`` slot's
+    ``fallback`` and ``append`` and a ``reexport`` slot's ``fallback``, each with where it's written."""
+    values = {slot.point for file in catalog.wiring for slot in file.slots if slot.literal or slot.kind == "data"}
+    groups = [catalog.core]
+    for feature in catalog.features:
+        groups += [feature.contributes, *(when.contributes for when in feature.when)]
+    found: list[tuple[KeyPath, Ref]] = []
+    for group in groups:
+        for point, items in group.items():
+            if point in values:
+                continue
+            for item in items:
+                target = item.target
+                found.append((item.at, target if isinstance(target, Ref) else Ref.parse(str(target))))
+    for file in catalog.wiring:
+        for slot in file.slots:
+            if isinstance(slot.fallback, Ref):
+                found.append(((*slot.at, "fallback"), slot.fallback))
+            found += [((*slot.at, "append", index), ref) for index, ref in enumerate(slot.append)]
+    return found
+
+
+def _unresolved_refs(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """FR014: each ref, to a module under ``import_root``, ``scripts`` or ``tests``, whose module's tracked file
+    doesn't bind its name at module level. The file is parsed, never imported (2.13)."""
+    python_root = catalog.info.python_root.text.rstrip("/")
+    bound: dict[str, frozenset[str] | str | None] = {}
+    found = []
+    for at, ref in _declared_refs(catalog):
+        parts = ref.module.split(".")
+        if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
+            continue
+        module, package = f"{python_root}/{'/'.join(parts)}.py", f"{python_root}/{'/'.join(parts)}/__init__.py"
+        file = module if module in tracked else package if package in tracked else None
+        if file is None:
+            message = f"{str(ref)!r} names a module the repo doesn't have: neither {module} nor {package} is tracked."
+            found.append(catalog.document.problem(at, message, REF_MODULE_FIX, "FR014"))
+            continue
+        if file not in bound:
+            bound[file] = _module_names(root / file)
+        names = bound[file]
+        if isinstance(names, str):
+            message = f"{str(ref)!r} can't be checked: {file} doesn't parse ({names})."
+            found.append(catalog.document.problem(at, message, PARSE_FIX, "FR014"))
+        elif names is not ANY_NAME and ref.attr not in names:
+            message = f"{str(ref)!r} names {ref.attr!r}, which {file} doesn't define at module level."
+            found.append(catalog.document.problem(at, message, REF_FIX, "FR014"))
+    return found
+
+
+def _module_names(file: Path) -> frozenset[str] | str | None:
+    """The names ``file`` binds at module level, ``None`` when a star import could bind any, or why it doesn't
+    parse. Top-level ``if``, ``try`` and ``with`` blocks count as module level."""
+    try:
+        tree = ast.parse(file.read_bytes(), str(file))
+    except SyntaxError as error:
+        return f"{error.msg} on line {error.lineno}" if error.lineno else error.msg
+    names: set[str] = set()
+    pending: list[ast.stmt] = list(tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(name for target in node.targets for name in _targets(target))
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+            names.update(_targets(node.target))
+        elif isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if any(alias.name == "*" for alias in node.names):
+                return ANY_NAME
+            names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.If | ast.With | ast.AsyncWith):
+            pending += [*node.body, *(node.orelse if isinstance(node, ast.If) else [])]
+        elif isinstance(node, ast.Try | ast.TryStar):
+            pending += [*node.body, *node.orelse, *node.finalbody]
+            pending += [statement for handler in node.handlers for statement in handler.body]
+    return frozenset(names)
+
+
+def _targets(target: ast.expr) -> list[str]:
+    """The names an assignment target binds: a name, or the names a tuple, list or starred target unpacks into."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _targets(target.value)
+    if isinstance(target, ast.Tuple | ast.List):
+        return [name for element in target.elts for name in _targets(element)]
+    return []
