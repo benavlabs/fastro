@@ -12,6 +12,7 @@ import typer
 from . import plugins as _plugins
 from .commands import env as _env_cmd
 from .commands import make as _make_cmd
+from .commands import sync as _sync_cmd
 
 app = typer.Typer(
     name="fastro",
@@ -22,6 +23,7 @@ app = typer.Typer(
 
 app.add_typer(_make_cmd.app, name="make", help="Generate files the project owns, such as the deploy compose files.")
 app.add_typer(_env_cmd.app, name="env", help="Inspect and prepare the runtime environment.")
+app.command(name="sync")(_sync_cmd.sync)
 
 
 def _mount_command_plugins() -> None:

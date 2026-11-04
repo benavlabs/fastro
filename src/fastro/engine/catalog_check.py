@@ -41,7 +41,7 @@ def main(argv: list[str]) -> int:
         return 3
     beside = file.parent / "fastro.toml"
     try:
-        loaded = load(str(file), _text(file), tool)
+        loaded = load(str(file), read_text(file), tool)
     except OSError as error:
         return _unreadable(file, error, path)
     except CatalogError as error:
@@ -68,7 +68,7 @@ def main(argv: list[str]) -> int:
 def _project(file: Path, catalog: Blueprint, path: Path) -> int:
     """Check the ``fastro.toml`` next to ``catalog``, against it when it sets ``source = true`` (spec 3)."""
     try:
-        text = _text(file)
+        text = read_text(file)
         alone = project.load(str(file), text)
         if not alone.source:
             print(
@@ -91,7 +91,7 @@ def _project(file: Path, catalog: Blueprint, path: Path) -> int:
 def _sets_source(file: Path) -> bool:
     """Whether ``file`` reads as TOML that sets ``source = true``, even when its other keys have problems."""
     try:
-        return tomllib.loads(_text(file)).get("source") is True
+        return tomllib.loads(read_text(file)).get("source") is True
     except (CatalogError, tomllib.TOMLDecodeError):
         return False
 
@@ -129,7 +129,8 @@ def not_checked(extends: str | None = None) -> str:
     return f"Not checked yet: {_listed(parts)}."
 
 
-def _text(file: Path) -> str:
+def read_text(file: Path) -> str:
+    """``file`` as UTF-8 text, past a byte order mark, or a :class:`CatalogError` at the first line that isn't UTF-8."""
     data = file.read_bytes().removeprefix(codecs.BOM_UTF8)
     try:
         return data.decode("utf-8")
