@@ -600,6 +600,12 @@ format = "json"
             "  Give the wiring file a path outside blueprint_only.",
         ),
         (
+            'overlay = "frontend"\n',
+            "frontend/menu.json",
+            "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "
+            "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
+        ),
+        (
             'blueprint_only = ["frontend/", "frontend/menu.json"]\n',
             "frontend/menu.json",
             "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "

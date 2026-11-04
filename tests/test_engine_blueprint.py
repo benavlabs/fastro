@@ -197,6 +197,26 @@ def test_the_blueprint_tables_optional_keys_have_the_specs_defaults() -> None:
     assert (blueprint.verify.include_presets, blueprint.verify.sets, blueprint.verify.checks) == (True, {}, ())
 
 
+KEPT = [RepoPath("blueprint.toml"), RepoPath("fastro.toml"), RepoPath(".fastro/")]
+
+
+@pytest.mark.parametrize("overlay", ["blueprint/overlay/", "blueprint/overlay"])
+def test_the_overlay_directory_is_always_blueprint_only(overlay: str) -> None:
+    info = _load(MINIMAL + f'overlay = "{overlay}"\nblueprint_only = ["docs/"]\n').info
+
+    assert info.all_blueprint_only == (RepoPath("docs/"), *KEPT, RepoPath("blueprint/overlay/"))
+
+
+def test_an_overlay_the_author_lists_as_blueprint_only_isnt_added_again() -> None:
+    info = _load(MINIMAL + 'overlay = "blueprint/overlay"\nblueprint_only = ["blueprint/overlay/"]\n').info
+
+    assert info.all_blueprint_only == (RepoPath("blueprint/overlay/"), *KEPT)
+
+
+def test_without_an_overlay_only_the_kept_files_are_added() -> None:
+    assert _load(MINIMAL + 'blueprint_only = ["docs/"]\n').info.all_blueprint_only == (RepoPath("docs/"), *KEPT)
+
+
 def test_presets_and_verify_are_read() -> None:
     blueprint = _load(FULL)
 

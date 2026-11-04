@@ -131,8 +131,10 @@ class Info:
 
     @property
     def all_blueprint_only(self) -> tuple[RepoPath, ...]:
-        """``blueprint_only`` with the files every blueprint keeps to itself (2.1) added after the author's own."""
-        return (*self.blueprint_only, *(path for path in KEPT if path not in self.blueprint_only))
+        """``blueprint_only`` with what every blueprint keeps to itself (2.1) added after the author's own: the kept
+        files, and the overlay directory, whose files reach projects only through the overlay."""
+        kept = [*KEPT, RepoPath(self.overlay.text.rstrip("/") + "/")] if self.overlay is not None else list(KEPT)
+        return (*self.blueprint_only, *(path for path in kept if path not in self.blueprint_only))
 
 
 @dataclass(frozen=True)

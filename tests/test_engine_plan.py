@@ -99,6 +99,15 @@ def test_a_file_owned_by_app_is_skipped_as_the_projects_own_code(mini: Blueprint
     )
 
 
+def test_an_overlay_file_is_skipped_as_blueprint_only(mini: Blueprint, files: tuple[RepoPath, ...]) -> None:
+    text = (MINI / "blueprint.toml").read_text()
+    text = text.replace('requires_fastro = ">=0.1.0.dev0"\n', 'requires_fastro = ">=0.1.0.dev0"\noverlay = "overlay"\n')
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    ops = _ops(catalog, (*files, RepoPath("overlay/README.md.j2")), features=catalog.presets["full"])
+
+    assert ops["overlay/README.md.j2"] == Op("skip", "overlay/README.md.j2", "core", "it's blueprint_only")
+
+
 def test_blueprint_only_comes_before_every_other_skip_cause(mini: Blueprint, files: tuple[RepoPath, ...]) -> None:
     text = (
         (MINI / "blueprint.toml")
