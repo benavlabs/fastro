@@ -50,10 +50,21 @@ def run_declared(command: Command, project: Path | None, python_root: RepoPath, 
             raise OutsideProject(f"fastro {words} runs in a project. Run it from inside one.")
         print(secrets.token_hex(_token_bytes(words, args)))
         return 0
+    argv, cwd = declared_command(command, project, python_root, args)
+    return subprocess.run(argv, cwd=cwd, check=False).returncode
+
+
+def declared_command(command: Command, project: Path, python_root: RepoPath, args: Sequence[str]) -> tuple[list[str], Path]:
+    """The argv and working directory ``command`` runs with in ``project``: ``uv run --project {python_root} python -m
+    <module> <args…>``, from the command's ``cwd`` (default ``python_root``), with every path absolute.
+
+    Raises:
+        MissingToolError: ``uv`` isn't on ``PATH``.
+    """
     root = project.resolve()
     backend = root / python_root.text.rstrip("/")
     cwd = root / command.cwd.text.rstrip("/") if command.cwd is not None else backend
-    return _uv(backend, command.module, args, cwd)
+    return [require("uv"), "run", "--project", str(backend), "python", "-m", command.module, *args], cwd
 
 
 def module_file(python_root: Path, module: str) -> Path:

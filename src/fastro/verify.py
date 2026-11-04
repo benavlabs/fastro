@@ -6,7 +6,9 @@ set is built by plan, render and apply from the repo's tracked files, never by c
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -17,9 +19,30 @@ from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
 from fastro.engine.render import render
 from fastro.engine.resolve import Selection, select
+from fastro.runner import available, declared_command
+from fastro.tools import require
 
 EVERYTHING = "everything"
 REPORTED_LINES = 40
+BASELINE = ("db", "baseline")
+OUTSIDE_THE_BUILD = ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME")
+QUIET = "import warnings, logging; warnings.simplefilter('ignore'); logging.disable(50); "
+EVERY_MODULE = """
+import importlib, pathlib, sys
+
+broken = []
+for path in sorted(pathlib.Path({root!r}).rglob("*.py")):
+    module = ".".join(path.with_suffix("").parts).removesuffix(".__init__")
+    try:
+        importlib.import_module(module)
+    except Exception as error:
+        broken.append(f"{{module}}: {{type(error).__name__}}: {{error}}")
+
+if broken:
+    sys.exit("modules left behind by the removed features: " + "; ".join(broken))
+
+print("every module imports")
+"""
 
 
 class UnknownSet(Exception):
@@ -100,3 +123,59 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
         else:
             shutil.rmtree(scratch, ignore_errors=True)
     return 1 if failures else 0
+
+
+def checks_for(catalog: Blueprint) -> Checks:
+    """The checks ``blueprint verify`` runs on a build, each a subprocess in it, never in fastro's own process.
+
+    The built-in ones run through the build's interpreter, ``uv run --project {python_root}``, from ``python_root``:
+    the app import (when ``[verify].app`` is set), every module importing, ruff, mypy, the tests, and the migration
+    baseline through the declared ``db baseline`` command (when there is one). Then each ``[[verify.checks]]`` whose
+    ``if`` holds runs from its ``cwd``. Every build of a run, ``scratch/<set>``, shares the environment at
+    ``scratch/.venv``. The environment is fastro's, without ``VIRTUAL_ENV``, ``PYTHONPATH`` and ``PYTHONHOME``, which
+    would point the checks outside the build, and with ``[checks.toolchain.env]`` on top.
+    """
+    root = catalog.info.import_root
+    environment = {name: value for name, value in os.environ.items() if name not in OUTSIDE_THE_BUILD}
+    environment.update(catalog.toolchain_env)
+
+    def run(project: Path, selection: Selection) -> list[Result]:
+        shared = {**environment, "UV_PROJECT_ENVIRONMENT": str(project.parent / ".venv")}
+        backend = (project / catalog.info.python_root.text.rstrip("/")).resolve()
+        python = [require("uv"), "run", "--project", str(backend), "python"]
+        present = [name for name in (root, "scripts", "migrations", "tests") if (backend / name).is_dir()]
+        steps: list[tuple[str, list[str], Path]] = []
+        if catalog.verify.app is not None:
+            steps.append(("app imports", [*python, "-c", QUIET + f"import {catalog.verify.app}"], backend))
+        steps.append(("every module imports", [*python, "-c", QUIET + EVERY_MODULE.format(root=root)], backend))
+        linted = [name for name in (root, "tests") if name in present]
+        steps.append(("ruff", [*python, "-m", "ruff", "check", *linted], backend))
+        steps.append(("mypy", [*python, "-m", "mypy", *present, "--config-file", "pyproject.toml"], backend))
+        if (backend / "tests").is_dir():
+            steps.append(("tests", [*python, "-m", "pytest", "tests", "-q", "-p", "no:randomly"], backend))
+        baseline = available(catalog, selection).get(BASELINE)
+        if baseline is not None:
+            argv, cwd = declared_command(baseline, project, catalog.info.python_root, ["--check"])
+            steps.append(("migrations", argv, cwd))
+        for check in catalog.verify.checks:
+            if check.condition is None or selection.holds(check.condition):
+                cwd = project / check.cwd.text.rstrip("/") if check.cwd is not None else project
+                steps.append((check.name, list(check.run), cwd))
+        return [_step(name, argv, cwd, shared) for name, argv, cwd in steps]
+
+    return run
+
+
+def _step(name: str, argv: list[str], cwd: Path, environment: dict[str, str]) -> Result:
+    """One check, run and read: it passes when it exits 0, and its last printed line is its summary."""
+    if not cwd.is_dir():
+        missing = f"Its cwd, {cwd}, isn't a directory in this build."
+        return Result(name, False, missing, missing)
+    try:
+        completed = subprocess.run(argv, cwd=cwd, env=environment, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        missing = f"{argv[0]} isn't on PATH."
+        return Result(name, False, missing, missing)
+    output = (completed.stdout + completed.stderr).strip()
+    lines = output.splitlines()
+    return Result(name, completed.returncode == 0, lines[-1] if lines else "", output)
