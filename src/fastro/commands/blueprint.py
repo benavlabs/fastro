@@ -9,7 +9,7 @@ import typer
 
 from .. import lint as linting
 from ..engine.blueprint import IncompatibleCatalog
-from ..tools import NotInstalled, installed_version
+from ..tools import MissingToolError, NotInstalled, installed_version
 
 app = typer.Typer(no_args_is_help=True, help="Check and verify a blueprint repo.")
 
@@ -26,6 +26,11 @@ def lint(json_: bool = typer.Option(False, "--json", help="Print spec 7's lint d
         raise typer.Exit(2) from None
     except (linting.Unreadable, NotInstalled) as error:
         typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(3) from None
+    except MissingToolError as missing:
+        typer.echo(
+            f"error: fastro blueprint lint lists the repo's tracked files with {missing.tool}, which isn't on PATH.", err=True
+        )
         raise typer.Exit(3) from None
     except IncompatibleCatalog as error:
         for problem in error.problems:

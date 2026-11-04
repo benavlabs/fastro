@@ -7,14 +7,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fastro.apply import RepositoryError, tracked_files
 from fastro.engine import blueprint, catalog_check, project
-from fastro.engine.blueprint import Blueprint, IncompatibleCatalog
+from fastro.engine.blueprint import Blueprint, Command, IncompatibleCatalog
+from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Problem
 from fastro.engine.project import Project
+from fastro.engine.spec import RepoPath
 from fastro.tools import installed_version
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP003")
+RULES = ("BP001", "BP002", "BP003", "BP005")
+CHECKED_ROOTS = ("scripts", "tests")
+PATH_FIX = "Fix the path, or add the file to git."
+MODULE_FIX = "Point module at a module the repo has, or add its file to git."
 SOURCE_FIX = "Add source = true to fastro.toml."
 
 
@@ -81,8 +87,11 @@ def lint(root: Path) -> Report:
     ``fastro.toml`` must set ``source = true``. When it does, it's checked against the catalog, if the catalog loads;
     when it doesn't, that's the one finding about it, since the repo's catalog isn't the one it pins (2.13).
 
+    The catalog's paths and command modules are checked against the repo's tracked files when it loads (BP002, BP005).
+
     Raises:
-        UsageError: ``root`` has no ``blueprint.toml``.
+        UsageError: ``root`` has no ``blueprint.toml``, or isn't a git repository.
+        MissingToolError: ``git`` isn't on ``PATH``.
         Unreadable: either file can't be read.
         IncompatibleCatalog: the catalog is for another version of fastro.
         NotInstalled: fastro isn't installed.
@@ -99,6 +108,13 @@ def lint(root: Path) -> Report:
         raise
     except CatalogError as error:
         found.extend(error.problems)
+    if catalog is not None:
+        try:
+            tracked = {path.text for path in tracked_files(root)}
+        except RepositoryError as error:
+            raise UsageError(f"{error}. Run fastro blueprint lint in a blueprint repo, which git tracks.") from None
+        found.extend(_missing_paths(catalog, tracked))
+        found.extend(_missing_modules(catalog, tracked))
     toml = root / "fastro.toml"
     if toml.is_file():
         try:
@@ -142,3 +158,46 @@ def _read(file: Path, root: Path) -> str:
     except CatalogError as error:
         name = file.relative_to(root).as_posix()
         raise CatalogError(dataclasses.replace(problem, file=name) for problem in error.problems) from None
+
+
+def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """BP002: each feature, ``when``, generator-template and overlay path that isn't among ``tracked`` (2.13)."""
+    declared: list[tuple[KeyPath, RepoPath]] = []
+    for feature in catalog.features:
+        declared += [((*feature.at, "paths", index), path) for index, path in enumerate(feature.paths)]
+        for number, when in enumerate(feature.when):
+            declared += [((*feature.at, "when", number, "paths", index), path) for index, path in enumerate(when.paths)]
+    for generator in catalog.generators.values():
+        declared.append(((*generator.at, "templates"), _directory(generator.templates)))
+    if catalog.info.overlay is not None:
+        declared.append((("blueprint", "overlay"), _directory(catalog.info.overlay)))
+    found = []
+    for at, path in declared:
+        if path.subtree and not any(name.startswith(path.text) for name in tracked):
+            found.append(catalog.document.problem(at, f"{path.text!r} holds no tracked file.", PATH_FIX, "BP002"))
+        elif not path.subtree and path.text not in tracked:
+            found.append(catalog.document.problem(at, f"{path.text!r} isn't a tracked file in the repo.", PATH_FIX, "BP002"))
+    return found
+
+
+def _missing_modules(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """BP005: each command whose module, under ``import_root``, ``scripts`` or ``tests``, has no tracked file."""
+    commands: list[Command] = [*catalog.commands.values()]
+    for feature in catalog.features:
+        commands += feature.commands.values()
+    found = []
+    for command in commands:
+        parts = command.module.split(".")
+        if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
+            continue
+        cwd = (command.cwd or catalog.info.python_root).text.rstrip("/")
+        module, package = f"{cwd}/{'/'.join(parts)}.py", f"{cwd}/{'/'.join(parts)}/__init__.py"
+        if module not in tracked and package not in tracked:
+            message = f"{command.module!r} has no file: neither {module} nor {package} is tracked."
+            found.append(catalog.document.problem((*command.at, "module"), message, MODULE_FIX, "BP005"))
+    return found
+
+
+def _directory(path: RepoPath) -> RepoPath:
+    """``path`` as a directory, with one trailing ``/``, whichever way the catalog wrote it."""
+    return RepoPath(path.text.rstrip("/") + "/")

@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import subprocess
 from importlib import metadata
 from pathlib import Path
 
@@ -19,8 +20,14 @@ OWNED = 'paths = ["backend/src/modules/accounts/", "backend/tests/test_accounts.
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "mini"
     shutil.copytree(MINI, root)
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
     monkeypatch.chdir(root)
     return root
+
+
+def _git(root: Path, *arguments: str) -> None:
+    subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
 
 
 def _lint(*arguments: str) -> tuple[int, str, str]:
@@ -59,7 +66,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP003"],
+        "rules": ["BP001", "BP002", "BP003", "BP005"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -247,3 +254,150 @@ def test_a_fastro_toml_that_reads_but_doesnt_fit_the_catalog_still_names_its_pro
     assert code == 1
     assert document["project"] == "mini"
     assert [finding["code"] for finding in document["findings"]] == ["BP001"]
+
+
+def _append(repo: Path, text: str) -> None:
+    (repo / "blueprint.toml").write_text((repo / "blueprint.toml").read_text() + "\n" + text)
+
+
+def _track(repo: Path, *paths: str) -> None:
+    for path in paths:
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("")
+    _git(repo, "add", *paths)
+
+
+def test_a_declared_file_path_that_isnt_tracked_is_bp002_at_its_line(repo: Path) -> None:
+    _git(repo, "rm", "-q", "--cached", "backend/tests/test_accounts.py")
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["code"]) == ("blueprint.toml", "BP002")
+    assert finding["message"] == (
+        "features.accounts.paths[1]: 'backend/tests/test_accounts.py' isn't a tracked file in the repo."
+    )
+    assert finding["fix"] == "Fix the path, or add the file to git."
+
+
+def test_a_declared_file_path_deleted_from_the_working_tree_is_bp002(repo: Path) -> None:
+    (repo / "backend/tests/test_accounts.py").unlink()
+
+    assert [finding["code"] for finding in _findings()] == ["BP002"]
+
+
+def test_a_declared_directory_that_holds_no_tracked_file_is_bp002(repo: Path) -> None:
+    _git(repo, "rm", "-q", "-r", "--cached", "backend/src/modules/cache/")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "BP002"
+    assert finding["message"] == "features.cache.paths[0]: 'backend/src/modules/cache/' holds no tracked file."
+
+
+def test_a_when_s_paths_are_checked_too(repo: Path) -> None:
+    _git(repo, "rm", "-q", "--cached", "backend/src/modules/billing/paddle.py")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "BP002"
+    assert str(finding["message"]).startswith("features.billing.when[0].paths[0]: ")
+
+
+def test_a_generator_s_templates_and_the_overlay_are_directories_that_must_hold_a_tracked_file(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml", 'requires_fastro = ">=0.1.0.dev0"\n', 'requires_fastro = ">=0.1.0.dev0"\noverlay = "overlay"\n'
+    )
+    _append(repo, '[generators.deploy]\ntemplates = "blueprint/deploy"\n')
+
+    found = sorted(str(finding["message"]) for finding in _findings())
+
+    assert found == [
+        "blueprint.overlay: 'overlay/' holds no tracked file.",
+        "generators.deploy.templates: 'blueprint/deploy/' holds no tracked file.",
+    ]
+
+    _track(repo, "overlay/README.md.j2", "blueprint/deploy/local/compose.yml")
+
+    assert _findings() == []
+
+
+def test_a_wiring_path_that_isnt_in_the_repo_isnt_bp002(repo: Path) -> None:
+    _git(repo, "rm", "-q", "--cached", "frontend/menu.ts")
+    (repo / "frontend/menu.ts").unlink()
+
+    assert _findings() == []
+
+
+COMMAND = '[commands."db baseline"]\nmodule = "{module}"\n'
+
+
+@pytest.mark.parametrize(
+    ("module", "tracked"),
+    [("scripts.baseline", "backend/scripts/baseline.py"), ("src.tools", "backend/src/tools/__init__.py")],
+)
+def test_a_command_whose_module_has_a_tracked_file_or_package_is_fine(repo: Path, module: str, tracked: str) -> None:
+    _append(repo, COMMAND.format(module=module))
+    _track(repo, tracked)
+
+    assert _findings() == []
+
+
+def test_a_command_whose_module_has_no_file_is_bp005_at_its_module(repo: Path) -> None:
+    _append(repo, COMMAND.format(module="scripts.baseline"))
+
+    (finding,) = _findings()
+
+    assert (finding["code"], finding["line"]) == ("BP005", 192)
+    assert finding["message"] == (
+        "commands.\"db baseline\".module: 'scripts.baseline' has no file: neither backend/scripts/baseline.py nor "
+        "backend/scripts/baseline/__init__.py is tracked."
+    )
+    assert finding["fix"] == "Point module at a module the repo has, or add its file to git."
+
+
+def test_a_feature_command_s_module_is_checked_too(repo: Path) -> None:
+    _append(repo, '[features.accounts.commands."users unlock"]\nmodule = "src.modules.accounts.unlock"\n')
+    _track(repo, "backend/src/modules/accounts/__init__.py")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "BP005"
+    assert "backend/src/modules/accounts/unlock.py" in str(finding["message"])
+
+
+def test_a_command_s_module_is_resolved_from_its_cwd(repo: Path) -> None:
+    _append(repo, '[commands."ui build"]\nmodule = "scripts.build"\ncwd = "frontend/"\n')
+    _track(repo, "frontend/scripts/build.py")
+
+    assert _findings() == []
+
+
+def test_a_command_running_an_installed_package_isnt_checked(repo: Path) -> None:
+    _append(repo, COMMAND.format(module="alembic.config"))
+
+    assert _findings() == []
+
+
+def test_a_catalog_that_doesnt_load_isnt_checked_against_the_files(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", "schema = 1", 'schema = "one"')
+    _git(repo, "rm", "-q", "--cached", "backend/tests/test_accounts.py")
+
+    assert [finding["code"] for finding in _findings()] == ["BP001"]
+
+
+def test_without_git_lint_exits_3(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    code, out, err = _lint()
+
+    assert (code, out) == (3, "")
+    assert "git" in err
+
+
+def test_a_directory_that_isnt_a_git_repo_is_a_usage_error(repo: Path) -> None:
+    shutil.rmtree(repo / ".git")
+
+    code, _, err = _lint()
+
+    assert code == 2
+    assert "isn't a git repository" in err
