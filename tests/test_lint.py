@@ -66,7 +66,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP005", "FR014"],
+        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "FR014", "FR016"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -577,3 +577,120 @@ def test_a_module_python_cant_place_an_error_in_has_no_line_in_its_finding(repo:
     assert str(finding["message"]).endswith(
         "backend/src/probe.py doesn't parse (source code string cannot contain null bytes)."
     )
+
+
+QUEUES = 'queues = ["tasks", "cache"]'
+
+
+def test_a_verify_set_without_a_feature_a_listed_one_requires_is_bp004_at_that_entry(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", QUEUES, 'queues = ["tasks", "cache", "admin"]')
+
+    (finding,) = _findings()
+
+    assert (finding["code"], finding["line"]) == ("BP004", 12)
+    assert finding["message"] == "verify.sets.queues[2]: lists 'admin', which requires 'accounts', and the set doesn't list it."
+    assert finding["fix"] == "Add 'accounts' to the set."
+
+
+def test_each_listed_feature_s_missing_requirement_is_its_own_finding(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", QUEUES, 'queues = ["billing", "admin"]')
+
+    assert [str(finding["message"]).split(":")[0] for finding in _findings()] == [
+        "verify.sets.queues[0]",
+        "verify.sets.queues[1]",
+    ]
+
+
+def test_a_verify_set_closed_under_requires_is_fine(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", QUEUES, 'queues = ["billing", "admin", "accounts"]')
+
+    assert _findings() == []
+
+
+BACKEND = 'choices = ["memory", "redis"]\ndefault = "memory"\n'
+ENV_EXAMPLE = "backend/.env.example"
+MARKER = "# @fastro option=cache.backend\n"
+
+
+def _env(repo: Path, example: str | None, env: str = 'env = { CACHE_BACKEND = "{value}" }\n') -> None:
+    _edit(repo / "blueprint.toml", BACKEND, BACKEND + env)
+    if example is not None:
+        (repo / ENV_EXAMPLE).write_text(example)
+        _git(repo, "add", ENV_EXAMPLE)
+
+
+@pytest.mark.parametrize("example", [f"{MARKER}CACHE_BACKEND=memory\n", f"# Cache\nA=1\n\n{MARKER}CACHE_BACKEND=memory\nB=2\n"])
+def test_an_option_env_var_with_one_marker_directly_above_it_is_fine(repo: Path, example: str) -> None:
+    _env(repo, example)
+
+    assert _findings() == []
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        "CACHE_BACKEND=memory\n",
+        f"{MARKER}\nCACHE_BACKEND=memory\n",
+        f"{MARKER}# Options: memory, redis\nCACHE_BACKEND=memory\n",
+        f"{MARKER}OTHER=1\nCACHE_BACKEND=memory\n",
+        "# @fastro option=cache.other\nCACHE_BACKEND=memory\n",
+        "CACHE_BACKEND=memory # @fastro option=cache.backend\n",
+        "A=1 # @fastro option=cache.backend\nCACHE_BACKEND=memory\n",
+        f"{MARKER}# CACHE_BACKEND=redis\n",
+    ],
+)
+def test_an_option_env_var_without_a_marker_directly_above_it_is_fr016_at_the_var(repo: Path, example: str) -> None:
+    _env(repo, example)
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["code"]) == ("blueprint.toml", "FR016")
+    assert finding["message"] == (
+        "features.cache.options.backend.env.CACHE_BACKEND: has no '# @fastro option=cache.backend' marker in "
+        "backend/.env.example."
+    )
+    assert finding["fix"] == (
+        "Put '# @fastro option=cache.backend' on its own line, directly above CACHE_BACKEND= in backend/.env.example."
+    )
+
+
+def test_an_option_env_var_with_two_markers_is_fr016_naming_their_lines(repo: Path) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n\n{MARKER}CACHE_BACKEND=redis\n")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR016"
+    assert finding["message"] == (
+        "features.cache.options.backend.env.CACHE_BACKEND: has 2 '# @fastro option=cache.backend' markers in "
+        "backend/.env.example, on lines 1 and 4, and needs one."
+    )
+    assert finding["fix"] == "Keep one of them."
+
+
+def test_each_var_of_an_option_s_env_needs_its_own_marker(repo: Path) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n", 'env = { CACHE_BACKEND = "{value}", CACHE_URL = "{value}://" }\n')
+
+    (finding,) = _findings()
+
+    assert str(finding["message"]).startswith("features.cache.options.backend.env.CACHE_URL: has no ")
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_without_a_tracked_env_example_every_option_env_var_is_fr016(repo: Path, tracked: bool) -> None:
+    _env(repo, None)
+    if tracked:
+        (repo / ENV_EXAMPLE).write_text(f"{MARKER}CACHE_BACKEND=memory\n")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR016"
+    assert finding["message"] == (
+        "features.cache.options.backend.env.CACHE_BACKEND: has no '# @fastro option=cache.backend' marker, since "
+        "backend/.env.example isn't a tracked file."
+    )
+
+
+def test_an_option_without_env_needs_no_marker_and_no_env_example(repo: Path) -> None:
+    assert not (repo / ENV_EXAMPLE).exists()
+
+    assert _findings() == []

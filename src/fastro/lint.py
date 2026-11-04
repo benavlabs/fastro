@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from fastro.engine.spec import Ref, RepoPath
 from fastro.tools import installed_version
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP005", "FR014")
+RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "FR014", "FR016")
 CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
@@ -26,6 +27,8 @@ REF_FIX = "Define it there, or point the ref at the module that does."
 REF_MODULE_FIX = "Point the ref at a module the repo has, or add its file to git."
 PARSE_FIX = "Fix the module so it parses, then run fastro blueprint lint again."
 ANY_NAME = None
+MARKER = re.compile(r"# @fastro option=(\S+)")
+ASSIGNED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 SOURCE_FIX = "Add source = true to fastro.toml."
 
 
@@ -121,6 +124,8 @@ def lint(root: Path) -> Report:
         found.extend(_missing_paths(catalog, tracked))
         found.extend(_missing_modules(catalog, tracked))
         found.extend(_unresolved_refs(root, catalog, tracked))
+        found.extend(_open_verify_sets(catalog))
+        found.extend(_unmarked_env(root, catalog, tracked))
     toml = root / "fastro.toml"
     if toml.is_file():
         try:
@@ -300,3 +305,56 @@ def _targets(target: ast.expr) -> list[str]:
     if isinstance(target, ast.Tuple | ast.List):
         return [name for element in target.elts for name in _targets(element)]
     return []
+
+
+def _open_verify_sets(catalog: Blueprint) -> list[Problem]:
+    """BP004: each verify set entry whose feature requires one the set doesn't list (2.13)."""
+    requires = {feature.name: feature.requires for feature in catalog.features}
+    found = []
+    for name, listed in catalog.verify.sets.items():
+        for index, feature in enumerate(listed):
+            for required in requires.get(feature, ()):
+                if required not in listed:
+                    message = f"lists {feature!r}, which requires {required!r}, and the set doesn't list it."
+                    at = ("verify", "sets", name, index)
+                    found.append(catalog.document.problem(at, message, f"Add {required!r} to the set.", "BP004"))
+    return found
+
+
+def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """FR016: each option ``env`` VAR without exactly one ``# @fastro option=`` marker directly above its line in
+    ``{python_root}/.env.example`` (6.1, 2.13)."""
+    example = f"{catalog.info.python_root.text.rstrip('/')}/.env.example"
+    markers = _markers(root / example) if example in tracked else None
+    found = []
+    for feature in catalog.features:
+        for option in feature.options.values():
+            key = f"{feature.name}.{option.name}"
+            marker = f"'# @fastro option={key}'"
+            for var in option.env:
+                at = (*option.at, "env", var)
+                lines = markers.get((key, var), []) if markers is not None else []
+                fix = f"Put {marker} on its own line, directly above {var}= in {example}."
+                if markers is None:
+                    message = f"has no {marker} marker, since {example} isn't a tracked file."
+                elif not lines:
+                    message = f"has no {marker} marker in {example}."
+                elif len(lines) > 1:
+                    listed = ", ".join(map(str, lines[:-1])) + f" and {lines[-1]}"
+                    message = f"has {len(lines)} {marker} markers in {example}, on lines {listed}, and needs one."
+                    fix = "Keep one of them."
+                else:
+                    continue
+                found.append(catalog.document.problem(at, message, fix, "FR016"))
+    return found
+
+
+def _markers(file: Path) -> dict[tuple[str, str], list[int]]:
+    """Each ``(feature.option, VAR)`` a marker line names with the line under it, and the markers' line numbers."""
+    lines = file.read_bytes().decode("utf-8", "replace").splitlines()
+    found: dict[tuple[str, str], list[int]] = {}
+    for number, (line, below) in enumerate(zip(lines, lines[1:], strict=False), start=1):
+        marker, assigned = MARKER.fullmatch(line.rstrip()), ASSIGNED.match(below)
+        if marker is not None and assigned is not None:
+            found.setdefault((marker.group(1), assigned.group(1)), []).append(number)
+    return found
