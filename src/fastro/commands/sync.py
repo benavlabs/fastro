@@ -8,6 +8,7 @@ import typer
 
 from .. import sync as syncing
 from ..apply import ApplyError, apply
+from ..apply import check as allowed
 from ..engine.problems import CatalogError
 from ..engine.render import RenderError
 from ..engine.resolve import SelectionError
@@ -36,6 +37,12 @@ def sync(
         for problem in problems:
             typer.echo(str(problem), err=True)
         raise typer.Exit(1) from None
+    if check or dry_run:
+        try:
+            allowed(found, source.root, source.root, only=syncing.wiring_paths(source))
+        except ApplyError as error:
+            typer.echo(f"error: {error}", err=True)
+            raise typer.Exit(1) from None
     if check:
         for change in found:
             typer.echo(syncing.diff(source.root, change), nl=False)

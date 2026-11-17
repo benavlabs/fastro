@@ -10,7 +10,17 @@ from pathlib import Path
 import pytest
 from packaging.version import Version
 
-from fastro.apply import ApplyError, Change, RepositoryError, apply, changes, tracked_files, unreadable, unreadable_config
+from fastro.apply import (
+    ApplyError,
+    Change,
+    RepositoryError,
+    apply,
+    changes,
+    check,
+    tracked_files,
+    unreadable,
+    unreadable_config,
+)
 from fastro.engine import blueprint, lock
 from fastro.engine.plan import plan
 from fastro.engine.render import render
@@ -367,3 +377,31 @@ def test_a_tracked_file_whose_directory_became_a_file_is_left_out(tmp_path: Path
     (repo / "pkg").write_text("")
 
     assert [path.text for path in tracked_files(repo)] == ["open.py"]
+
+
+def test_check_gives_each_change_where_it_lands_and_what_it_copies_from(tmp_path: Path) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    (source / "pkg").mkdir(parents=True)
+    (source / "pkg" / "a.py").write_text("a\n")
+    target.mkdir()
+    found = [Change("copy", "pkg/a.py"), Change("write", "pkg/b.py", "b\n"), Change("delete", "pkg/c.py")]
+
+    checked = check(found, source, target)
+
+    root, origin = target.resolve(), source.resolve()
+    assert checked == [
+        (found[0], root / "pkg/a.py", origin / "pkg/a.py"),
+        (found[1], root / "pkg/b.py", None),
+        (found[2], root / "pkg/c.py", None),
+    ]
+
+
+def test_check_changes_nothing_even_when_it_refuses(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    (target / "taken").mkdir(parents=True)
+    found = [Change("write", "new/b.py", "b\n"), Change("write", "taken", "x\n")]
+
+    with pytest.raises(ApplyError, match="'taken' is a directory in the target"):
+        check(found, tmp_path, target)
+
+    assert sorted(path.name for path in target.iterdir()) == ["taken"]

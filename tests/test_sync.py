@@ -1,5 +1,6 @@
 """``fastro sync`` in a ``source = true`` repo: the wiring only, written, deleted or diffed (spec 3, 8; rev 1.30)."""
 
+import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -303,25 +304,73 @@ def test_a_config_file_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo
     assert _sync("--check") == (0, "", "")
 
 
+REFUSALS = {
+    "outside": f"'{APP}' is a symlink in the target, and apply doesn't follow one, so nothing was changed.",
+    "dangling": f"'{APP}' is a symlink in the target, and apply doesn't follow one, so nothing was changed.",
+    "fifo": f"'{APP}' isn't a regular file in the target, so nothing was changed.",
+    "directory": f"'{APP}' is a directory in the target, so nothing was changed.",
+}
+
+
 @pytest.mark.usefixtures("hang_guard")
-def test_check_never_prints_a_wiring_file_whose_symlink_leads_outside_the_repo(repo: Path, replace: Replace) -> None:
-    replace(repo, APP, "outside")
-    (repo.parent / "outside" / APP).write_text("SECRET = 'outside the repo'\n")
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]], ids=["sync", "check", "dry-run"])
+@pytest.mark.parametrize("make", list(REFUSALS))
+def test_a_wiring_path_plain_sync_would_refuse_is_refused_by_every_mode_without_reading_it(
+    repo: Path, replace: Replace, make: str, flags: list[str]
+) -> None:
+    replace(repo, APP, make)
+    if make == "outside":
+        (repo.parent / "outside" / APP).write_text("SECRET = 'outside the repo'\n")
+    before = _tree(repo)
 
-    code, out, _ = _sync("--check")
+    code, out, err = _sync(*flags)
 
-    assert code == 1
-    assert out.startswith(f"--- a/{APP}\n+++ b/{APP}\n")
-    assert "outside the repo" not in out
+    assert (code, out) == (1, "")
+    assert f"error: {REFUSALS[make]}" in err
+    assert "outside the repo" not in err
+    assert _tree(repo) == before
 
 
-def test_check_diffs_a_wiring_symlink_that_leads_to_nothing_from_dev_null(repo: Path, replace: Replace) -> None:
-    replace(repo, APP, "dangling")
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]], ids=["sync", "check", "dry-run"])
+@pytest.mark.parametrize("make", ["file", "fifo"])
+@pytest.mark.parametrize("where", ["frontend", "backend/src/wiring"])
+def test_a_file_where_a_wiring_path_s_directory_should_be_is_refused_by_every_mode(
+    repo: Path, flags: list[str], make: str, where: str
+) -> None:
+    shutil.rmtree(repo / where)
+    if make == "file":
+        (repo / where).write_text("in the way\n")
+    else:
+        os.mkfifo(repo / where)
+    before = _tree(repo)
 
-    code, out, _ = _sync("--check")
+    code, out, err = _sync(*flags)
 
-    assert code == 1
-    assert out.startswith(f"--- /dev/null\n+++ b/{APP}\n@@ ")
+    assert (code, out) == (1, "")
+    assert f"error: '{where}' is a file in the target where a directory should be, so nothing was changed." in err
+    assert _tree(repo) == before
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]], ids=["sync", "check", "dry-run"])
+@pytest.mark.parametrize("make", ["directory", "fifo"])
+def test_a_delete_at_a_directory_or_a_fifo_is_refused_by_every_mode(repo: Path, flags: list[str], make: str) -> None:
+    _without_admin(repo)
+    (repo / MENU).unlink()
+    if make == "directory":
+        (repo / MENU).mkdir()
+    else:
+        os.mkfifo(repo / MENU)
+    reason = "is a directory" if make == "directory" else "isn't a regular file"
+    before = _tree(repo)
+
+    code, out, err = _sync(*flags)
+
+    assert (code, out) == (1, "")
+    assert f"error: '{MENU}' {reason} in the target, so nothing was changed." in err
+    assert _tree(repo) == before
+    assert (repo / MENU).exists()
 
 
 @pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
