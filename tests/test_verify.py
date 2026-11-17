@@ -296,6 +296,7 @@ def test_the_built_in_checks_run_in_the_build_through_its_own_interpreter(repo: 
     results = checks_for(APP_CATALOG)(project, selection)
 
     assert [(result.name, result.ok, result.last_line) for result in results] == [
+        ("install", True, "fine"),
         ("app imports", True, "fine"),
         ("every module imports", True, "fine"),
         ("ruff", True, "fine"),
@@ -304,7 +305,9 @@ def test_the_built_in_checks_run_in_the_build_through_its_own_interpreter(repo: 
         ("migrations", True, "fine"),
     ]
     backend = str((project / "backend").resolve())
-    calls = _calls(uv)
+    install, *calls = _calls(uv)
+    assert install["argv"] == ["sync", "--project", backend]
+    assert Path(install["cwd"]).resolve() == Path(backend)
     assert all(call["argv"][:4] == ["run", "--project", backend, "python"] for call in calls)
     assert all(Path(call["cwd"]).resolve() == Path(backend) for call in calls)
     assert calls[0]["argv"][4] == "-c" and calls[0]["argv"][5].endswith("import src.app")
@@ -341,7 +344,7 @@ def test_without_an_app_or_a_db_baseline_those_checks_are_skipped(repo: Path, tm
 
     results = checks_for(CATALOG)(project, selection)
 
-    assert [result.name for result in results] == ["every module imports", "ruff", "mypy", "tests"]
+    assert [result.name for result in results] == ["install", "every module imports", "ruff", "mypy", "tests"]
 
 
 def test_mypy_and_ruff_take_only_the_directories_the_build_has(repo: Path, tmp_path: Path, uv: Path) -> None:
@@ -431,7 +434,7 @@ def test_the_command_verifies_the_sets_asked_for_and_exits_0(repo: Path, uv: Pat
     code, out, _ = _verify_cli("minimal")
 
     assert code == 0
-    assert out.startswith("\n=== minimal: accounts\n  PASS  every module imports fine\n")
+    assert out.startswith("\n=== minimal: accounts\n  PASS  install      fine\n  PASS  every module imports fine\n")
 
 
 def test_the_command_exits_1_when_a_check_fails(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -793,3 +796,83 @@ def test_verify_lists_the_tracked_files_once_for_every_set(repo: Path, monkeypat
     verify(repo, CATALOG, ["queues", "minimal"], run, keep=False)  # type: ignore[arg-type]
 
     assert calls == [repo]
+
+
+@pytest.mark.parametrize(
+    ("dev", "flags"),
+    [
+        ('[project.optional-dependencies]\ndev = ["ruff"]\n', ["--extra", "dev"]),
+        ('[dependency-groups]\ndev = ["ruff"]\n', ["--group", "dev"]),
+        (
+            '[project.optional-dependencies]\ndev = ["ruff"]\n\n[dependency-groups]\ndev = ["mypy"]\n',
+            ["--extra", "dev", "--group", "dev"],
+        ),
+        ('[project.optional-dependencies]\ndocs = ["mkdocs"]\n', []),
+    ],
+    ids=["extra", "group", "both", "neither"],
+)
+def test_install_comes_first_with_the_dev_dependencies_wherever_the_blueprint_keeps_them(
+    repo: Path, tmp_path: Path, uv: Path, dev: str, flags: list[str]
+) -> None:
+    pyproject = repo / "backend/pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + "\n" + dev)
+    project, selection = _built(repo, tmp_path, CATALOG, "minimal")
+
+    results = checks_for(CATALOG)(project, selection)
+
+    backend = str((project / "backend").resolve())
+    install, *runs = _calls(uv)
+    assert results[0].name == "install"
+    assert install["argv"] == ["sync", "--project", backend, *flags]
+    assert all(
+        call["argv"][: 3 + len(flags)] == ["run", "--project", backend, *flags] for call in runs if call["argv"][0] == "run"
+    )
+    assert all("--exact" not in call["argv"] for call in _calls(uv))
+
+
+def test_a_failed_install_is_a_failed_check_and_the_other_checks_still_run(
+    repo: Path, tmp_path: Path, uv: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_UV_FAIL", "sync")
+    project, selection = _built(repo, tmp_path, CATALOG, "minimal")
+
+    results = checks_for(CATALOG)(project, selection)
+
+    assert (results[0].name, results[0].ok, results[0].last_line) == ("install", False, "boom")
+    assert [result.ok for result in results[1:4]] == [True, True, True]
+
+
+@pytest.mark.parametrize("broken", ["not utf-8", "not toml", "project not a table", "missing"])
+def test_a_build_pyproject_fastro_cant_read_installs_without_dev_dependencies(
+    repo: Path, tmp_path: Path, uv: Path, broken: str
+) -> None:
+    project, selection = _built(repo, tmp_path, CATALOG, "minimal")
+    pyproject = project / "backend/pyproject.toml"
+    if broken == "not utf-8":
+        pyproject.write_bytes(b"[project]\nname = '\xff'\n")
+    elif broken == "not toml":
+        pyproject.write_text("[project\n")
+    elif broken == "project not a table":
+        pyproject.write_text('project = "x"\n')
+    else:
+        pyproject.unlink()
+
+    results = checks_for(CATALOG)(project, selection)
+
+    backend = str((project / "backend").resolve())
+    install, *runs = _calls(uv)
+    assert install["argv"] == ["sync", "--project", backend]
+    assert all(call["argv"][:4] == ["run", "--project", backend, "python"] for call in runs)
+    assert [result.name for result in results][:2] == ["install", "every module imports"]
+
+
+def test_the_migration_baseline_keeps_2_9_s_argv_without_the_dev_dependencies(repo: Path, tmp_path: Path, uv: Path) -> None:
+    pyproject = repo / "backend/pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + '\n[project.optional-dependencies]\ndev = ["ruff"]\n')
+    project, selection = _built(repo, tmp_path, APP_CATALOG, "minimal")
+
+    checks_for(APP_CATALOG)(project, selection)
+
+    backend = str((project / "backend").resolve())
+    migrations = next(call for call in _calls(uv) if "scripts.baseline" in call["argv"])
+    assert migrations["argv"] == ["run", "--project", backend, "python", "-m", "scripts.baseline", "--check"]

@@ -9,13 +9,16 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastro.apply import ApplyError, apply, changes, tracked_files
+from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
+from fastro.engine.problems import CatalogError
 from fastro.engine.render import render
 from fastro.engine.resolve import Selection, select
 from fastro.engine.spec import RepoPath
@@ -164,9 +167,11 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
 def checks_for(catalog: Blueprint) -> Checks:
     """The checks ``blueprint verify`` runs on a build, each a subprocess in it, never in fastro's own process.
 
-    The built-in ones run through the build's interpreter, ``uv run --project {python_root}``, from ``python_root``:
-    the app import (when ``[verify].app`` is set), every module importing, ruff, mypy, the tests, and the migration
-    baseline through the declared ``db baseline`` command (when there is one). Then each ``[[verify.checks]]`` whose
+    The built-in ones run from ``python_root``. First ``install``: ``uv sync --project {python_root}`` with the dev
+    dependencies from wherever the build's ``pyproject.toml`` keeps them (spec 2.13, 6.3). Then, through the build's
+    interpreter, ``uv run --project {python_root}`` with the same dev dependencies: the app import (when
+    ``[verify].app`` is set), every module importing, ruff, mypy and the tests. The migration baseline, when there's
+    a ``db baseline`` command, runs that declared command as spec 2.9 runs it. Then each ``[[verify.checks]]`` whose
     ``if`` holds runs from its ``cwd``. Every build of a run, ``scratch/<set>``, shares the environment at
     ``scratch/.venv``. The environment is fastro's, without ``VIRTUAL_ENV``, ``PYTHONPATH`` and ``PYTHONHOME``, which
     would point the checks outside the build, and with ``[checks.toolchain.env]`` on top.
@@ -178,9 +183,12 @@ def checks_for(catalog: Blueprint) -> Checks:
     def run(project: Path, selection: Selection) -> list[Result]:
         shared = {**environment, "UV_PROJECT_ENVIRONMENT": str(project.parent / ".venv")}
         backend = (project / catalog.info.python_root.text.rstrip("/")).resolve()
-        python = [require("uv"), "run", "--project", str(backend), "python"]
+        dev = _dev_dependencies(backend / "pyproject.toml")
+        python = [require("uv"), "run", "--project", str(backend), *dev, "python"]
         present = [name for name in (root, "scripts", "migrations", "tests") if (backend / name).is_dir()]
-        steps: list[tuple[str, list[str], Path]] = []
+        steps: list[tuple[str, list[str], Path]] = [
+            ("install", [require("uv"), "sync", "--project", str(backend), *dev], backend)
+        ]
         if catalog.verify.app is not None:
             steps.append(("app imports", [*python, "-c", QUIET + f"import {catalog.verify.app}"], backend))
         steps.append(("every module imports", [*python, "-c", QUIET + EVERY_MODULE.format(root=root)], backend))
@@ -200,6 +208,25 @@ def checks_for(catalog: Blueprint) -> Checks:
         return [_step(name, argv, cwd, shared) for name, argv, cwd in steps]
 
     return run
+
+
+def _dev_dependencies(pyproject: Path) -> list[str]:
+    """The ``uv`` flags that add a build's dev dependencies: ``--extra dev`` for ``[project.optional-dependencies].dev``,
+    ``--group dev`` for ``[dependency-groups].dev``, both when both are there, and none when neither is or the file
+    can't be read (6.3)."""
+    try:
+        data = tomllib.loads(catalog_check.read_text(pyproject))
+    except (OSError, CatalogError, tomllib.TOMLDecodeError):
+        return []
+    project = data.get("project")
+    extras = project.get("optional-dependencies") if isinstance(project, dict) else None
+    groups = data.get("dependency-groups")
+    flags = []
+    if isinstance(extras, dict) and "dev" in extras:
+        flags += ["--extra", "dev"]
+    if isinstance(groups, dict) and "dev" in groups:
+        flags += ["--group", "dev"]
+    return flags
 
 
 def _step(name: str, argv: list[str], cwd: Path, environment: dict[str, str]) -> Result:

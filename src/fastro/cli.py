@@ -17,7 +17,7 @@ from .commands import sync as _sync_cmd
 
 app = typer.Typer(
     name="fastro",
-    help="Start and maintain Fastro projects.",
+    help="Start and maintain FastAPI projects.",
     no_args_is_help=True,
     pretty_exceptions_show_locals=False,
 )
@@ -54,7 +54,7 @@ _mount_command_plugins()
 
 @app.callback()
 def _root() -> None:
-    """Start and maintain Fastro projects."""
+    """Start and maintain FastAPI projects."""
 
 
 if __name__ == "__main__":  # pragma: no cover

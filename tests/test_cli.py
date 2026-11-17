@@ -1,5 +1,7 @@
 """The command names fastro answers to, as the product doc spells them."""
 
+import re
+
 import pytest
 from typer.testing import CliRunner
 
@@ -21,3 +23,11 @@ def test_the_old_spelling_is_a_usage_error(words: list[str]) -> None:
 
     assert result.exit_code == 2
     assert "No such command" in result.output
+
+
+def test_help_says_fastro_starts_and_maintains_fastapi_projects() -> None:
+    result = runner.invoke(fastro.cli.app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Start and maintain FastAPI projects." in result.stdout
+    assert re.search(r"\bFastro\b", result.stdout) is None
