@@ -17,6 +17,7 @@ from fastro.apply import (
     apply,
     changes,
     check,
+    file_kind,
     tracked_files,
     unreadable,
     unreadable_config,
@@ -430,3 +431,67 @@ def test_check_changes_nothing_even_when_it_refuses(tmp_path: Path) -> None:
         check(found, tmp_path, target)
 
     assert sorted(path.name for path in target.iterdir()) == ["taken"]
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize(
+    ("make", "followed", "unfollowed"),
+    [
+        ("file", "file", "file"),
+        ("directory", "directory", "directory"),
+        ("fifo", "other", "other"),
+        ("symlink", "file", "symlink"),
+        ("dangling", None, "symlink"),
+        ("loop", None, "symlink"),
+        ("missing", None, None),
+        ("under-a-file", None, None),
+    ],
+)
+def test_file_kind_says_what_is_at_a_path(tmp_path: Path, make: str, followed: str | None, unfollowed: str | None) -> None:
+    (tmp_path / "real.txt").write_text("x\n")
+    path = tmp_path / "thing"
+    if make == "file":
+        path.write_text("x\n")
+    elif make == "directory":
+        path.mkdir()
+    elif make == "fifo":
+        os.mkfifo(path)
+    elif make == "symlink":
+        path.symlink_to("real.txt")
+    elif make == "dangling":
+        path.symlink_to("nothing-here")
+    elif make == "loop":
+        path.symlink_to("thing")
+    elif make == "under-a-file":
+        path = tmp_path / "real.txt" / "thing"
+
+    assert (file_kind(path), file_kind(path, follow=False)) == (followed, unfollowed)
+
+
+@pytest.mark.parametrize("follow", [True, False])
+def test_file_kind_raises_under_a_directory_fastro_cant_search_on_every_python(tmp_path: Path, follow: bool) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "file.txt").write_text("x\n")
+    locked.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            file_kind(locked / "file.txt", follow=follow)
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.parametrize("side", ["target", "source"])
+def test_check_raises_for_a_path_under_a_directory_fastro_cant_search_on_every_python(tmp_path: Path, side: str) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    (source / "locked").mkdir(parents=True)
+    (target / "locked").mkdir(parents=True)
+    (source / "locked" / "app.py").write_text("x = 1\n")
+    found = [Change("copy", "locked/app.py")] if side == "source" else [Change("write", "locked/app.py", "x = 1\n")]
+    locked = (source if side == "source" else target) / "locked"
+    locked.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            check(found, source, target)
+    finally:
+        locked.chmod(0o755)

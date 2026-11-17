@@ -19,6 +19,37 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         pytest.exit(NOT_ROOT, returncode=1)
 
 
+SKIPPED: list[str] = []
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Note each skipped test; an expected failure isn't one."""
+    if report.skipped and not hasattr(report, "wasxfail"):
+        SKIPPED.append(report.nodeid)
+
+
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    """Note a module skipped whole while it's collected."""
+    if report.skipped:
+        SKIPPED.append(report.nodeid)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail a run that skipped a test, on every Python version: the suite allows none."""
+    if SKIPPED and exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED):
+        session.exitstatus = 1
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """Name the skipped tests that failed the run."""
+    if SKIPPED:
+        count = len(SKIPPED)
+        names = ", ".join(SKIPPED)
+        terminalreporter.write_line(
+            f"the suite allows no skipped tests, and {count} {'was' if count == 1 else 'were'} skipped: {names}"
+        )
+
+
 REASONS = {
     "outside": "leads outside the repo",
     "fifo": "isn't a regular file",

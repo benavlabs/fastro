@@ -6,7 +6,7 @@ import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import Change, present, unreadable, unreadable_config
+from fastro.apply import Change, file_kind, present, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
@@ -136,7 +136,7 @@ def _current(root: Path, path: str) -> str | None:
     """
     file = root / path
     try:
-        if not file.exists():
+        if file_kind(file) is None:
             return None
         if unreadable(root, path) is not None:
             return "\0"

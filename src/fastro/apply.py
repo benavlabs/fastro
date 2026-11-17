@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import subprocess
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
@@ -68,6 +69,28 @@ def unreadable(root: Path, path: str) -> str | None:
         return f"can't be resolved: {error.strerror}"
 
 
+def file_kind(path: Path, follow: bool = True) -> str | None:
+    """What's at ``path``: ``"file"``, ``"directory"``, ``"symlink"`` (only when ``follow`` is false), ``"other"``,
+    or ``None`` when nothing is, which with ``follow`` includes a symlink that leads to nothing or can't be followed.
+
+    Raises:
+        OSError: the system won't let fastro look (spec 1.10, 8), on every Python version.
+    """
+    try:
+        mode = os.stat(path).st_mode if follow else os.lstat(path).st_mode
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            return None
+        raise
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    return "other"
+
+
 def present(path: Path) -> bool:
     """Whether anything is at ``path``, a symlink to nothing included.
 
@@ -100,7 +123,7 @@ def _breaks_the_rule(root: Path, path: str) -> str | None:
         return "has symlinks that can't be followed"
     if not target.is_relative_to(base):
         return "leads outside the repo"
-    if not target.is_file():
+    if file_kind(target) != "file":
         return "isn't a regular file"
     return None
 
@@ -166,7 +189,7 @@ def apply(found: Iterable[Change], source: Path, target: Path, only: Collection[
     """
     for change, destination, origin in check(found, source, target, only):
         if change.kind == "delete":
-            if destination.exists():
+            if file_kind(destination) is not None:
                 destination.unlink()
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -179,9 +202,10 @@ def apply(found: Iterable[Change], source: Path, target: Path, only: Collection[
 
 def _regular_source(origin: Path, path: str) -> None:
     """Refuse a copy whose file in the source is a directory or anything else that isn't a regular file."""
-    if origin.is_dir():
+    kind = file_kind(origin)
+    if kind == "directory":
         raise ApplyError(f"{path!r} is a directory in the source, so nothing was changed.")
-    if not origin.is_file():
+    if kind != "file":
         raise ApplyError(f"{path!r} isn't a regular file in the source, so nothing was changed.")
 
 
@@ -192,12 +216,13 @@ def _regular_or_absent(target: Path, destination: Path, path: str) -> None:
     current = base
     for part in destination.relative_to(base).parts[:-1]:
         current = current / part
-        if current.exists() and not current.is_dir():
+        if file_kind(current) not in (None, "directory"):
             shown = current.relative_to(base).as_posix()
             raise ApplyError(f"{shown!r} is a file in the target where a directory should be, so nothing was changed.")
-    if destination.is_dir():
+    kind = file_kind(destination)
+    if kind == "directory":
         raise ApplyError(f"{path!r} is a directory in the target, so nothing was changed.")
-    if destination.exists() and not destination.is_file():
+    if kind not in (None, "file"):
         raise ApplyError(f"{path!r} isn't a regular file in the target, so nothing was changed.")
 
 
@@ -210,7 +235,7 @@ def _inside(root: Path, path: str, where: str) -> Path:
     current = base
     for part in joined.relative_to(base).parts:
         current = current / part
-        if current.is_symlink():
+        if file_kind(current, follow=False) == "symlink":
             shown = current.relative_to(base).as_posix()
             raise ApplyError(f"{shown!r} is a symlink in {where}, and apply doesn't follow one, so nothing was changed.")
     return joined
