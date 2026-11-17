@@ -1,5 +1,5 @@
 """``python -m fastro``."""
 
-from .cli import app
+from .start import main
 
-app()
+main()

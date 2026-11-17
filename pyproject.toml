@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-fastro = "fastro.cli:app"
+fastro = "fastro.start:main"
 bp = "fastro.compat:bp_main"
 
 [tool.hatch.build.targets.wheel]
