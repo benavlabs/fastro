@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import Change, unreadable, unreadable_config
+from fastro.apply import Change, present, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
@@ -49,9 +49,9 @@ def load_source(root: Path) -> Source:
         CatalogError: either file has a problem, or isn't UTF-8.
     """
     toml = root / "fastro.toml"
-    if not os.path.lexists(toml):
+    if not _present(toml):
         raise UsageError(f"{root} has no fastro.toml. Run fastro sync in a blueprint repo or a project.")
-    if (refused := unreadable_config(root, "fastro.toml")) is not None:
+    if (refused := _refused(root, "fastro.toml")) is not None:
         raise UsageError(refused)
     text = _read(toml)
     if not project.load("fastro.toml", text).source:
@@ -59,9 +59,9 @@ def load_source(root: Path) -> Source:
             "fastro.toml doesn't set source = true, so this is a project, and fastro sync in a project isn't here yet."
         )
     file = root / "blueprint.toml"
-    if not os.path.lexists(file):
+    if not _present(file):
         raise UsageError("fastro.toml sets source = true, but there's no blueprint.toml beside it.")
-    if (refused := unreadable_config(root, "blueprint.toml")) is not None:
+    if (refused := _refused(root, "blueprint.toml")) is not None:
         raise UsageError(refused)
     catalog = blueprint.load("blueprint.toml", _read(file), installed_version())
     return Source(root, catalog, project.load("fastro.toml", text, catalog))
@@ -97,6 +97,20 @@ def diff(root: Path, change: Change) -> str:
     old = (current or "").splitlines(keepends=True)
     new = [] if change.kind == "delete" else change.text.splitlines(keepends=True)
     return "".join(difflib.unified_diff(old, new, before, after))
+
+
+def _present(file: Path) -> bool:
+    try:
+        return present(file)
+    except OSError as error:
+        raise Unreadable(file, error) from None
+
+
+def _refused(root: Path, name: str) -> str | None:
+    try:
+        return unreadable_config(root, name)
+    except OSError as error:
+        raise Unreadable(root / name, error) from None
 
 
 def _read(file: Path) -> str:

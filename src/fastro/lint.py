@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastro.apply import RepositoryError, tracked_files, unreadable, unreadable_config
+from fastro.apply import RepositoryError, present, tracked_files, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
 from fastro.engine.blueprint import Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
@@ -110,10 +110,18 @@ def lint(root: Path) -> Report:
         NotInstalled: fastro isn't installed.
     """
     file = root / "blueprint.toml"
-    if not os.path.lexists(file):
+    try:
+        there = present(file)
+    except OSError as error:
+        raise Unreadable(file, error) from None
+    if not there:
         raise UsageError(f"{root} has no blueprint.toml. Run fastro blueprint lint in a blueprint repo.")
     for name in ("blueprint.toml", "fastro.toml"):
-        if (refused := unreadable_config(root, name)) is not None:
+        try:
+            refused = unreadable_config(root, name)
+        except OSError as error:
+            raise Unreadable(root / name, error) from None
+        if refused is not None:
             raise UsageError(refused)
     found: list[Problem] = []
     catalog = loaded = None

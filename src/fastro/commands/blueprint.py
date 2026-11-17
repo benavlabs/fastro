@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import typer
 
 from .. import lint as linting
 from .. import verify as verifying
-from ..apply import RepositoryError, unreadable_config
+from ..apply import RepositoryError, present, unreadable_config
 from ..engine import blueprint, catalog_check
 from ..engine.blueprint import IncompatibleCatalog
 from ..engine.problems import CatalogError
@@ -57,10 +56,18 @@ def verify(
     """Build each verify set through the engine, and check the project it gives."""
     root = Path.cwd()
     file = root / "blueprint.toml"
-    if not os.path.lexists(file):
+    try:
+        there, refused = present(file), unreadable_config(root, "blueprint.toml")
+    except OSError as error:
+        typer.echo(
+            f"error: can't read {file}: {error.strerror}. Check its permissions, then run fastro blueprint verify again.",
+            err=True,
+        )
+        raise typer.Exit(3) from None
+    if not there:
         typer.echo(f"error: {root} has no blueprint.toml. Run fastro blueprint verify in a blueprint repo.", err=True)
         raise typer.Exit(2)
-    if (refused := unreadable_config(root, "blueprint.toml")) is not None:
+    if refused is not None:
         typer.echo(f"error: {refused}", err=True)
         raise typer.Exit(2)
     try:

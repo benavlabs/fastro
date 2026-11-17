@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from fastro import lint as linting
 from fastro.cli import app
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
@@ -837,3 +838,31 @@ def test_a_refused_fastro_toml_is_reported_before_anything_else_is_read(repo: Pa
 
     assert code == 2
     assert f"error: {repo / 'fastro.toml'} {reason}." in err
+
+
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_fastro_isnt_allowed_to_resolve_exits_3(repo: Path, name: str) -> None:
+    locked = repo.parent / "locked"
+    locked.mkdir()
+    (locked / name).write_bytes((repo / name).read_bytes())
+    (repo / name).unlink()
+    (repo / name).symlink_to(locked / name)
+    locked.chmod(0)
+    try:
+        code, out, err = _lint("--json")
+    finally:
+        locked.chmod(0o755)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / name}: Permission denied." in err
+
+
+def test_a_blueprint_toml_fastro_cant_tell_is_there_is_unreadable(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        with pytest.raises(linting.Unreadable, match=f"can't read {locked / 'blueprint.toml'}: Permission denied"):
+            linting.lint(locked)
+    finally:
+        locked.chmod(0o755)

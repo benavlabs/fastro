@@ -4,12 +4,13 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from packaging.version import Version
 
-from fastro.apply import ApplyError, Change, RepositoryError, apply, changes, tracked_files, unreadable
+from fastro.apply import ApplyError, Change, RepositoryError, apply, changes, tracked_files, unreadable, unreadable_config
 from fastro.engine import blueprint, lock
 from fastro.engine.plan import plan
 from fastro.engine.render import render
@@ -311,3 +312,39 @@ def test_a_file_fastro_cant_resolve_says_so_without_blaming_a_symlink(inside: Pa
         assert unreadable(inside, "in.py") == "can't be resolved: Permission denied"
     finally:
         locked.chmod(0o755)
+
+
+@pytest.fixture
+def locked(inside: Path) -> Iterator[Path]:
+    """A directory in the repo, holding ``f.py``, that fastro isn't allowed to search."""
+    directory = inside / "locked"
+    directory.mkdir()
+    (directory / "f.py").write_text("")
+    directory.chmod(0)
+    yield directory
+    directory.chmod(0o755)
+
+
+def test_a_config_file_fastro_isnt_allowed_to_resolve_raises_instead_of_being_refused(inside: Path, locked: Path) -> None:
+    (inside / "blueprint.toml").symlink_to("locked/f.py")
+
+    with pytest.raises(PermissionError):
+        unreadable_config(inside, "blueprint.toml")
+
+
+def test_a_config_file_fastro_cant_tell_is_there_raises(inside: Path, locked: Path) -> None:
+    with pytest.raises(PermissionError):
+        unreadable_config(locked, "blueprint.toml")
+
+
+def test_a_config_file_in_a_symlink_loop_is_refused(inside: Path) -> None:
+    (inside / "blueprint.toml").symlink_to("blueprint.toml")
+
+    assert unreadable_config(inside, "blueprint.toml") == (
+        f"{inside / 'blueprint.toml'} has symlinks that can't be followed. fastro reads blueprint.toml only as a "
+        "regular file inside the repo."
+    )
+
+
+def test_nothing_at_a_config_path_is_no_refusal(inside: Path) -> None:
+    assert unreadable_config(inside, "blueprint.toml") is None

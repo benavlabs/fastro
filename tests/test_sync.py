@@ -321,3 +321,31 @@ def test_check_diffs_a_wiring_symlink_that_leads_to_nothing_from_dev_null(repo: 
 
     assert code == 1
     assert out.startswith(f"--- /dev/null\n+++ b/{APP}\n@@ ")
+
+
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_fastro_isnt_allowed_to_resolve_exits_3(repo: Path, name: str) -> None:
+    locked = repo.parent / "locked"
+    locked.mkdir()
+    (locked / name).write_bytes((repo / name).read_bytes())
+    (repo / name).unlink()
+    (repo / name).symlink_to(locked / name)
+    locked.chmod(0)
+    try:
+        code, out, err = _sync("--check")
+    finally:
+        locked.chmod(0o755)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / name}: Permission denied." in err
+
+
+def test_a_fastro_toml_fastro_cant_tell_is_there_is_unreadable(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        with pytest.raises(syncing.Unreadable, match=f"can't read {locked / 'fastro.toml'}: Permission denied"):
+            syncing.load_source(locked)
+    finally:
+        locked.chmod(0o755)

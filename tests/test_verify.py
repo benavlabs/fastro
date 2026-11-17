@@ -594,3 +594,35 @@ def test_a_blueprint_toml_fastro_may_not_read_exits_2_saying_why_unless_it_comes
     else:
         message = f"error: {repo / 'blueprint.toml'} {reason}. fastro reads blueprint.toml only as a regular file inside"
         assert message in err
+
+
+def test_a_blueprint_toml_fastro_isnt_allowed_to_resolve_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    locked = repo.parent / "locked"
+    locked.mkdir()
+    (locked / "blueprint.toml").write_bytes((repo / "blueprint.toml").read_bytes())
+    (repo / "blueprint.toml").unlink()
+    (repo / "blueprint.toml").symlink_to(locked / "blueprint.toml")
+    locked.chmod(0)
+    try:
+        code, _, err = _verify_cli("minimal")
+    finally:
+        locked.chmod(0o755)
+
+    assert code == 3
+    assert f"error: can't read {repo / 'blueprint.toml'}: Permission denied." in err
+
+
+def test_a_blueprint_toml_fastro_cant_tell_is_there_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    locked = repo.parent / "locked"
+    locked.mkdir()
+    monkeypatch.setattr("fastro.commands.blueprint.Path.cwd", lambda: locked)
+    locked.chmod(0)
+    try:
+        code, _, err = _verify_cli("minimal")
+    finally:
+        locked.chmod(0o755)
+
+    assert code == 3
+    assert f"error: can't read {locked / 'blueprint.toml'}: Permission denied." in err
