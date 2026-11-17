@@ -44,8 +44,13 @@ def sync(
             typer.echo(f"error: {error}", err=True)
             raise typer.Exit(1) from None
     if check:
-        for change in found:
-            typer.echo(syncing.diff(source.root, change), nl=False)
+        try:
+            diffs = [syncing.diff(source.root, change) for change in found]
+        except syncing.Unreadable as error:
+            typer.echo(f"error: {error}", err=True)
+            raise typer.Exit(3) from None
+        for text in diffs:
+            typer.echo(text, nl=False)
         raise typer.Exit(1 if found else 0)
     if dry_run:
         for change in found:

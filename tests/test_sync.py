@@ -390,6 +390,53 @@ def test_a_config_file_fastro_isnt_allowed_to_resolve_exits_3(repo: Path, name: 
     assert f"error: can't read {repo / name}: Permission denied." in err
 
 
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]], ids=["sync", "check", "dry-run"])
+def test_a_wiring_file_fastro_cant_open_exits_3_and_changes_nothing(repo: Path, flags: list[str]) -> None:
+    before = _tree(repo)
+    (repo / APP).chmod(0)
+    try:
+        code, out, err = _sync(*flags)
+    finally:
+        (repo / APP).chmod(0o644)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / APP}: Permission denied." in err
+    assert _tree(repo) == before
+
+
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]], ids=["sync", "check", "dry-run"])
+@pytest.mark.parametrize("rendered", [True, False], ids=["rendered", "stale"])
+def test_a_wiring_path_under_a_directory_fastro_cant_search_exits_3(repo: Path, flags: list[str], rendered: bool) -> None:
+    if not rendered:
+        _without_admin(repo)
+    before = _tree(repo)
+    (repo / "frontend").chmod(0)
+    try:
+        code, out, err = _sync(*flags)
+    finally:
+        (repo / "frontend").chmod(0o755)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / MENU}: Permission denied." in err
+    assert _tree(repo) == before
+
+
+def test_a_stale_wiring_file_fastro_cant_open_exits_3_under_check_with_nothing_on_stdout(repo: Path) -> None:
+    _without_admin(repo)
+    before = _tree(repo)
+    (repo / MENU).chmod(0)
+    try:
+        code, out, err = _sync("--check")
+        listed = _sync("--dry-run")
+    finally:
+        (repo / MENU).chmod(0o644)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / MENU}: Permission denied." in err
+    assert listed == (0, f"{SITE}\n{MENU}\n", "")
+    assert _tree(repo) == before
+
+
 def test_a_fastro_toml_fastro_cant_tell_is_there_is_unreadable(tmp_path: Path) -> None:
     locked = tmp_path / "locked"
     locked.mkdir()

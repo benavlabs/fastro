@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import difflib
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,7 +68,11 @@ def load_source(root: Path) -> Source:
 
 def wiring_changes(source: Source) -> list[Change]:
     """A write for each wiring file the repo's selection renders that differs from the one on disk, and a delete for
-    each wiring file on disk that the selection doesn't render, by path."""
+    each wiring file on disk that the selection doesn't render, by path.
+
+    Raises:
+        Unreadable: the system won't let fastro look at a wiring path or open the file there (spec 8).
+    """
     loaded = source.project
     selection = select(source.catalog, loaded.features, loaded.app.requires, loaded.options)
     rendered = render(plan(source.catalog, selection, ()), loaded.app.contributes)
@@ -79,7 +82,7 @@ def wiring_changes(source: Source) -> list[Change]:
         if path in rendered:
             if _current(source.root, path) != rendered[path]:
                 found.append(Change("write", path, rendered[path]))
-        elif os.path.lexists(source.root / path):
+        elif _present(source.root / path):
             found.append(Change("delete", path))
     return found
 
@@ -90,7 +93,11 @@ def wiring_paths(source: Source) -> set[str]:
 
 
 def diff(root: Path, change: Change) -> str:
-    """The unified diff ``change`` makes, from ``a/<path>`` to ``b/<path>``, with ``/dev/null`` for an absent side."""
+    """The unified diff ``change`` makes, from ``a/<path>`` to ``b/<path>``, with ``/dev/null`` for an absent side.
+
+    Raises:
+        Unreadable: the system won't let fastro look at the path or open the file there (spec 8).
+    """
     current = _current(root, change.path)
     before = f"a/{change.path}" if current is not None else DEV_NULL
     after = DEV_NULL if change.kind == "delete" else f"b/{change.path}"
@@ -121,13 +128,20 @@ def _read(file: Path) -> str:
 
 
 def _current(root: Path, path: str) -> str | None:
-    """The text of ``path`` in ``root``, ``None`` when nothing is there or a symlink there leads to nothing, or a NUL,
-    which no rendered file holds, when it isn't UTF-8 or isn't a file fastro may read (spec 1.10)."""
-    if not (root / path).exists():
-        return None
-    if unreadable(root, path) is not None:
-        return "\0"
+    """The text of ``path`` in ``root``, ``None`` when nothing is there or a symlink there can't be followed to
+    anything, or a NUL, which no rendered file holds, when it isn't UTF-8 or isn't a file fastro may read (spec 1.10).
+
+    Raises:
+        Unreadable: the system won't let fastro look at the path or open the file there (spec 8).
+    """
+    file = root / path
     try:
-        return (root / path).read_bytes().decode("utf-8")
+        if not file.exists():
+            return None
+        if unreadable(root, path) is not None:
+            return "\0"
+        return file.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         return "\0"
+    except OSError as error:
+        raise Unreadable(file, error) from None
