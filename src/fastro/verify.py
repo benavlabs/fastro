@@ -19,8 +19,8 @@ from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
 from fastro.engine.problems import CatalogError
-from fastro.engine.render import render
-from fastro.engine.resolve import Selection, select
+from fastro.engine.render import RenderError, render
+from fastro.engine.resolve import Selection, SelectionError, select
 from fastro.engine.spec import RepoPath
 from fastro.runner import available, declared_command, run_captured
 from fastro.tools import require
@@ -92,7 +92,7 @@ def build(
     made = plan(catalog, select(catalog, features), tracked_files(root) if tracked is None else tracked)
     try:
         rendered = render(made)
-    except ValueError as error:
+    except (RenderError, SelectionError) as error:
         raise Unbuildable(str(error)) from None
     apply(changes(made, rendered), root, into)
     return into

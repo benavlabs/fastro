@@ -19,9 +19,10 @@ from fastro.apply import tracked_files
 from fastro.cli import app
 from fastro.engine import blueprint
 from fastro.engine.blueprint import Blueprint
+from fastro.engine.render import RenderError
 from fastro.engine.resolve import Selection, select
 from fastro.engine.spec import RepoPath
-from fastro.verify import REPORTED_LINES, Result, UnknownSet, build, checks_for, report, verify, verify_sets
+from fastro.verify import REPORTED_LINES, Result, Unbuildable, UnknownSet, build, checks_for, report, verify, verify_sets
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 CATALOG = blueprint.load("blueprint.toml", (MINI / "blueprint.toml").read_text(), Version("0.1.0"))
@@ -876,3 +877,26 @@ def test_the_migration_baseline_keeps_2_9_s_argv_without_the_dev_dependencies(re
     backend = str((project / "backend").resolve())
     migrations = next(call for call in _calls(uv) if "scripts.baseline" in call["argv"])
     assert migrations["argv"] == ["run", "--project", backend, "python", "-m", "scripts.baseline", "--check"]
+
+
+def test_a_render_error_makes_a_build_unbuildable(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*arguments: object) -> object:
+        raise RenderError("SITE has no contribution and no fallback.")
+
+    monkeypatch.setattr("fastro.verify.render", broken)
+
+    with pytest.raises(Unbuildable, match="SITE has no contribution and no fallback."):
+        build(repo, CATALOG, verify_sets(CATALOG)["minimal"], tmp_path / "scratch" / "minimal")
+
+
+def test_any_other_value_error_in_a_build_is_a_bug_and_isnt_caught(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def bug(*arguments: object) -> object:
+        raise ValueError("a fastro bug")
+
+    monkeypatch.setattr("fastro.verify.render", bug)
+
+    with pytest.raises(ValueError, match="a fastro bug") as raised:
+        build(repo, CATALOG, verify_sets(CATALOG)["minimal"], tmp_path / "scratch" / "minimal")
+    assert type(raised.value) is ValueError

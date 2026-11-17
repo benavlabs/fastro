@@ -16,6 +16,7 @@ from fastro.engine import blueprint, project
 from fastro.engine.blueprint import Blueprint, Contributions, Info
 from fastro.engine.plan import Plan, plan
 from fastro.engine.render import (
+    RenderError,
     feature_indexes,
     import_block,
     ordered,
@@ -338,7 +339,7 @@ def test_these_blocks_come_out_as_written(lines: tuple[str, ...], block: str) ->
 
 
 def test_a_line_that_isnt_an_import_is_refused() -> None:
-    with pytest.raises(ValueError, match="'x = 1' isn't an import statement"):
+    with pytest.raises(RenderError, match="'x = 1' isn't an import statement"):
         _block("x = 1")
 
 
@@ -578,7 +579,7 @@ def test_without_a_header_the_docstring_is_the_doc_alone() -> None:
 def test_a_value_slot_with_no_contribution_and_no_fallback_is_an_error() -> None:
     text = ASSIGNMENTS.replace('fallback = "send_nowhere"\nfallback_imports = ["from ..email import send_nowhere"]\n', "")
 
-    with pytest.raises(ValueError, match="SENDER has no contribution and no fallback"):
+    with pytest.raises(RenderError, match="SENDER has no contribution and no fallback"):
         _python(text, ())
 
 
@@ -780,7 +781,7 @@ def test_raw_code_that_starts_with_an_assignment_sits_beside_the_next_one() -> N
 def test_a_reexport_with_no_contribution_and_no_fallback_is_an_error() -> None:
     text = CLASSES.replace('fallback = "src.admin_default:site"\n', "")
 
-    with pytest.raises(ValueError, match="SITE has no contribution and no fallback"):
+    with pytest.raises(RenderError, match="SITE has no contribution and no fallback"):
         _python(text, ())
 
 
@@ -1038,3 +1039,7 @@ def test_render_refuses_a_selection_that_leaves_a_fallback_less_slot_empty() -> 
 
     with pytest.raises(NoContribution):
         render(plan(mini, select(mini, ()), MINI_FILES))
+
+
+def test_a_render_error_is_a_value_error() -> None:
+    assert issubclass(RenderError, ValueError)

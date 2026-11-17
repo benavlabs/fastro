@@ -61,6 +61,10 @@ def ref_import(ref: Ref, file: RepoPath, info: Info) -> str:
     return f"from {module} import {name}"
 
 
+class RenderError(ValueError):
+    """A wiring file this catalog and selection can't render: a problem in the catalog, not in fastro."""
+
+
 @dataclass(frozen=True)
 class _Import:
     """One statement: ``import module [as alias]`` when ``names`` is empty, else ``from module import names``."""
@@ -93,7 +97,7 @@ def import_block(lines: Iterable[str], import_root: str, line_length: int) -> st
                     else:
                         aliased[(*key, alias.name, alias.asname)] = None
             else:
-                raise ValueError(f"{line!r} isn't an import statement.")
+                raise RenderError(f"{line!r} isn't an import statement.")
     statements = [_Import(module, alias=alias) for module, alias in plain]
     statements += [
         _Import(module, level, tuple((name, None) for name in sorted(names, key=_member)))
@@ -252,7 +256,7 @@ def _value(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...
         ref = _ref(items[0].contribution.target)
         return f"{slot.name}: {slot.annotation} = {ref.alias or ref.attr}\n", [ref_import(ref, file.path, catalog.info)]
     if slot.fallback is None:
-        raise ValueError(f"{slot.name} has no contribution and no fallback.")
+        raise RenderError(f"{slot.name} has no contribution and no fallback.")
     return f"{slot.name}: {slot.annotation} = {slot.fallback}\n", list(slot.fallback_imports)
 
 
@@ -289,7 +293,7 @@ def _reexport(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, 
     elif slot.fallback is not None:
         ref = _ref(slot.fallback)
     else:
-        raise ValueError(f"{slot.name} has no contribution and no fallback.")
+        raise RenderError(f"{slot.name} has no contribution and no fallback.")
     bound = Ref(ref.module, ref.attr, None if ref.attr == slot.name else slot.name)
     return f'__all__ = ["{slot.name}"]\n', [ref_import(bound, file.path, catalog.info)]
 
