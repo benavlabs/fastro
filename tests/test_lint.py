@@ -95,6 +95,15 @@ def test_a_blueprint_toml_problem_is_a_bp001_finding_at_its_line(repo: Path) -> 
     ]
 
 
+def test_a_wiring_path_under_another_is_a_bp001_finding(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", 'path = "backend/src/wiring/tasks.py"', 'path = "backend/src/wiring/app.py/tasks.py"')
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["code"]) == ("blueprint.toml", "BP001")
+    assert "'backend/src/wiring/app.py/tasks.py' sits under wiring[0]'s path" in str(finding["message"])
+
+
 def test_a_path_owned_twice_is_bp003_not_bp001(repo: Path) -> None:
     _edit(repo / "blueprint.toml", 'paths = ["backend/src/modules/cache/"', 'paths = ["backend/src/modules/accounts/"')
 
