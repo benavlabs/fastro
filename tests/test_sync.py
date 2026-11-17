@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from fastro import sync as syncing
 from fastro.apply import Change
 from fastro.cli import app
+from fastro.engine.render import RenderError
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 MENU = "frontend/menu.ts"
@@ -349,3 +350,26 @@ def test_a_fastro_toml_fastro_cant_tell_is_there_is_unreadable(tmp_path: Path) -
             syncing.load_source(locked)
     finally:
         locked.chmod(0o755)
+
+
+def test_a_wiring_file_the_catalog_cant_render_exits_1_saying_why(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*arguments: object) -> object:
+        raise RenderError("SITE has no contribution and no fallback.")
+
+    monkeypatch.setattr("fastro.sync.render", broken)
+
+    code, out, err = _sync("--check")
+
+    assert (code, out) == (1, "")
+    assert "SITE has no contribution and no fallback." in err
+
+
+def test_any_other_value_error_in_sync_is_a_bug_and_isnt_caught(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def bug(*arguments: object) -> object:
+        raise ValueError("a fastro bug")
+
+    monkeypatch.setattr("fastro.sync.render", bug)
+
+    result = CliRunner().invoke(app, ["sync", "--check"])
+
+    assert type(result.exception) is ValueError

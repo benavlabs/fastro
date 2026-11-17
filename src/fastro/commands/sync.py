@@ -9,6 +9,7 @@ import typer
 from .. import sync as syncing
 from ..apply import ApplyError, apply
 from ..engine.problems import CatalogError
+from ..engine.render import RenderError
 from ..engine.resolve import SelectionError
 from ..tools import NotInstalled
 
@@ -30,7 +31,7 @@ def sync(
     except (syncing.Unreadable, NotInstalled) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(3) from None
-    except (CatalogError, SelectionError) as error:
+    except (CatalogError, SelectionError, RenderError) as error:
         problems = error.problems if isinstance(error, CatalogError) else [error]
         for problem in problems:
             typer.echo(str(problem), err=True)
