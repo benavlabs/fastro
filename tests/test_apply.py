@@ -244,12 +244,12 @@ def test_a_write_is_utf_8_with_its_newlines_as_given(tmp_path: Path) -> None:
 def test_a_write_gives_the_same_bytes_under_a_non_utf_8_locale(tmp_path: Path) -> None:
     script = (
         "import sys\nfrom pathlib import Path\nfrom fastro.apply import Change, apply\n"
-        "apply([Change('write', 'menu.ts', sys.argv[1])], Path(sys.argv[2]), Path(sys.argv[2]) / 'target')\n"
+        f"apply([Change('write', 'menu.ts', {ascii(TEXT)})], Path(sys.argv[1]), Path(sys.argv[1]) / 'target')\n"
     )
     env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONIOENCODING": "utf-8"}
     env.pop("PYTHONDONTWRITEBYTECODE", None)
 
-    run = subprocess.run([sys.executable, "-c", script, TEXT, str(tmp_path)], env=env, capture_output=True, text=True)
+    run = subprocess.run([sys.executable, "-c", script, str(tmp_path)], env=env, capture_output=True, text=True)
 
     assert run.returncode == 0, run.stderr
     assert (tmp_path / "target" / "menu.ts").read_bytes() == TEXT.encode("utf-8")
