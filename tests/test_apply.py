@@ -348,3 +348,22 @@ def test_a_config_file_in_a_symlink_loop_is_refused(inside: Path) -> None:
 
 def test_nothing_at_a_config_path_is_no_refusal(inside: Path) -> None:
     assert unreadable_config(inside, "blueprint.toml") is None
+
+
+def test_a_tracked_file_fastro_cant_check_is_kept(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"locked/f.py": "", "open.py": ""})
+    (repo / "locked").chmod(0)
+    try:
+        listed = tracked_files(repo)
+    finally:
+        (repo / "locked").chmod(0o755)
+
+    assert [path.text for path in listed] == ["locked/f.py", "open.py"]
+
+
+def test_a_tracked_file_whose_directory_became_a_file_is_left_out(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"pkg/f.py": "", "open.py": ""})
+    shutil.rmtree(repo / "pkg")
+    (repo / "pkg").write_text("")
+
+    assert [path.text for path in tracked_files(repo)] == ["open.py"]

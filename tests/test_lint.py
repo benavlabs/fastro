@@ -866,3 +866,19 @@ def test_a_blueprint_toml_fastro_cant_tell_is_there_is_unreadable(tmp_path: Path
             linting.lint(locked)
     finally:
         locked.chmod(0o755)
+
+
+def test_a_module_fastro_cant_check_is_fr014_saying_why_not_untracked(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", HEALTH, 'health_checks = ["src.health:database", "src.locked.mod:target"]')
+    _track(repo, "backend/src/locked/mod.py")
+    (repo / "backend/src/locked").chmod(0)
+    try:
+        (finding,) = _findings()
+    finally:
+        (repo / "backend/src/locked").chmod(0o755)
+
+    assert finding["code"] == "FR014"
+    assert finding["message"] == (
+        "core.contributes.health_checks[1]: 'src.locked.mod:target' can't be checked: backend/src/locked/mod.py "
+        "can't be resolved: Permission denied, and lint reads only regular files inside the repo."
+    )

@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -14,10 +14,13 @@ import pytest
 from packaging.version import Version
 from typer.testing import CliRunner
 
+from fastro import verify as verify_module
+from fastro.apply import tracked_files
 from fastro.cli import app
 from fastro.engine import blueprint
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.resolve import Selection, select
+from fastro.engine.spec import RepoPath
 from fastro.verify import REPORTED_LINES, Result, UnknownSet, build, checks_for, report, verify, verify_sets
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
@@ -431,15 +434,17 @@ def test_the_command_verifies_the_sets_asked_for_and_exits_0(repo: Path, uv: Pat
     assert out.startswith("\n=== minimal: accounts\n  PASS  every module imports fine\n")
 
 
-def test_the_command_exits_1_when_a_check_fails(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_command_exits_1_when_a_check_fails(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(repo)
     monkeypatch.setenv("FAKE_UV_FAIL", "pytest")
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
 
     code, out, _ = _verify_cli("minimal")
 
     assert code == 1
     assert "  FAIL  tests        boom\n" in out
-    assert "scratch copies left in " in out
+    assert f"scratch copies left in {scratch}" in out
 
 
 def test_an_unknown_set_exits_2(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -537,16 +542,6 @@ def test_without_fastro_installed_verify_exits_3(repo: Path, uv: Path, monkeypat
     assert "fastro isn't installed" in err
 
 
-def test_a_directory_git_doesnt_track_exits_2(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(repo)
-    shutil.rmtree(repo / ".git")
-
-    code, _, err = _verify_cli("minimal")
-
-    assert code == 2
-    assert "isn't a git repository" in err
-
-
 def test_the_checks_never_see_a_pythonpath_or_pythonhome_from_the_parent_environment(
     repo: Path, tmp_path: Path, uv: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -626,3 +621,175 @@ def test_a_blueprint_toml_fastro_cant_tell_is_there_exits_3(repo: Path, uv: Path
 
     assert code == 3
     assert f"error: can't read {locked / 'blueprint.toml'}: Permission denied." in err
+
+
+def test_a_refused_build_exits_1_saying_why_and_leaves_its_scratch_copy(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    health = repo / "backend/src/health.py"
+    (repo / "backend/src/health_real.py").write_bytes(health.read_bytes())
+    health.unlink()
+    health.symlink_to("health_real.py")
+
+    code, out, err = _verify_cli("minimal")
+
+    assert code == 1
+    assert "error: verify set 'minimal' can't be built: 'backend/src/health.py' is a symlink in the source" in err
+    assert f"scratch copies left in {scratch}" in out
+
+
+def test_a_set_whose_wiring_cant_render_exits_1_naming_the_set(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    toml = repo / "blueprint.toml"
+    toml.write_text(
+        toml.read_text().replace('fallback = "send_nowhere"\nfallback_imports = ["from ..email import send_nowhere"]\n', "")
+    )
+
+    code, out, err = _verify_cli("queues")
+
+    assert code == 1
+    assert "error: verify set 'queues' can't be built: EMAIL_SENDER" in err
+    assert "no contribution" in err
+    assert "fastro blueprint lint" not in err
+    assert f"scratch copies left in {scratch}" in out
+
+
+def test_a_check_whose_program_cant_be_run_fails_saying_why(repo: Path, tmp_path: Path, uv: Path) -> None:
+    script = tmp_path / "not-executable"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o644)
+    text = (MINI / "blueprint.toml").read_text().replace('run = ["python", "-c", "pass"]\nif = "tasks"', f'run = ["{script}"]')
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    project, selection = _built(repo, tmp_path, catalog, "minimal")
+
+    smoke = checks_for(catalog)(project, selection)[-1]
+
+    assert (smoke.name, smoke.ok) == ("smoke", False)
+    assert smoke.last_line == f"{script} can't be run: Permission denied."
+
+
+def test_a_directory_git_doesnt_track_exits_2_before_any_scratch_directory_is_made(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repo)
+    shutil.rmtree(repo / ".git")
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+
+    code, out, err = _verify_cli("minimal")
+
+    assert (code, out) == (2, "")
+    assert "isn't a git repository" in err
+
+
+def test_an_unknown_set_exits_2_even_without_uv(repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(repo)
+    git = shutil.which("git")
+    assert git is not None
+    bin_dir = tmp_path / "only-git"
+    bin_dir.mkdir()
+    (bin_dir / "git").symlink_to(git)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    code, _, err = _verify_cli("nope")
+
+    assert code == 2
+    assert "'nope' isn't a verify set" in err
+
+
+def test_a_run_that_cant_finish_exits_3_even_after_a_failed_check(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    monkeypatch.setenv("FAKE_UV_FAIL", "pytest")
+    built = verify_module.build
+
+    def second_fails(
+        root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
+    ) -> Path:
+        if into.name == "full":
+            raise PermissionError(13, "Permission denied", str(into))
+        return built(root, catalog, features, into, tracked)
+
+    monkeypatch.setattr("fastro.verify.build", second_fails)
+
+    code, out, err = _verify_cli("minimal", "full")
+
+    assert code == 3
+    assert "  FAIL  tests        boom\n" in out
+    assert f"scratch copies left in {scratch}" in out
+    assert "Permission denied" in err
+
+
+def test_a_tracked_file_fastro_isnt_allowed_to_resolve_fails_the_build_with_exit_3(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    locked = repo / "backend/src/locked"
+    locked.mkdir()
+    (locked / "secret.py").write_text("")
+    _git(repo, "add", "backend/src/locked/secret.py")
+    locked.chmod(0)
+    try:
+        code, out, err = _verify_cli("minimal")
+    finally:
+        locked.chmod(0o755)
+
+    assert code == 3
+    assert f"error: {locked / 'secret.py'}: Permission denied. Fix that, then run" in err
+    assert f"scratch copies left in {scratch}" in out
+
+
+def test_a_build_copies_from_the_tracked_files_it_is_given(repo: Path, tmp_path: Path) -> None:
+    features = verify_sets(CATALOG)["minimal"]
+    given = tuple(path for path in tracked_files(repo) if path.text != "backend/src/health.py")
+
+    project = build(repo, CATALOG, features, tmp_path / "scratch" / "minimal", given)
+
+    assert not (project / "backend/src/health.py").exists()
+    assert (project / "backend/src/wiring/app.py").is_file()
+
+
+def test_a_check_whose_cwd_cant_be_entered_fails_naming_the_cwd(repo: Path, tmp_path: Path, uv: Path) -> None:
+    text = (
+        (MINI / "blueprint.toml")
+        .read_text()
+        .replace('run = ["python", "-c", "pass"]\nif = "tasks"', 'run = ["python", "-c", "pass"]\ncwd = "sealed"')
+    )
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    project, selection = _built(repo, tmp_path, catalog, "minimal")
+    (project / "sealed").mkdir()
+    (project / "sealed").chmod(0)
+    try:
+        smoke = checks_for(catalog)(project, selection)[-1]
+    finally:
+        (project / "sealed").chmod(0o755)
+
+    assert (smoke.name, smoke.ok) == ("smoke", False)
+    assert smoke.last_line == f"Its cwd, {project / 'sealed'}, can't be entered."
+
+
+def test_verify_lists_the_tracked_files_once_for_every_set(repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _scratch_at(monkeypatch, tmp_path / "scratch")
+    calls: list[Path] = []
+
+    def counted(root: Path) -> tuple[RepoPath, ...]:
+        calls.append(root)
+        return tracked_files(root)
+
+    monkeypatch.setattr("fastro.verify.tracked_files", counted)
+    _, run = _checks(set())
+
+    verify(repo, CATALOG, ["queues", "minimal"], run, keep=False)  # type: ignore[arg-type]
+
+    assert calls == [repo]

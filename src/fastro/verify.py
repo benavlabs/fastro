@@ -13,11 +13,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import apply, changes, tracked_files
+from fastro.apply import ApplyError, apply, changes, tracked_files
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
 from fastro.engine.render import render
 from fastro.engine.resolve import Selection, select
+from fastro.engine.spec import RepoPath
 from fastro.runner import available, declared_command, run_captured
 from fastro.tools import require
 
@@ -48,6 +49,10 @@ class UnknownSet(Exception):
     """A set asked for isn't one the catalog verifies (spec 8: exit 2)."""
 
 
+class Unbuildable(Exception):
+    """The catalog loaded, but a build of it can't be rendered: a problem in ``blueprint.toml`` (spec 8: exit 1)."""
+
+
 @dataclass(frozen=True)
 class Result:
     """What one check printed, and whether it passed."""
@@ -71,12 +76,35 @@ def verify_sets(catalog: Blueprint) -> dict[str, tuple[str, ...]]:
     return sets
 
 
-def build(root: Path, catalog: Blueprint, features: Sequence[str], into: Path) -> Path:
-    """The project ``features`` give, built into ``into`` from the tracked files of the blueprint repo at ``root``:
-    what the plan copies, and the wiring it renders."""
-    made = plan(catalog, select(catalog, features), tracked_files(root))
-    apply(changes(made, render(made)), root, into)
+def build(
+    root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
+) -> Path:
+    """The project ``features`` give, built into ``into`` from the tracked files of the blueprint repo at ``root``
+    (``tracked``, or git's list when it's ``None``): what the plan copies, and the wiring it renders.
+
+    Raises:
+        Unbuildable: the wiring can't be rendered.
+        ApplyError: a file the build would copy is one apply refuses.
+    """
+    made = plan(catalog, select(catalog, features), tracked_files(root) if tracked is None else tracked)
+    try:
+        rendered = render(made)
+    except ValueError as error:
+        raise Unbuildable(str(error)) from None
+    apply(changes(made, rendered), root, into)
     return into
+
+
+def unknown(catalog: Blueprint, names: Sequence[str]) -> None:
+    """Refuse a name in ``names`` that isn't a verify set.
+
+    Raises:
+        UnknownSet: one isn't.
+    """
+    sets = verify_sets(catalog)
+    for name in names:
+        if name not in sets:
+            raise UnknownSet(f"{name!r} isn't a verify set. The sets are {', '.join(sets)}.")
 
 
 def report(result: Result) -> str:
@@ -98,16 +126,25 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
 
     Raises:
         UnknownSet: a name isn't a verify set. Nothing has been built.
+        RepositoryError: ``root`` isn't a git repository. Nothing has been built.
+        MissingToolError: ``git`` isn't on ``PATH``, and nothing has been built; or a check needs ``uv`` and it isn't.
+        Unbuildable: a set's wiring can't be rendered. The run ends there.
+        ApplyError: a set's build is refused. The run ends there.
+        OSError: the system won't let a build read or write a file. The run ends there.
     """
+    unknown(catalog, names)
     sets = verify_sets(catalog)
-    for name in names:
-        if name not in sets:
-            raise UnknownSet(f"{name!r} isn't a verify set. The sets are {', '.join(sets)}.")
+    tracked = tracked_files(root)
     scratch = Path(tempfile.mkdtemp(prefix="fastro-verify-"))
     failures = 0
     try:
         for name in names or list(sets):
-            project = build(root, catalog, sets[name], scratch / name)
+            try:
+                project = build(root, catalog, sets[name], scratch / name, tracked)
+            except Unbuildable as error:
+                raise Unbuildable(f"verify set {name!r} can't be built: {error}") from None
+            except ApplyError as error:
+                raise ApplyError(f"verify set {name!r} can't be built: {error}") from None
             selection = select(catalog, sets[name])
             print(f"\n=== {name}: {', '.join(sorted(selection.features)) or 'core only'}")
             for result in checks(project, selection):
@@ -170,10 +207,16 @@ def _step(name: str, argv: list[str], cwd: Path, environment: dict[str, str]) ->
     if not cwd.is_dir():
         missing = f"Its cwd, {cwd}, isn't a directory in this build."
         return Result(name, False, missing, missing)
+    if not os.access(cwd, os.X_OK):
+        refused = f"Its cwd, {cwd}, can't be entered."
+        return Result(name, False, refused, refused)
     try:
         code, output = run_captured(argv, cwd, environment)
     except FileNotFoundError:
         missing = f"{argv[0]} isn't on PATH."
         return Result(name, False, missing, missing)
+    except OSError as error:
+        refused = f"{argv[0]} can't be run: {error.strerror or error}."
+        return Result(name, False, refused, refused)
     lines = output.splitlines()
     return Result(name, code == 0, lines[-1] if lines else "", output)

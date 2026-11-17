@@ -36,6 +36,8 @@ class Change:
 def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
     """The files git tracks in ``repo``, sorted by path as git lists them, leaving out one deleted from the working tree.
 
+    One fastro can't check, in a directory it isn't allowed to search, is kept, so whoever reads it says why it can't.
+
     Raises:
         MissingToolError: ``git`` isn't on ``PATH``.
         RepositoryError: ``repo`` isn't a git repository.
@@ -44,8 +46,15 @@ def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
     listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z"], capture_output=True, text=True, check=False)
     if listed.returncode != 0:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
-    names = [name for name in listed.stdout.split("\0") if name and os.path.lexists(repo / name)]
+    names = [name for name in listed.stdout.split("\0") if name and _in_working_tree(repo / name)]
     return tuple(RepoPath(name) for name in names)
+
+
+def _in_working_tree(path: Path) -> bool:
+    try:
+        return present(path)
+    except OSError:
+        return True
 
 
 def unreadable(root: Path, path: str) -> str | None:

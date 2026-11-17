@@ -9,7 +9,7 @@ import typer
 
 from .. import lint as linting
 from .. import verify as verifying
-from ..apply import RepositoryError, present, unreadable_config
+from ..apply import ApplyError, RepositoryError, present, unreadable_config
 from ..engine import blueprint, catalog_check
 from ..engine.blueprint import IncompatibleCatalog
 from ..engine.problems import CatalogError
@@ -72,6 +72,7 @@ def verify(
         raise typer.Exit(2)
     try:
         catalog = blueprint.load("blueprint.toml", catalog_check.read_text(file), installed_version())
+        verifying.unknown(catalog, sets or [])
         require("uv")
         code = verifying.verify(root, catalog, sets or [], verifying.checks_for(catalog), keep)
     except CatalogError as error:
@@ -79,13 +80,20 @@ def verify(
             typer.echo(str(problem), err=True)
         typer.echo("Fix these first: fastro blueprint lint lists them all.", err=True)
         raise typer.Exit(3 if isinstance(error, IncompatibleCatalog) else 1) from None
+    except (verifying.Unbuildable, ApplyError) as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(1) from None
     except (verifying.UnknownSet, RepositoryError) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(2) from None
     except MissingToolError as missing:
         typer.echo(f"error: fastro blueprint verify builds and checks through {missing.tool}, which isn't on PATH.", err=True)
         raise typer.Exit(3) from None
-    except (OSError, NotInstalled) as error:
+    except OSError as error:
+        where = f"{error.filename}: " if error.filename else ""
+        typer.echo(f"error: {where}{error.strerror or error}. Fix that, then run fastro blueprint verify again.", err=True)
+        raise typer.Exit(3) from None
+    except NotInstalled as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(3) from None
     raise typer.Exit(code)
