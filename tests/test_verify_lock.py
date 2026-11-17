@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,24 @@ def test_a_python_root_lock_that_is_a_symlink_refuses_the_build_without_trying_t
     _git(repo, "add", "backend/uv.lock")
 
     with pytest.raises(ApplyError, match="'backend/uv.lock' is a symlink in the source"):
+        build(repo, CATALOG, (), tmp_path / "core")
+
+    assert not (tmp_path / "core").exists()
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", ["directory", "fifo"])
+@pytest.mark.parametrize(
+    "path", ["backend/src/health.py", "uv.lock", "backend/uv.lock"], ids=["core-file", "root-lock", "python-root-lock"]
+)
+def test_a_tracked_file_that_isnt_a_regular_file_refuses_the_build_before_anything_is_written(
+    repo: Path, tmp_path: Path, replace: Callable[[Path, str, str], str], path: str, make: str
+) -> None:
+    _track(repo, {name: b"version = 1\n" for name in ("uv.lock", "backend/uv.lock") if name in (path, "uv.lock")})
+    replace(repo, path, make)
+    reason = "is a directory" if make == "directory" else "isn't a regular file"
+
+    with pytest.raises(ApplyError, match=f"'{path}' {reason} in the source, so nothing was changed"):
         build(repo, CATALOG, (), tmp_path / "core")
 
     assert not (tmp_path / "core").exists()

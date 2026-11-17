@@ -15,7 +15,7 @@ from packaging.version import Version
 from typer.testing import CliRunner
 
 from fastro import verify as verify_module
-from fastro.apply import tracked_files
+from fastro.apply import ApplyError, tracked_files
 from fastro.cli import app
 from fastro.engine import blueprint
 from fastro.engine.blueprint import Blueprint
@@ -629,6 +629,16 @@ def test_a_blueprint_toml_fastro_cant_tell_is_there_exits_3(repo: Path, uv: Path
 
     assert code == 3
     assert f"error: can't read {locked / 'blueprint.toml'}: Permission denied." in err
+
+
+def test_a_submodule_refuses_the_build_before_anything_is_written(repo: Path, tmp_path: Path) -> None:
+    (repo / "backend/vendor").mkdir()
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},backend/vendor")
+
+    with pytest.raises(ApplyError, match="'backend/vendor' is a directory in the source, so nothing was changed"):
+        build(repo, CATALOG, (), tmp_path / "core")
+
+    assert not (tmp_path / "core").exists()
 
 
 def test_a_refused_build_exits_1_saying_why_and_leaves_its_scratch_copy(

@@ -168,6 +168,31 @@ def test_a_symlinked_file_in_the_target_is_neither_written_through_nor_deleted(t
     assert (target / "app.py").is_symlink()
 
 
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize(("make", "reason"), [("directory", "is a directory"), ("fifo", "isn't a regular file")])
+def test_a_source_that_isnt_a_regular_file_isnt_copied_and_nothing_is(tmp_path: Path, make: str, reason: str) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    (source / "first.txt").write_text("first\n")
+    if make == "directory":
+        (source / "odd").mkdir()
+    else:
+        os.mkfifo(source / "odd")
+
+    with pytest.raises(ApplyError, match=f"'odd' {reason} in the source, so nothing was changed"):
+        apply([Change("copy", "first.txt"), Change("copy", "odd")], source, target)
+
+    assert not target.exists()
+
+
+def test_a_copy_from_another_path_names_that_path_when_it_refuses(tmp_path: Path) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    (source / "pins").mkdir(parents=True)
+
+    with pytest.raises(ApplyError, match="'pins' is a directory in the source"):
+        apply([Change("copy", "backend/uv.lock", source="pins")], source, target)
+
+
 def test_a_symlinked_source_file_isnt_copied(tmp_path: Path) -> None:
     source, target = tmp_path / "source", tmp_path / "target"
     source.mkdir()

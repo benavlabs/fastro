@@ -138,8 +138,8 @@ def check(
     one is known to be allowed. Nothing is changed.
 
     A path must stay inside ``target`` once resolved, and no part of it there, nor of a copied file in ``source``,
-    may be a symlink. In ``target``, no part of the way to it may be a file, and what's already at it must be a
-    regular file. With ``only``, each change's path must be one of them.
+    may be a symlink, and a copied file must be a regular file there. In ``target``, no part of the way to it may be a
+    file, and what's already at it must be a regular file. With ``only``, each change's path must be one of them.
 
     Raises:
         ApplyError: a change breaks one of those rules.
@@ -150,7 +150,10 @@ def check(
             raise ApplyError(f"{change.path!r} isn't a file this step may change, so nothing was changed.")
         destination = _inside(target, change.path, "the target")
         _regular_or_absent(target, destination, change.path)
-        origin = _inside(source, change.source or change.path, "the source") if change.kind == "copy" else None
+        origin = None
+        if change.kind == "copy":
+            origin = _inside(source, change.source or change.path, "the source")
+            _regular_source(origin, change.source or change.path)
         checked.append((change, destination, origin))
     return checked
 
@@ -172,6 +175,14 @@ def apply(found: Iterable[Change], source: Path, target: Path, only: Collection[
             shutil.copymode(origin, destination)
         else:
             destination.write_bytes(change.text.encode("utf-8"))
+
+
+def _regular_source(origin: Path, path: str) -> None:
+    """Refuse a copy whose file in the source is a directory or anything else that isn't a regular file."""
+    if origin.is_dir():
+        raise ApplyError(f"{path!r} is a directory in the source, so nothing was changed.")
+    if not origin.is_file():
+        raise ApplyError(f"{path!r} isn't a regular file in the source, so nothing was changed.")
 
 
 def _regular_or_absent(target: Path, destination: Path, path: str) -> None:
