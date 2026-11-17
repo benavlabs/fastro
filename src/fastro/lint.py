@@ -105,7 +105,7 @@ def lint(root: Path) -> Report:
         UsageError: ``root`` has no ``blueprint.toml``, isn't a git repository, or has a ``blueprint.toml`` or
             ``fastro.toml`` fastro may not read (spec 1.10).
         MissingToolError: ``git`` isn't on ``PATH``.
-        Unreadable: either file can't be read.
+        Unreadable: ``blueprint.toml``, ``fastro.toml``, a module file or ``.env.example`` can't be opened.
         IncompatibleCatalog: the catalog is for another version of fastro.
         NotInstalled: fastro isn't installed.
     """
@@ -293,9 +293,17 @@ def _unresolved_refs(root: Path, catalog: Blueprint, tracked: set[str]) -> list[
 
 def _module_names(file: Path) -> frozenset[str] | str | None:
     """The names ``file`` binds at module level, ``None`` when a star import could bind any, or why it doesn't
-    parse. Top-level ``if``, ``try`` and ``with`` blocks count as module level."""
+    parse. Top-level ``if``, ``try`` and ``with`` blocks count as module level.
+
+    Raises:
+        Unreadable: the system won't let lint open ``file``.
+    """
     try:
-        tree = ast.parse(file.read_bytes(), str(file))
+        source = file.read_bytes()
+    except OSError as error:
+        raise Unreadable(file, error) from None
+    try:
+        tree = ast.parse(source, str(file))
     except SyntaxError as error:
         return f"{error.msg} on line {error.lineno}" if error.lineno else error.msg
     names: set[str] = set()
@@ -380,8 +388,16 @@ def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Pro
 
 
 def _markers(file: Path) -> dict[tuple[str, str], list[int]]:
-    """Each ``(feature.option, VAR)`` a marker line names with the line under it, and the markers' line numbers."""
-    lines = file.read_bytes().decode("utf-8", "replace").splitlines()
+    """Each ``(feature.option, VAR)`` a marker line names with the line under it, and the markers' line numbers.
+
+    Raises:
+        Unreadable: the system won't let lint open ``file``.
+    """
+    try:
+        data = file.read_bytes()
+    except OSError as error:
+        raise Unreadable(file, error) from None
+    lines = data.decode("utf-8", "replace").splitlines()
     found: dict[tuple[str, str], list[int]] = {}
     for number, (line, below) in enumerate(zip(lines, lines[1:], strict=False), start=1):
         marker, assigned = MARKER.fullmatch(line.rstrip()), ASSIGNED.match(below)

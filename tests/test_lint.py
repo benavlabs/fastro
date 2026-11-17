@@ -882,3 +882,27 @@ def test_a_module_fastro_cant_check_is_fr014_saying_why_not_untracked(repo: Path
         "core.contributes.health_checks[1]: 'src.locked.mod:target' can't be checked: backend/src/locked/mod.py "
         "can't be resolved: Permission denied, and lint reads only regular files inside the repo."
     )
+
+
+def test_a_ref_s_module_file_the_system_wont_let_lint_open_exits_3(repo: Path) -> None:
+    _probe(repo, "target = 1\n")
+    (repo / PROBE).chmod(0)
+    try:
+        code, out, err = _lint("--json")
+    finally:
+        (repo / PROBE).chmod(0o644)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / PROBE}: Permission denied." in err
+
+
+def test_an_env_example_the_system_wont_let_lint_open_exits_3(repo: Path) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n")
+    (repo / ENV_EXAMPLE).chmod(0)
+    try:
+        code, out, err = _lint("--json")
+    finally:
+        (repo / ENV_EXAMPLE).chmod(0o644)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / ENV_EXAMPLE}: Permission denied." in err
