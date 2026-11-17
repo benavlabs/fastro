@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 
 from .cli import app
+from .start import check_cwd
 
 RENAMED: dict[tuple[str, str], tuple[str, str]] = {
     ("deploy", "generate"): ("make", "deploy"),
@@ -23,7 +24,9 @@ def translate(argv: Sequence[str]) -> list[str]:
 
 
 def bp_main() -> None:
-    """Say that ``bp`` is now ``fastro``, then run ``fastro`` with the same arguments."""
+    """Check the current directory as ``fastro`` does, say that ``bp`` is now ``fastro``, then run ``fastro`` with the
+    same arguments."""
+    check_cwd()
     argv = translate(sys.argv[1:])
     print(f"bp is now fastro. Next time, run: {shlex.join(['fastro', *argv])}", file=sys.stderr)
     app(args=argv, prog_name="fastro")

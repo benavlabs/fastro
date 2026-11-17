@@ -1,4 +1,5 @@
-"""The installed ``fastro`` command refuses a current directory it can't use, before anything else runs (spec 1.37)."""
+"""The installed ``fastro`` and ``bp`` commands refuse a current directory they can't use, before anything else runs
+(spec 1.37)."""
 
 import shutil
 import subprocess
@@ -9,14 +10,16 @@ from pathlib import Path
 import pytest
 
 FASTRO = shutil.which("fastro", path=str(Path(sys.executable).parent))
+BP = shutil.which("bp", path=str(Path(sys.executable).parent))
 COMMANDS = [["blueprint", "lint"], ["sync", "--check"], ["blueprint", "verify"], ["--help"]]
-LAUNCHERS = ["script", "module"]
+LAUNCHERS = ["script", "module", "bp"]
 
 
 def _in(directory: Path, then: str, launcher: str, command: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run fastro from ``directory`` after the shell ``then`` has made it unusable (``chmod 0 .`` or ``rmdir``)."""
-    assert FASTRO is not None, "the fastro console script isn't installed in this environment"
-    fastro = [FASTRO] if launcher == "script" else [sys.executable, "-m", "fastro"]
+    """Run fastro, through ``launcher``, from ``directory`` after the shell ``then`` has made it unusable
+    (``chmod 0 .`` or ``rmdir``)."""
+    assert FASTRO is not None and BP is not None, "the fastro and bp console scripts aren't installed here"
+    fastro = {"script": [FASTRO], "module": [sys.executable, "-m", "fastro"], "bp": [BP]}[launcher]
     script = f'cd "$1" && {then} && shift && exec "$@"'
     return subprocess.run(
         ["sh", "-c", script, "sh", str(directory), *fastro, *command], capture_output=True, text=True, timeout=60
@@ -79,3 +82,21 @@ def test_a_current_directory_nobody_may_search_exits_3_or_is_read_as_spec_1_37_s
         assert done.returncode == 3
         assert f"error: can't read {locked / name}: Permission denied." in done.stderr
         assert "Traceback" not in done.stderr
+
+
+def test_fastro_refuses_before_its_cli_is_even_imported() -> None:
+    script = (
+        "import os, sys\n"
+        "def refuse():\n"
+        "    raise PermissionError(13, 'Permission denied')\n"
+        "os.getcwd = refuse\n"
+        "from fastro import start\n"
+        "try:\n"
+        "    start.main()\n"
+        "except SystemExit as stop:\n"
+        "    print(stop.code, 'fastro.cli' in sys.modules)\n"
+    )
+
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+
+    assert done.stdout == "3 False\n"
