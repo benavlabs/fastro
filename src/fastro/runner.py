@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from fastro.engine.blueprint import Blueprint, Command
@@ -65,6 +65,17 @@ def declared_command(command: Command, project: Path, python_root: RepoPath, arg
     backend = root / python_root.text.rstrip("/")
     cwd = root / command.cwd.text.rstrip("/") if command.cwd is not None else backend
     return [require("uv"), "run", "--project", str(backend), "python", "-m", command.module, *args], cwd
+
+
+def run_captured(argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> tuple[int, str]:
+    """Run ``argv`` from ``cwd`` with only ``environment``, and return its exit code and what it printed, stdout then
+    stderr, stripped.
+
+    Raises:
+        OSError: its program can't be started, such as ``FileNotFoundError`` when it isn't on ``PATH``.
+    """
+    completed = subprocess.run(list(argv), cwd=cwd, env=dict(environment), capture_output=True, text=True, check=False)
+    return completed.returncode, (completed.stdout + completed.stderr).strip()
 
 
 def module_file(python_root: Path, module: str) -> Path:

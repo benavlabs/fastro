@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -19,7 +18,7 @@ from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
 from fastro.engine.render import render
 from fastro.engine.resolve import Selection, select
-from fastro.runner import available, declared_command
+from fastro.runner import available, declared_command, run_captured
 from fastro.tools import require
 
 EVERYTHING = "everything"
@@ -172,10 +171,9 @@ def _step(name: str, argv: list[str], cwd: Path, environment: dict[str, str]) ->
         missing = f"Its cwd, {cwd}, isn't a directory in this build."
         return Result(name, False, missing, missing)
     try:
-        completed = subprocess.run(argv, cwd=cwd, env=environment, capture_output=True, text=True, check=False)
+        code, output = run_captured(argv, cwd, environment)
     except FileNotFoundError:
         missing = f"{argv[0]} isn't on PATH."
         return Result(name, False, missing, missing)
-    output = (completed.stdout + completed.stderr).strip()
     lines = output.splitlines()
-    return Result(name, completed.returncode == 0, lines[-1] if lines else "", output)
+    return Result(name, code == 0, lines[-1] if lines else "", output)

@@ -185,3 +185,18 @@ def test_a_relative_project_runs_with_absolute_paths_since_uv_starts_in_the_comm
     (call,) = _calls(uv)
     backend = str((tmp_path / "acme" / "backend").resolve())
     assert (call["argv"][2], call["cwd"]) == (backend, backend)  # type: ignore[index]
+
+
+def test_run_captured_runs_from_cwd_with_only_the_environment_given_and_returns_code_and_output(tmp_path: Path) -> None:
+    script = (
+        "import os, sys; print(os.getcwd()); print(os.environ.get('ONLY', '-'), os.environ.get('HOME', 'none')); "
+        "sys.stderr.write('err\\n'); sys.exit(3)"
+    )
+    code, output = runner.run_captured([sys.executable, "-c", script], tmp_path, {"ONLY": "given"})
+    assert code == 3
+    assert output == f"{tmp_path.resolve()}\ngiven none\nerr"
+
+
+def test_run_captured_raises_when_the_program_can_t_be_started(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        runner.run_captured([str(tmp_path / "missing")], tmp_path, {})
