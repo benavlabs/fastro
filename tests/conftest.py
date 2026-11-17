@@ -9,6 +9,16 @@ import pytest
 
 collect_ignore = ["fixtures"]
 
+NOT_ROOT = "the permission tests assume a non-root user: run the suite as an ordinary user."
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Stop the run with one clear message as root, where a mode-000 file still opens and a dozen permission tests
+    would fail for that one reason."""
+    if os.geteuid() == 0:
+        pytest.exit(NOT_ROOT, returncode=1)
+
+
 REASONS = {
     "outside": "leads outside the repo",
     "fifo": "isn't a regular file",
