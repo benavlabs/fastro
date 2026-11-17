@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "fastro"
 version = "0.1.0.dev0"
-description = "Generate Fastro projects from a blueprint, keep them in sync, and check them."
+description = "Generate FastAPI projects from a blueprint, keep them in sync, and check them."
 authors = [{ name = "Benav Labs", email = "contact@benav.io" }]
 license = { text = "MIT" }
 readme = "README.md"

@@ -1,4 +1,4 @@
-"""fastro: the command-line tool that starts and maintains Fastro projects.
+"""fastro: the command-line tool that starts and maintains FastAPI projects.
 
 The CLI is a Typer application. Third-party packages can register
 top-level Typer sub-apps that mount under `fastro <name>` through the

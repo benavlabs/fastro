@@ -1,6 +1,6 @@
 # fastro
 
-`fastro` is the command-line tool for Fastro projects. It generates
+`fastro` is the command-line tool for FastAPI projects. It generates
 deployment artifacts, helps prepare the runtime environment, and serves as
 the host for plugin commands.
 
