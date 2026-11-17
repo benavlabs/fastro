@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import ApplyError, Change, apply, changes, tracked_files
+from fastro.apply import ApplyError, Change, apply, changes, file_kind, tracked_files
 from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
@@ -208,7 +208,7 @@ def checks_for(catalog: Blueprint) -> Checks:
         backend = (project / catalog.info.python_root.text.rstrip("/")).resolve()
         dev = _dev_dependencies(backend / "pyproject.toml")
         python = [require("uv"), "run", "--project", str(backend), *dev, "python"]
-        present = [name for name in (root, "scripts", "migrations", "tests") if (backend / name).is_dir()]
+        present, blocked = _directories(backend, (root, "scripts", "migrations", "tests"))
         steps: list[tuple[str, list[str], Path]] = [
             ("install", [require("uv"), "sync", "--project", str(backend), *dev], backend)
         ]
@@ -218,7 +218,7 @@ def checks_for(catalog: Blueprint) -> Checks:
         linted = [name for name in (root, "tests") if name in present]
         steps.append(("ruff", [*python, "-m", "ruff", "check", *linted], backend))
         steps.append(("mypy", [*python, "-m", "mypy", *present, "--config-file", "pyproject.toml"], backend))
-        if (backend / "tests").is_dir():
+        if "tests" in present or "tests" in blocked:
             steps.append(("tests", [*python, "-m", "pytest", "tests", "-q", "-p", "no:randomly"], backend))
         baseline = available(catalog, selection).get(BASELINE)
         if baseline is not None:
@@ -228,9 +228,27 @@ def checks_for(catalog: Blueprint) -> Checks:
             if check.condition is None or selection.holds(check.condition):
                 cwd = project / check.cwd.text.rstrip("/") if check.cwd is not None else project
                 steps.append((check.name, list(check.run), cwd))
-        return [_step(name, argv, cwd, shared) for name, argv, cwd in steps]
+        needs = {"ruff": (root, "tests"), "mypy": (root, "scripts", "migrations", "tests"), "tests": ("tests",)}
+        results = []
+        for name, argv, cwd in steps:
+            reason = next((blocked[needed] for needed in needs.get(name, ()) if needed in blocked), None)
+            results.append(Result(name, False, reason, reason) if reason else _step(name, argv, cwd, shared))
+        return results
 
     return run
+
+
+def _directories(backend: Path, names: Sequence[str]) -> tuple[list[str], dict[str, str]]:
+    """Which of ``names`` are directories under ``backend``, and, for each one fastro isn't allowed to look at, the
+    line saying it can't be entered."""
+    present, blocked = [], {}
+    for name in names:
+        try:
+            if file_kind(backend / name) == "directory":
+                present.append(name)
+        except OSError as error:
+            blocked[name] = f"{backend / name} can't be entered: {error.strerror}."
+    return present, blocked
 
 
 def _dev_dependencies(pyproject: Path) -> list[str]:
@@ -254,11 +272,15 @@ def _dev_dependencies(pyproject: Path) -> list[str]:
 
 def _step(name: str, argv: list[str], cwd: Path, environment: dict[str, str]) -> Result:
     """One check, run and read: it passes when it exits 0, and its last printed line is its summary."""
-    if not cwd.is_dir():
+    refused = f"Its cwd, {cwd}, can't be entered."
+    try:
+        kind = file_kind(cwd)
+    except OSError:
+        return Result(name, False, refused, refused)
+    if kind != "directory":
         missing = f"Its cwd, {cwd}, isn't a directory in this build."
         return Result(name, False, missing, missing)
     if not os.access(cwd, os.X_OK):
-        refused = f"Its cwd, {cwd}, can't be entered."
         return Result(name, False, refused, refused)
     try:
         code, output = run_captured(argv, cwd, environment)

@@ -797,6 +797,46 @@ def test_a_check_whose_cwd_cant_be_entered_fails_naming_the_cwd(repo: Path, tmp_
     assert smoke.last_line == f"Its cwd, {project / 'sealed'}, can't be entered."
 
 
+def test_a_check_whose_cwd_is_under_a_directory_it_cant_search_says_it_cant_be_entered(
+    repo: Path, tmp_path: Path, uv: Path
+) -> None:
+    text = (
+        (MINI / "blueprint.toml")
+        .read_text()
+        .replace('run = ["python", "-c", "pass"]\nif = "tasks"', 'run = ["python", "-c", "pass"]\ncwd = "sealed/inner"')
+    )
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    project, selection = _built(repo, tmp_path, catalog, "minimal")
+    (project / "sealed" / "inner").mkdir(parents=True)
+    (project / "sealed").chmod(0)
+    try:
+        smoke = checks_for(catalog)(project, selection)[-1]
+    finally:
+        (project / "sealed").chmod(0o755)
+
+    assert (smoke.name, smoke.ok) == ("smoke", False)
+    assert smoke.last_line == f"Its cwd, {project / 'sealed' / 'inner'}, can't be entered."
+
+
+def test_a_python_root_it_cant_search_fails_every_built_in_check_and_none_reads_as_absent(
+    repo: Path, tmp_path: Path, uv: Path
+) -> None:
+    project, selection = _built(repo, tmp_path, CATALOG, "minimal")
+    backend = (project / "backend").resolve()
+    backend.chmod(0)
+    try:
+        results = {result.name: result for result in checks_for(CATALOG)(project, selection)}
+    finally:
+        backend.chmod(0o755)
+
+    assert {"install", "every module imports", "ruff", "mypy", "tests"} <= set(results)
+    assert not any(result.ok for result in results.values())
+    assert all("can't be entered" in result.last_line for result in results.values())
+    for name, directory in [("ruff", "src"), ("mypy", "src"), ("tests", "tests")]:
+        refused = f"{backend / directory} can't be entered: Permission denied."
+        assert results[name] == Result(name, False, refused, refused)
+
+
 def test_verify_lists_the_tracked_files_once_for_every_set(repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _scratch_at(monkeypatch, tmp_path / "scratch")
     calls: list[Path] = []

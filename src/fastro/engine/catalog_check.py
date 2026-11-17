@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import codecs
+import errno
+import os
+import stat
 import sys
 import tomllib
 from importlib import metadata
@@ -30,9 +33,15 @@ def main(argv: list[str]) -> int:
         print(f"usage: {COMMAND} PATH", file=sys.stderr)
         return 2
     path = Path(argv[0])
-    file = path / "blueprint.toml" if path.is_dir() else path
-    if not file.is_file():
-        why = "has no blueprint.toml" if path.is_dir() else "doesn't exist"
+    try:
+        kind = _kind(path)
+        repo = kind == "directory"
+        file = path / "blueprint.toml" if repo else path
+        found = _kind(file) if repo else kind
+    except OSError as error:
+        return _unreadable(Path(error.filename), error, path)
+    if found != "file":
+        why = "has no blueprint.toml" if repo else "doesn't exist"
         print(f"error: {path} {why}. Pass a blueprint repo or its blueprint.toml: {COMMAND} PATH", file=sys.stderr)
         return 2
     try:
@@ -42,6 +51,10 @@ def main(argv: list[str]) -> int:
         return 3
     beside = file.parent / "fastro.toml"
     try:
+        project_file = _kind(beside) == "file"
+    except OSError as error:
+        return _unreadable(beside, error, path)
+    try:
         loaded = load(str(file), read_text(file), tool)
     except OSError as error:
         return _unreadable(file, error, path)
@@ -49,7 +62,7 @@ def main(argv: list[str]) -> int:
         notes = []
         if not isinstance(error, IncompatibleCatalog | CrossReferenceError | ExtendingCatalogError):
             notes.append("Names that refer to another section aren't checked until these are fixed.")
-        if beside.is_file():
+        if project_file:
             notes.append(f"{beside} is checked once {file} has no problems.")
         _report(error, file, path, notes)
         return 3 if isinstance(error, IncompatibleCatalog) else 1
@@ -60,7 +73,7 @@ def main(argv: list[str]) -> int:
         _counted(len(loaded.presets), "preset"),
     )
     print(f"ok: {file} is {info.name} {info.version}, with {features}, {points} and {presets}.")
-    if beside.is_file() and (code := _project(beside, loaded, path)):
+    if project_file and (code := _project(beside, loaded, path)):
         return code
     print(not_checked(info.extends.name if info.extends is not None else None))
     return 0
@@ -87,6 +100,21 @@ def _project(file: Path, catalog: Blueprint, path: Path) -> int:
     pin = loaded.blueprint
     print(f"ok: {file} is {loaded.name}, with {_counted(len(loaded.features), 'feature')}, for {pin.name} {pin.version}.")
     return 0
+
+
+def _kind(path: Path) -> str | None:
+    """What ``path`` leads to: ``"file"``, ``"directory"``, ``"other"``, or ``None`` when nothing is there.
+
+    Raises:
+        OSError: the system won't let this look (spec 8: exit 3), on every Python version.
+    """
+    try:
+        mode = os.stat(path).st_mode
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            return None
+        raise
+    return "file" if stat.S_ISREG(mode) else "directory" if stat.S_ISDIR(mode) else "other"
 
 
 def _sets_source(file: Path) -> bool:

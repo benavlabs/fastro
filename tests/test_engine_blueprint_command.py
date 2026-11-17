@@ -481,3 +481,62 @@ def test_key_problems_in_a_fastro_toml_that_doesnt_set_source_come_without_the_n
     out = capsys.readouterr().out
     assert out.endswith(f"1 problem in {file}. Fix it, then run python -m fastro.engine.blueprint {repo} again.\n")
     assert "Names that refer to the catalog" not in out
+
+
+def test_a_repo_under_a_directory_it_cant_search_exits_3_on_every_python(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    locked = tmp_path / "locked"
+    (locked / "repo").mkdir(parents=True)
+    repo = _repo(locked / "repo", GOOD)
+    locked.chmod(0)
+    try:
+        code = catalog_check.main([str(repo)])
+    finally:
+        locked.chmod(0o755)
+
+    assert code == 3
+    assert capsys.readouterr().err == (
+        f"error: can't read {repo}: Permission denied. Check its permissions, then run "
+        f"python -m fastro.engine.blueprint {repo} again.\n"
+    )
+
+
+def test_a_fastro_toml_it_cant_tell_is_there_exits_3_on_every_python(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "repo").mkdir()
+    repo = _repo(tmp_path / "repo", GOOD)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "fastro.toml").write_text(PROJECT)
+    (repo / "fastro.toml").symlink_to(locked / "fastro.toml")
+    locked.chmod(0)
+    try:
+        code = catalog_check.main([str(repo)])
+    finally:
+        locked.chmod(0o755)
+
+    assert code == 3
+    assert capsys.readouterr().err == (
+        f"error: can't read {repo / 'fastro.toml'}: Permission denied. Check its permissions, then run "
+        f"python -m fastro.engine.blueprint {repo} again.\n"
+    )
+
+
+def test_a_repo_it_can_see_but_not_search_exits_3_naming_blueprint_toml(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "repo").mkdir()
+    repo = _repo(tmp_path / "repo", GOOD)
+    repo.chmod(0)
+    try:
+        code = catalog_check.main([str(repo)])
+    finally:
+        repo.chmod(0o755)
+
+    assert code == 3
+    assert capsys.readouterr().err == (
+        f"error: can't read {repo / 'blueprint.toml'}: Permission denied. Check its permissions, then run "
+        f"python -m fastro.engine.blueprint {repo} again.\n"
+    )
