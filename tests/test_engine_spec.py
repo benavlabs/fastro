@@ -85,7 +85,7 @@ def test_any_other_preset_or_verify_set_name_is_refused(name: str) -> None:
         label(name, "verify set")
 
 
-@pytest.mark.parametrize("name", ["fastro", "fastroai", "my-blueprint2"])
+@pytest.mark.parametrize("name", ["fastapi-boilerplate", "fastroai", "my-blueprint2"])
 def test_a_blueprint_name_may_also_use_hyphens(name: str) -> None:
     assert blueprint_name(name) == name
 
@@ -244,7 +244,7 @@ def test_any_other_dependency_is_refused(text: str) -> None:
         "git+ssh://git@github.com/benavlabs/fastroai@v0.3.0",
         "git+https://github.com/benavlabs/fastroai",
         "stripe",
-        "fastro",
+        "fastapi-boilerplate",
         "stripe-billing",
     ],
 )

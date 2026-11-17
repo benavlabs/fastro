@@ -10,13 +10,14 @@ from fastro.engine.problems import CatalogError
 from fastro.engine.spec import RepoPath
 
 SHA1 = "3f9c2e1" + "0" * 33
+RELEASE = "gh:benavlabs/FastAPI-boilerplate@v0.21.0"
 SHA256 = "ab" * 32
 
 FULL = f"""\
 [lock]
 schema = 1
 fastro = "0.1.0"
-blueprint = {{ name = "fastro", version = "0.21.0", source = "gh:benavlabs/FastAPI-boilerplate@v0.21.0", commit = "{SHA1}" }}
+blueprint = {{ name = "fastapi-boilerplate", version = "0.21.0", source = "{RELEASE}", commit = "{SHA1}" }}
 features = ["accounts", "admin", "cache"]
 options = {{ "cache.backend" = "redis" }}
 starter = {{ name = "b2b-api", version = "0.1.0", source = "gh:benavlabs/fastro-starters@v0.1.0#b2b-api", commit = "{SHA1}" }}
@@ -37,7 +38,7 @@ commit = "{SHA256}"
 def _text(lock: str = "", tables: str = "") -> str:
     return (
         '[lock]\nschema = 1\nfastro = "0.1.0"\n'
-        'blueprint = { name = "fastro", version = "0.21.0", source = "../FastAPI-boilerplate" }\n'
+        'blueprint = { name = "fastapi-boilerplate", version = "0.21.0", source = "../FastAPI-boilerplate" }\n'
         f"features = []\n{lock}{tables}"
     )
 
@@ -54,7 +55,7 @@ def test_every_key_is_read_and_files_need_not_be_sorted() -> None:
     assert lock == Lock(
         schema=1,
         fastro=Version("0.1.0"),
-        blueprint=Provenance("fastro", Version("0.21.0"), "gh:benavlabs/FastAPI-boilerplate@v0.21.0", SHA1),
+        blueprint=Provenance("fastapi-boilerplate", Version("0.21.0"), RELEASE, SHA1),
         features=("accounts", "admin", "cache"),
         options={("cache", "backend"): "redis"},
         starter=Provenance("b2b-api", Version("0.1.0"), "gh:benavlabs/fastro-starters@v0.1.0#b2b-api", SHA1),
@@ -117,7 +118,10 @@ COMMIT_FIX = "  Add commit, the full git commit that source resolved to."
         ),
         ("lock = 1\n", "1: lock: should be a table, not an integer."),
         (
-            _text().replace('{ name = "fastro", version = "0.21.0", source = "../FastAPI-boilerplate" }', '"fastro"'),
+            _text().replace(
+                '{ name = "fastapi-boilerplate", version = "0.21.0", source = "../FastAPI-boilerplate" }',
+                '"fastapi-boilerplate"',
+            ),
             "4: lock.blueprint: should be a table, not a string.",
         ),
         (_text(tables='[plugins]\nstripe = "../stripe"\n'), "7: plugins.stripe: should be a table, not a string."),
@@ -138,7 +142,7 @@ COMMIT_FIX = "  Add commit, the full git commit that source resolved to."
             "4: lock.blueprint.commit: is required for a gh: or git+ source.\n" + COMMIT_FIX,
         ),
         (
-            _text().replace('"../FastAPI-boilerplate"', f'"fastro", commit = "{SHA1}"'),
+            _text().replace('"../FastAPI-boilerplate"', f'"fastapi-boilerplate", commit = "{SHA1}"'),
             "4: lock.blueprint.commit: is only for a gh:, git+ or path source.",
         ),
         (
@@ -253,7 +257,7 @@ def test_a_key_that_breaks_its_rule_is_refused_at_its_line(text: str, problem: s
 
 
 PROJECT = """\
-blueprint = { name = "fastro", version = "0.21.0" }
+blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }
 features = []
 
 [project]
@@ -281,9 +285,9 @@ def test_a_lock_that_agrees_with_fastro_toml_loads() -> None:
     ("lock", "fastro", "problem"),
     [
         (
-            _text(tables=STRIPE).replace('name = "fastro"', 'name = "fastroai"'),
+            _text(tables=STRIPE).replace('name = "fastapi-boilerplate"', 'name = "fastroai"'),
             PROJECT,
-            "lock.toml:4: lock.blueprint.name: is 'fastroai', and fastro.toml pins 'fastro'.\n" + PIN_FIX,
+            "lock.toml:4: lock.blueprint.name: is 'fastroai', and fastro.toml pins 'fastapi-boilerplate'.\n" + PIN_FIX,
         ),
         (
             _text(tables=STRIPE).replace('version = "0.21.0"', 'version = "0.20.0"'),
@@ -318,7 +322,7 @@ def test_a_lock_that_disagrees_with_fastro_toml_is_refused(lock: str, fastro: st
 
 
 def test_the_lock_is_checked_against_fastro_toml_only_once_its_keys_read_cleanly() -> None:
-    lock = _text(tables=STRIPE).replace('name = "fastro"', 'name = "fastroai"').replace("schema = 1", "schema = 0")
+    lock = _text(tables=STRIPE).replace('name = "fastapi-boilerplate"', 'name = "fastroai"').replace("schema = 1", "schema = 0")
 
     refused = _against(lock)
 

@@ -139,13 +139,13 @@ def test_shadowing_is_still_named_once_everything_else_is_checked(
 def test_an_extending_catalog_with_a_base_name_says_ok_and_that_names_wait_for_the_merge(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    text = GOOD.replace("[presets]", 'extends = { name = "fastro", version = "0.21.0" }\n\n[presets]').replace(
+    text = GOOD.replace("[presets]", 'extends = { name = "fastapi-boilerplate", version = "0.21.0" }\n\n[presets]').replace(
         'summary = "Users and login"', 'summary = "Users and login"\nrequires = ["jwt"]'
     )
 
     assert catalog_check.main([str(_repo(tmp_path, text))]) == 0
     assert capsys.readouterr().out.splitlines()[1:] == [
-        "Not checked yet: names that refer to another section, since this catalog extends fastro, and those are "
+        "Not checked yet: names that refer to another section, since this catalog extends fastapi-boilerplate, and those are "
         f"checked on the merged catalog (extends, not built yet) and {SHADOW}."
     ]
 
@@ -226,7 +226,7 @@ def test_problems_are_listed_with_a_count_and_exit_1(tmp_path: Path, capsys: pyt
 def test_key_problems_in_an_extending_catalog_come_without_the_note_about_names(
     version: str, extra: str, problem: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    extends = f'extends = {{ name = "fastro", version = "{version}" }}\n\n[presets]'
+    extends = f'extends = {{ name = "fastapi-boilerplate", version = "{version}" }}\n\n[presets]'
     repo = _repo(tmp_path, GOOD.replace("[presets]", extends) + extra)
     file = repo / "blueprint.toml"
 
@@ -438,7 +438,7 @@ def test_a_fastro_toml_it_cant_read_exits_3(
 def test_against_an_extending_catalog_key_problems_in_fastro_toml_come_without_the_note(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    catalog = GOOD.replace("[presets]", 'extends = { name = "fastro", version = "0.21.0" }\n\n[presets]')
+    catalog = GOOD.replace("[presets]", 'extends = { name = "fastapi-boilerplate", version = "0.21.0" }\n\n[presets]')
     repo = _with_project(tmp_path, PROJECT.replace('"mini-app"', '"-app"'), catalog)
     file = repo / "fastro.toml"
 

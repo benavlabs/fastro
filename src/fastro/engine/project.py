@@ -18,7 +18,9 @@ from fastro.engine.spec import RepoPath, SpecError
 
 TOP_LEVEL = ("blueprint", "source", "features", "project", "options", "app", "plugins", "checks")
 REQUIRED = {
-    "blueprint": 'Add blueprint = { name = "fastro", version = "0.21.0" }, naming the catalog this project was made from.',
+    "blueprint": (
+        'Add blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }, naming the catalog this project was made from.'
+    ),
     "features": "Add features = [] for core only, or list the features this project uses.",
     "project": 'Add a [project] table with name, such as name = "my-api".',
 }

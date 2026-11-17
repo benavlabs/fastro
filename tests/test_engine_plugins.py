@@ -17,7 +17,7 @@ license = "MIT"
 homepage = "https://example.com/stripe"
 group = "Billing"
 
-[plugin.targets.fastro]
+[plugin.targets.fastapi-boilerplate]
 blueprint = ">=0.21,<0.23"
 api = 1
 
@@ -43,7 +43,7 @@ templates = "templates/webhook/"
 def _text(plugin: str = "", feature: str = "", tables: str = "") -> str:
     return (
         f'[plugin]\nname = "stripe"\nversion = "1.2.0"\nsummary = "Stripe billing"\n{plugin}'
-        '[plugin.targets.fastro]\nblueprint = ">=0.21"\napi = 1\n'
+        '[plugin.targets.fastapi-boilerplate]\nblueprint = ">=0.21"\napi = 1\n'
         f'[feature]\nsummary = "Payments"\n{feature}{tables}'
     )
 
@@ -64,7 +64,7 @@ def test_every_key_is_read() -> None:
         license="MIT",
         homepage="https://example.com/stripe",
         group="Billing",
-        targets={"fastro": Target(SpecifierSet(">=0.21,<0.23"), 1), "fastroai": Target(SpecifierSet(">=0.3"), 2)},
+        targets={"fastapi-boilerplate": Target(SpecifierSet(">=0.21,<0.23"), 1), "fastroai": Target(SpecifierSet(">=0.3"), 2)},
     )
     assert (manifest.feature.name, manifest.feature.summary, manifest.feature.requires) == (
         "stripe",
@@ -102,8 +102,10 @@ def test_a_manifest_with_only_the_required_keys_gets_the_defaults() -> None:
             "1: feature: should be a table, not a string.",
         ),
         (
-            _text("targets = { fastro = 1 }\n").replace('[plugin.targets.fastro]\nblueprint = ">=0.21"\napi = 1\n', ""),
-            "5: plugin.targets.fastro: should be a table, not an integer.",
+            _text("targets = { fastapi-boilerplate = 1 }\n").replace(
+                '[plugin.targets.fastapi-boilerplate]\nblueprint = ">=0.21"\napi = 1\n', ""
+            ),
+            "5: plugin.targets.fastapi-boilerplate: should be a table, not an integer.",
         ),
         (_text().replace('"stripe"', '"core"'), "2: plugin.name: 'core' is reserved for the files no feature owns."),
         (
@@ -123,27 +125,28 @@ def test_a_manifest_with_only_the_required_keys_gets_the_defaults() -> None:
             "  The keys of [plugin] are group, homepage, license, name, summary, targets, version.",
         ),
         (
-            _text().replace('[plugin.targets.fastro]\nblueprint = ">=0.21"\napi = 1\n', ""),
-            "1: plugin.targets: is required.\n  Add a [plugin.targets.fastro] table with blueprint and api.",
+            _text().replace('[plugin.targets.fastapi-boilerplate]\nblueprint = ">=0.21"\napi = 1\n', ""),
+            "1: plugin.targets: is required.\n  Add a [plugin.targets.fastapi-boilerplate] table with blueprint and api.",
         ),
         (
-            _text("targets = {}\n").replace('[plugin.targets.fastro]\nblueprint = ">=0.21"\napi = 1\n', ""),
+            _text("targets = {}\n").replace('[plugin.targets.fastapi-boilerplate]\nblueprint = ">=0.21"\napi = 1\n', ""),
             "5: plugin.targets: should list at least one target.\n"
-            "  Add a [plugin.targets.fastro] table with blueprint and api.",
+            "  Add a [plugin.targets.fastapi-boilerplate] table with blueprint and api.",
         ),
         (
-            _text().replace("[plugin.targets.fastro]", "[plugin.targets.Fastro]"),
-            "5: plugin.targets.Fastro: 'Fastro' isn't a valid blueprint name: use lowercase letters, digits and hyphens, "
-            "starting with a letter.",
+            _text().replace("[plugin.targets.fastapi-boilerplate]", "[plugin.targets.FastAPI-boilerplate]"),
+            "5: plugin.targets.FastAPI-boilerplate: 'FastAPI-boilerplate' isn't a valid blueprint name: use lowercase "
+            "letters, digits and hyphens, starting with a letter.",
         ),
         (
             _text().replace('blueprint = ">=0.21"', 'blueprint = "0.21"'),
-            "6: plugin.targets.fastro.blueprint: '0.21' isn't a PEP 440 version specifier, such as '>=0.20,<0.22'.",
+            "6: plugin.targets.fastapi-boilerplate.blueprint: '0.21' isn't a PEP 440 version specifier, "
+            "such as '>=0.20,<0.22'.",
         ),
-        (_text().replace("api = 1", "api = 0"), "7: plugin.targets.fastro.api: should be 1 or more, not 0."),
+        (_text().replace("api = 1", "api = 0"), "7: plugin.targets.fastapi-boilerplate.api: should be 1 or more, not 0."),
         (
             _text().replace("api = 1\n", ""),
-            "5: plugin.targets.fastro.api: is required.\n  Add api to [plugin.targets.fastro].",
+            "5: plugin.targets.fastapi-boilerplate.api: is required.\n  Add api to [plugin.targets.fastapi-boilerplate].",
         ),
         (
             _text(feature='[feature.commands."stripe sync"]\nmodule = "m"\n'),

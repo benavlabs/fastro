@@ -11,7 +11,7 @@ from fastro.engine.project import App, Pin, Plugin, Project, load
 from fastro.engine.spec import RepoPath
 
 FULL = """\
-blueprint = { name = "fastro", version = "0.21.0" }
+blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }
 source = true
 features = ["accounts", "taskiq"]
 
@@ -38,7 +38,7 @@ strict = true
 BOILERPLATE = """\
 source = true
 features = ["accounts", "rbac", "ratelimit", "tiers", "tier_limits", "api_keys", "admin", "cache", "taskiq"]
-blueprint = { name = "fastro", version = "0.20.0" }
+blueprint = { name = "fastapi-boilerplate", version = "0.20.0" }
 
 [project]
 name = "fastapi-boilerplate"
@@ -50,7 +50,8 @@ name = "fastapi-boilerplate"
 
 
 def _text(top: str = "", tables: str = "") -> str:
-    return f'blueprint = {{ name = "fastro", version = "0.21.0" }}\nfeatures = []\n{top}[project]\nname = "api"\n{tables}'
+    pin = 'blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }\n'
+    return f'{pin}features = []\n{top}[project]\nname = "api"\n{tables}'
 
 
 def _problems(text: str) -> list[str]:
@@ -63,7 +64,7 @@ def test_every_key_is_read() -> None:
     project = load("fastro.toml", FULL)
 
     assert project == Project(
-        blueprint=Pin("fastro", Version("0.21.0")),
+        blueprint=Pin("fastapi-boilerplate", Version("0.21.0")),
         name="FastAPI_Boilerplate",
         features=("accounts", "taskiq"),
         source=True,
@@ -105,7 +106,11 @@ def test_a_project_with_only_the_required_keys_gets_the_defaults() -> None:
 def test_the_boilerplates_own_fastro_toml_loads() -> None:
     project = load("fastro.toml", BOILERPLATE)
 
-    assert (project.blueprint, project.source, project.slug) == (Pin("fastro", Version("0.20.0")), True, "fastapi-boilerplate")
+    assert (project.blueprint, project.source, project.slug) == (
+        Pin("fastapi-boilerplate", Version("0.20.0")),
+        True,
+        "fastapi-boilerplate",
+    )
     assert project.options == {("cache", "backend"): "redis", ("taskiq", "broker"): "redis"}
 
 
@@ -114,19 +119,19 @@ def test_the_boilerplates_own_fastro_toml_loads() -> None:
     [
         (
             'features = []\n[project]\nname = "api"\n',
-            '1: blueprint: is required.\n  Add blueprint = { name = "fastro", version = "0.21.0" }, '
+            '1: blueprint: is required.\n  Add blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }, '
             "naming the catalog this project was made from.",
         ),
         (
-            'blueprint = { name = "fastro", version = "0.21.0" }\n[project]\nname = "api"\n',
+            'blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }\n[project]\nname = "api"\n',
             "1: features: is required.\n  Add features = [] for core only, or list the features this project uses.",
         ),
         (
-            'blueprint = { name = "fastro", version = "0.21.0" }\nfeatures = []\n',
+            'blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }\nfeatures = []\n',
             '1: project: is required.\n  Add a [project] table with name, such as name = "my-api".',
         ),
         (
-            'blueprint = { name = "fastro", version = "0.21.0" }\nfeatures = []\n[project]\n',
+            'blueprint = { name = "fastapi-boilerplate", version = "0.21.0" }\nfeatures = []\n[project]\n',
             "3: project.name: is required.\n  Add name to [project].",
         ),
         (
@@ -151,8 +156,8 @@ def test_the_boilerplates_own_fastro_toml_loads() -> None:
             "1: blueprint.version: '>=0.21' isn't a PEP 440 version, such as '0.21.0'.",
         ),
         (
-            _text().replace('name = "fastro"', 'name = "Fastro"'),
-            "1: blueprint.name: 'Fastro' isn't a valid blueprint name: use lowercase letters, digits and hyphens, "
+            _text().replace('name = "fastapi-boilerplate"', 'name = "FastAPI-boilerplate"'),
+            "1: blueprint.name: 'FastAPI-boilerplate' isn't a valid blueprint name: use lowercase letters, digits and hyphens, "
             "starting with a letter.",
         ),
         (
@@ -160,7 +165,7 @@ def test_the_boilerplates_own_fastro_toml_loads() -> None:
             "1: blueprint.version: is required.\n  Add version to [blueprint].",
         ),
         (
-            _text().replace('{ name = "fastro", version = "0.21.0" }', '"fastro"'),
+            _text().replace('{ name = "fastapi-boilerplate", version = "0.21.0" }', '"fastapi-boilerplate"'),
             "1: blueprint: should be a table, not a string.",
         ),
         (
@@ -284,7 +289,7 @@ def _catalog(text: str = CATALOG) -> Blueprint:
 
 
 def _for_mini(top: str = "", tables: str = "") -> str:
-    return _text(top, tables).replace('name = "fastro", version = "0.21.0"', 'name = "mini", version = "0.1.0"')
+    return _text(top, tables).replace('name = "fastapi-boilerplate", version = "0.21.0"', 'name = "mini", version = "0.1.0"')
 
 
 def _refused(text: str, catalog: Blueprint | None = None) -> CatalogError:
@@ -311,8 +316,8 @@ def test_a_project_whose_names_its_catalog_declares_loads() -> None:
     ("text", "problem"),
     [
         (
-            _for_mini().replace('name = "mini"', 'name = "fastro"'),
-            "1: blueprint.name: is 'fastro', and the catalog is 'mini'.\n"
+            _for_mini().replace('name = "mini"', 'name = "fastapi-boilerplate"'),
+            "1: blueprint.name: is 'fastapi-boilerplate', and the catalog is 'mini'.\n"
             "  Set blueprint.name in fastro.toml to 'mini', the catalog's name.",
         ),
         (
@@ -404,7 +409,9 @@ def test_names_are_checked_only_once_every_key_reads_cleanly() -> None:
 
 
 def test_against_a_catalog_that_extends_another_only_the_pin_is_checked() -> None:
-    extending = _catalog(CATALOG.replace("schema = 1\n", 'schema = 1\nextends = { name = "fastro", version = "0.21.0" }\n'))
+    extending = _catalog(
+        CATALOG.replace("schema = 1\n", 'schema = 1\nextends = { name = "fastapi-boilerplate", version = "0.21.0" }\n')
+    )
     text = _for_mini().replace("features = []", 'features = ["jwt"]')
 
     assert load("fastro.toml", text, extending).features == ("jwt",)

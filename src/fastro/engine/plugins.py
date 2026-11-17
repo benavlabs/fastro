@@ -22,7 +22,7 @@ from fastro.engine.spec import RepoPath, SpecError
 TOP_LEVEL = ("plugin", "feature", "commands", "generators")
 PLUGIN_KEYS = ("name", "version", "summary", "license", "homepage", "group", "targets")
 MANIFEST_FEATURE_KEYS = (FEATURE_KEYS - {"commands"}) | {"env"}
-TARGETS_FIX = "Add a [plugin.targets.fastro] table with blueprint and api."
+TARGETS_FIX = "Add a [plugin.targets.fastapi-boilerplate] table with blueprint and api."
 
 
 @dataclass(frozen=True)
