@@ -1,6 +1,7 @@
 """``fastro sync`` in a ``source = true`` repo: the wiring only, written, deleted or diffed (spec 3, 8; rev 1.30)."""
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,46 @@ def test_a_byte_order_mark_is_read_past(repo: Path) -> None:
         (repo / name).write_bytes(b"\xef\xbb\xbf" + (repo / name).read_bytes())
 
     assert _sync("--check") == (0, "", "")
+
+
+Replace = Callable[[Path, str, str], str]
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", ["outside", "fifo", "dangling", "directory"])
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_fastro_may_not_read_exits_2_saying_why(repo: Path, replace: Replace, name: str, make: str) -> None:
+    reason = replace(repo, name, make)
+
+    code, out, err = _sync("--check")
+
+    assert (code, out) == (2, "")
+    assert f"error: {repo / name} {reason}. fastro reads {name} only as a regular file inside the repo." in err
+
+
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo: Path, replace: Replace, name: str) -> None:
+    replace(repo, name, "back")
+
+    assert _sync("--check") == (0, "", "")
+
+
+@pytest.mark.usefixtures("hang_guard")
+def test_check_never_prints_a_wiring_file_whose_symlink_leads_outside_the_repo(repo: Path, replace: Replace) -> None:
+    replace(repo, APP, "outside")
+    (repo.parent / "outside" / APP).write_text("SECRET = 'outside the repo'\n")
+
+    code, out, _ = _sync("--check")
+
+    assert code == 1
+    assert out.startswith(f"--- a/{APP}\n+++ b/{APP}\n")
+    assert "outside the repo" not in out
+
+
+def test_check_diffs_a_wiring_symlink_that_leads_to_nothing_from_dev_null(repo: Path, replace: Replace) -> None:
+    replace(repo, APP, "dangling")
+
+    code, out, _ = _sync("--check")
+
+    assert code == 1
+    assert out.startswith(f"--- /dev/null\n+++ b/{APP}\n@@ ")

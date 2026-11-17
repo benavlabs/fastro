@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 
@@ -717,3 +718,122 @@ def test_a_verify_app_with_no_file_is_bp005_at_its_key(repo: Path) -> None:
         "verify.app: 'src.main' has no file: neither backend/src/main.py nor backend/src/main/__init__.py is tracked."
     )
     assert finding["fix"] == "Point app at a module the repo has, or add its file to git."
+
+
+Replace = Callable[[Path, str, str], str]
+READ_FIX = "Make it a regular file in the repo, or point at one that is."
+NOT_READ = ["outside", "fifo", "dangling", "directory"]
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", NOT_READ)
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_fastro_may_not_read_exits_2_saying_why(repo: Path, replace: Replace, name: str, make: str) -> None:
+    reason = replace(repo, name, make)
+
+    code, out, err = _lint("--json")
+
+    assert (code, out) == (2, "")
+    assert f"error: {repo / name} {reason}. fastro reads {name} only as a regular file inside the repo." in err
+
+
+def test_a_blueprint_toml_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo: Path, replace: Replace) -> None:
+    _edit(repo / "blueprint.toml", "schema = 1", 'schema = "one"')
+    replace(repo, "blueprint.toml", "back")
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["code"]) == ("blueprint.toml", "BP001")
+
+
+def test_a_fastro_toml_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo: Path, replace: Replace) -> None:
+    _edit(repo / "fastro.toml", "source = true", "source = false")
+    replace(repo, "fastro.toml", "back")
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["code"]) == ("fastro.toml", "BP001")
+    assert str(finding["message"]).startswith("source: ")
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", NOT_READ)
+def test_a_ref_s_module_fastro_may_not_read_is_fr014_saying_why_and_isnt_read(repo: Path, replace: Replace, make: str) -> None:
+    _probe(repo, "target = 1\n")
+    reason = replace(repo, PROBE, make)
+
+    (finding,) = _findings()
+
+    assert (finding["code"], finding["line"]) == ("FR014", 48)
+    assert finding["message"] == (
+        f"core.contributes.health_checks[1]: 'src.probe:target' can't be checked: {PROBE} {reason}, and lint reads "
+        "only regular files inside the repo."
+    )
+    assert finding["fix"] == READ_FIX
+
+
+def test_a_ref_s_module_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo: Path, replace: Replace) -> None:
+    _probe(repo, "target = 1\n")
+    replace(repo, PROBE, "back")
+
+    assert _findings() == []
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", NOT_READ)
+@pytest.mark.parametrize("unread", [PROBE, "backend/src/probe/__init__.py"])
+def test_when_one_of_a_module_s_files_cant_be_read_fr014_reads_the_other(
+    repo: Path, replace: Replace, unread: str, make: str
+) -> None:
+    _probe(repo, "target = 1\n")
+    _track(repo, "backend/src/probe/__init__.py")
+    (repo / "backend/src/probe/__init__.py").write_text("target = 1\n")
+    replace(repo, unread, make)
+
+    assert _findings() == []
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", NOT_READ)
+def test_an_env_example_fastro_may_not_read_makes_every_option_env_var_fr016_saying_why(
+    repo: Path, replace: Replace, make: str
+) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n")
+    reason = replace(repo, ENV_EXAMPLE, make)
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR016"
+    assert finding["message"] == (
+        "features.cache.options.backend.env.CACHE_BACKEND: has no '# @fastro option=cache.backend' marker, since "
+        f"{ENV_EXAMPLE} {reason}, and lint reads only regular files inside the repo."
+    )
+    assert finding["fix"] == f"Make {ENV_EXAMPLE} a regular file in the repo."
+
+
+def test_an_env_example_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo: Path, replace: Replace) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n")
+    replace(repo, ENV_EXAMPLE, "back")
+
+    assert _findings() == []
+
+
+def test_when_neither_of_a_module_s_files_can_be_read_fr014_names_the_py_file(repo: Path, replace: Replace) -> None:
+    _probe(repo, "target = 1\n")
+    _track(repo, "backend/src/probe/__init__.py")
+    replace(repo, PROBE, "outside")
+    replace(repo, "backend/src/probe/__init__.py", "directory")
+
+    (finding,) = _findings()
+
+    assert f"can't be checked: {PROBE} leads outside the repo," in str(finding["message"])
+
+
+def test_a_refused_fastro_toml_is_reported_before_anything_else_is_read(repo: Path, replace: Replace) -> None:
+    shutil.rmtree(repo / ".git")
+    reason = replace(repo, "fastro.toml", "dangling")
+
+    code, _, err = _lint()
+
+    assert code == 2
+    assert f"error: {repo / 'fastro.toml'} {reason}." in err

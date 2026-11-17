@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from packaging.version import Version
 
-from fastro.apply import ApplyError, Change, RepositoryError, apply, changes, tracked_files
+from fastro.apply import ApplyError, Change, RepositoryError, apply, changes, tracked_files, unreadable
 from fastro.engine import blueprint, lock
 from fastro.engine.plan import plan
 from fastro.engine.render import render
@@ -216,3 +216,98 @@ def test_a_write_gives_the_same_bytes_under_a_non_utf_8_locale(tmp_path: Path) -
 
     assert run.returncode == 0, run.stderr
     assert (tmp_path / "target" / "menu.ts").read_bytes() == TEXT.encode("utf-8")
+
+
+@pytest.fixture
+def inside(tmp_path: Path) -> Path:
+    """A repo with one regular file, ``real.py``, beside a directory outside it holding ``secret.py``."""
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.py").write_text("x = 1\n")
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "real.py").write_text("x = 1\n")
+    return repo
+
+
+def test_a_regular_file_inside_the_repo_is_readable(inside: Path) -> None:
+    assert unreadable(inside, "real.py") is None
+
+
+def test_a_symlink_to_a_regular_file_inside_the_repo_is_readable(inside: Path) -> None:
+    (inside / "pkg" / "link.py").symlink_to("../real.py")
+
+    assert unreadable(inside, "pkg/link.py") is None
+
+
+def test_a_symlink_that_leaves_the_repo_and_comes_back_is_readable(inside: Path) -> None:
+    (inside.parent / "outside" / "hop.py").symlink_to(inside / "real.py")
+    (inside / "back.py").symlink_to(inside.parent / "outside" / "hop.py")
+
+    assert unreadable(inside, "back.py") is None
+
+
+def test_a_symlink_that_leads_outside_the_repo_isnt_readable(inside: Path) -> None:
+    (inside / "out.py").symlink_to(inside.parent / "outside" / "secret.py")
+
+    assert unreadable(inside, "out.py") == "leads outside the repo"
+
+
+def test_a_directory_whose_symlink_leads_outside_the_repo_isnt_readable(inside: Path) -> None:
+    (inside / "away").symlink_to(inside.parent / "outside")
+
+    assert unreadable(inside, "away/secret.py") == "leads outside the repo"
+
+
+@pytest.mark.parametrize("make", ["fifo", "directory"])
+def test_what_isnt_a_regular_file_isnt_readable(inside: Path, make: str) -> None:
+    target = inside / "thing"
+    if make == "fifo":
+        os.mkfifo(target)
+    else:
+        target.mkdir()
+
+    assert unreadable(inside, "thing") == "isn't a regular file"
+
+
+def test_a_symlink_to_a_device_leads_outside_the_repo(inside: Path) -> None:
+    (inside / "zero").symlink_to("/dev/zero")
+
+    assert unreadable(inside, "zero") == "leads outside the repo"
+
+
+def test_a_symlink_to_nothing_isnt_readable(inside: Path) -> None:
+    (inside / "gone.py").symlink_to("missing.py")
+
+    assert unreadable(inside, "gone.py") == "leads to nothing"
+
+
+def test_a_symlink_loop_isnt_readable(inside: Path) -> None:
+    (inside / "a.py").symlink_to("b.py")
+    (inside / "b.py").symlink_to("a.py")
+
+    assert unreadable(inside, "a.py") == "has symlinks that can't be followed"
+
+
+def test_a_repo_reached_through_a_symlink_is_compared_resolved(inside: Path) -> None:
+    alias = inside.parent / "alias"
+    alias.symlink_to(inside)
+
+    assert unreadable(alias, "real.py") is None
+
+
+def test_a_symlink_through_a_file_leads_to_nothing(inside: Path) -> None:
+    (inside / "through.py").symlink_to("real.py/x")
+
+    assert unreadable(inside, "through.py") == "leads to nothing"
+
+
+def test_a_file_fastro_cant_resolve_says_so_without_blaming_a_symlink(inside: Path) -> None:
+    locked = inside / "locked"
+    locked.mkdir()
+    (locked / "f.py").write_text("")
+    (inside / "in.py").symlink_to("locked/f.py")
+    locked.chmod(0)
+    try:
+        assert unreadable(inside, "in.py") == "can't be resolved: Permission denied"
+    finally:
+        locked.chmod(0o755)

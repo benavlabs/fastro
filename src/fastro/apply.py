@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -45,6 +46,32 @@ def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
     names = [name for name in listed.stdout.split("\0") if name and os.path.lexists(repo / name)]
     return tuple(RepoPath(name) for name in names)
+
+
+def unreadable(root: Path, path: str) -> str | None:
+    """Why fastro may not read ``path`` in ``root``, or ``None`` when it resolves to a regular file inside ``root``
+    (spec 1.10). Where its symlinks finally lead is what counts, wherever they pass on the way."""
+    base = root.resolve()
+    try:
+        target = (base / path).resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return "leads to nothing"
+    except RuntimeError:
+        return "has symlinks that can't be followed"
+    except OSError as error:
+        return "has symlinks that can't be followed" if error.errno == errno.ELOOP else f"can't be resolved: {error.strerror}"
+    if not target.is_relative_to(base):
+        return "leads outside the repo"
+    if not target.is_file():
+        return "isn't a regular file"
+    return None
+
+
+def unreadable_config(root: Path, name: str) -> str | None:
+    """The usage error for ``root / name`` when there's anything at that path, a symlink to nothing included, that
+    fastro may not read (spec 1.10); ``None`` when there's nothing there or it may be read."""
+    reason = unreadable(root, name) if os.path.lexists(root / name) else None
+    return f"{root / name} {reason}. fastro reads {name} only as a regular file inside the repo." if reason else None
 
 
 def changes(plan: Plan, rendered: Mapping[str, str]) -> list[Change]:

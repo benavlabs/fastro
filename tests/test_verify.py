@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -571,3 +572,25 @@ def test_a_verify_check_whose_cwd_isnt_in_the_build_names_the_directory(repo: Pa
 
     assert (smoke.name, smoke.ok) == ("smoke", False)
     assert smoke.last_line == f"Its cwd, {project / 'nowhere'}, isn't a directory in this build."
+
+
+Replace = Callable[[Path, str, str], str]
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", ["outside", "fifo", "dangling", "directory", "back"])
+def test_a_blueprint_toml_fastro_may_not_read_exits_2_saying_why_unless_it_comes_back(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, replace: Replace, make: str
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    reason = replace(repo, "blueprint.toml", make)
+
+    code, _, err = _verify_cli("nosuchset")
+
+    assert code == 2
+    if make == "back":
+        assert "'nosuchset' isn't a verify set" in err
+    else:
+        message = f"error: {repo / 'blueprint.toml'} {reason}. fastro reads blueprint.toml only as a regular file inside"
+        assert message in err

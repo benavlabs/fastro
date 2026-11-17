@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastro.apply import RepositoryError, tracked_files
+from fastro.apply import RepositoryError, tracked_files, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
 from fastro.engine.blueprint import Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
@@ -24,6 +25,8 @@ CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
 APP_FIX = "Point app at a module the repo has, or add its file to git."
+READS_ONLY = "and lint reads only regular files inside the repo"
+READ_FIX = "Make it a regular file in the repo, or point at one that is."
 REF_FIX = "Define it there, or point the ref at the module that does."
 REF_MODULE_FIX = "Point the ref at a module the repo has, or add its file to git."
 PARSE_FIX = "Fix the module so it parses, then run fastro blueprint lint again."
@@ -99,15 +102,19 @@ def lint(root: Path) -> Report:
     The catalog's paths and command modules are checked against the repo's tracked files when it loads (BP002, BP005).
 
     Raises:
-        UsageError: ``root`` has no ``blueprint.toml``, or isn't a git repository.
+        UsageError: ``root`` has no ``blueprint.toml``, isn't a git repository, or has a ``blueprint.toml`` or
+            ``fastro.toml`` fastro may not read (spec 1.10).
         MissingToolError: ``git`` isn't on ``PATH``.
         Unreadable: either file can't be read.
         IncompatibleCatalog: the catalog is for another version of fastro.
         NotInstalled: fastro isn't installed.
     """
     file = root / "blueprint.toml"
-    if not file.is_file():
+    if not os.path.lexists(file):
         raise UsageError(f"{root} has no blueprint.toml. Run fastro blueprint lint in a blueprint repo.")
+    for name in ("blueprint.toml", "fastro.toml"):
+        if (refused := unreadable_config(root, name)) is not None:
+            raise UsageError(refused)
     found: list[Problem] = []
     catalog = loaded = None
     tool = installed_version()
@@ -128,7 +135,7 @@ def lint(root: Path) -> Report:
         found.extend(_open_verify_sets(catalog))
         found.extend(_unmarked_env(root, catalog, tracked))
     toml = root / "fastro.toml"
-    if toml.is_file():
+    if os.path.lexists(toml):
         try:
             text = _read(toml, root)
             loaded = project.load("fastro.toml", text)
@@ -253,7 +260,13 @@ def _unresolved_refs(root: Path, catalog: Blueprint, tracked: set[str]) -> list[
         if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
             continue
         module, package = f"{python_root}/{'/'.join(parts)}.py", f"{python_root}/{'/'.join(parts)}/__init__.py"
-        file = module if module in tracked else package if package in tracked else None
+        reasons = {path: unreadable(root, path) for path in (module, package) if path in tracked}
+        file = next((path for path, reason in reasons.items() if reason is None), None)
+        if file is None and reasons:
+            first, reason = next(iter(reasons.items()))
+            message = f"{str(ref)!r} can't be checked: {first} {reason}, {READS_ONLY}."
+            found.append(catalog.document.problem(at, message, READ_FIX, "FR014"))
+            continue
         if file is None:
             message = f"{str(ref)!r} names a module the repo doesn't have: neither {module} nor {package} is tracked."
             found.append(catalog.document.problem(at, message, REF_MODULE_FIX, "FR014"))
@@ -330,7 +343,8 @@ def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Pro
     """FR016: each option ``env`` VAR without exactly one ``# @fastro option=`` marker directly above its line in
     ``{python_root}/.env.example`` (6.1, 2.13)."""
     example = f"{catalog.info.python_root.text.rstrip('/')}/.env.example"
-    markers = _markers(root / example) if example in tracked else None
+    reason = "isn't a tracked file" if example not in tracked else unreadable(root, example)
+    markers = _markers(root / example) if reason is None else None
     found = []
     for feature in catalog.features:
         for option in feature.options.values():
@@ -340,8 +354,11 @@ def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Pro
                 at = (*option.at, "env", var)
                 lines = markers.get((key, var), []) if markers is not None else []
                 fix = f"Put {marker} on its own line, directly above {var}= in {example}."
-                if markers is None:
-                    message = f"has no {marker} marker, since {example} isn't a tracked file."
+                if markers is None and example not in tracked:
+                    message = f"has no {marker} marker, since {example} {reason}."
+                elif markers is None:
+                    message = f"has no {marker} marker, since {example} {reason}, {READS_ONLY}."
+                    fix = f"Make {example} a regular file in the repo."
                 elif not lines:
                     message = f"has no {marker} marker in {example}."
                 elif len(lines) > 1:
