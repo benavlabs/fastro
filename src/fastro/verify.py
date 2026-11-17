@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import ApplyError, apply, changes, tracked_files
+from fastro.apply import ApplyError, Change, apply, changes, tracked_files
 from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
@@ -26,6 +26,7 @@ from fastro.runner import available, declared_command, run_captured
 from fastro.tools import require
 
 EVERYTHING = "everything"
+LOCK = "uv.lock"
 REPORTED_LINES = 40
 BASELINE = ("db", "baseline")
 OUTSIDE_THE_BUILD = ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME")
@@ -79,23 +80,43 @@ def verify_sets(catalog: Blueprint) -> dict[str, tuple[str, ...]]:
     return sets
 
 
+def starting_lock(catalog: Blueprint, tracked: Sequence[RepoPath]) -> RepoPath | None:
+    """The lock a build starts from (spec 2.13): ``{python_root}/uv.lock`` when it's tracked, otherwise a tracked
+    ``uv.lock`` at the repo root, otherwise none."""
+    names = {path.text for path in tracked}
+    for candidate in (_python_root_lock(catalog), LOCK):
+        if candidate in names:
+            return RepoPath(candidate)
+    return None
+
+
 def build(
     root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
 ) -> Path:
     """The project ``features`` give, built into ``into`` from the tracked files of the blueprint repo at ``root``
-    (``tracked``, or git's list when it's ``None``): what the plan copies, and the wiring it renders.
+    (``tracked``, or git's list when it's ``None``): what the plan copies, the wiring it renders, and the lock it
+    starts from as ``{python_root}/uv.lock``.
 
     Raises:
         Unbuildable: the wiring can't be rendered.
         ApplyError: a file the build would copy is one apply refuses.
     """
-    made = plan(catalog, select(catalog, features), tracked_files(root) if tracked is None else tracked)
+    files = tracked_files(root) if tracked is None else tracked
+    made = plan(catalog, select(catalog, features), files)
     try:
         rendered = render(made)
     except (RenderError, SelectionError) as error:
         raise Unbuildable(str(error)) from None
-    apply(changes(made, rendered), root, into)
+    found = changes(made, rendered)
+    lock = starting_lock(catalog, files)
+    if lock is not None:
+        found.append(Change("copy", _python_root_lock(catalog), source=lock.text))
+    apply(found, root, into)
     return into
+
+
+def _python_root_lock(catalog: Blueprint) -> str:
+    return f"{catalog.info.python_root.text.rstrip('/')}/{LOCK}"
 
 
 def unknown(catalog: Blueprint, names: Sequence[str]) -> None:
@@ -138,6 +159,7 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
     unknown(catalog, names)
     sets = verify_sets(catalog)
     tracked = tracked_files(root)
+    lock = starting_lock(catalog, tracked)
     scratch = Path(tempfile.mkdtemp(prefix="fastro-verify-"))
     failures = 0
     try:
@@ -150,6 +172,7 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
                 raise ApplyError(f"verify set {name!r} can't be built: {error}") from None
             selection = select(catalog, sets[name])
             print(f"\n=== {name}: {', '.join(sorted(selection.features)) or 'core only'}")
+            print(f"  lock: {lock.text if lock else 'none'}")
             for result in checks(project, selection):
                 print(report(result))
                 failures += not result.ok

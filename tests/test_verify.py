@@ -145,8 +145,10 @@ def test_verify_builds_and_checks_each_set_asked_for_in_its_order(repo: Path, ca
     assert seen == [("full", ("accounts", "billing", "cache", "tasks", "admin")), ("queues", ("cache", "tasks"))]
     assert capsys.readouterr().out == (
         "\n=== full: accounts, admin, billing, cache, tasks\n"
+        "  lock: none\n"
         "  PASS  app imports  fine\n"
         "\n=== queues: cache, tasks\n"
+        "  lock: none\n"
         "  PASS  app imports  fine\n"
     )
 
@@ -168,7 +170,7 @@ def test_a_set_with_no_features_is_core_only(repo: Path, capsys: pytest.CaptureF
 
     verify(repo, catalog, ["bare"], run, keep=False)  # type: ignore[arg-type]
 
-    assert capsys.readouterr().out.startswith("\n=== bare: core only\n")
+    assert capsys.readouterr().out.startswith("\n=== bare: core only\n  lock: none\n")
 
 
 def test_a_passing_run_removes_its_scratch_copies(repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -435,7 +437,9 @@ def test_the_command_verifies_the_sets_asked_for_and_exits_0(repo: Path, uv: Pat
     code, out, _ = _verify_cli("minimal")
 
     assert code == 0
-    assert out.startswith("\n=== minimal: accounts\n  PASS  install      fine\n  PASS  every module imports fine\n")
+    assert out.startswith(
+        "\n=== minimal: accounts\n  lock: none\n  PASS  install      fine\n  PASS  every module imports fine\n"
+    )
 
 
 def test_the_command_exits_1_when_a_check_fails(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -26,12 +26,13 @@ class ApplyError(Exception):
 
 @dataclass(frozen=True)
 class Change:
-    """One change to a directory: ``copy`` a source file, ``write`` ``text`` as UTF-8 with its newlines as given, or
-    ``delete`` a file."""
+    """One change to a directory: ``copy`` a source file (the one at ``source``, or at ``path`` when ``source`` is
+    empty), ``write`` ``text`` as UTF-8 with its newlines as given, or ``delete`` a file."""
 
     kind: str
     path: str
     text: str = ""
+    source: str = ""
 
 
 def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
@@ -149,7 +150,7 @@ def check(
             raise ApplyError(f"{change.path!r} isn't a file this step may change, so nothing was changed.")
         destination = _inside(target, change.path, "the target")
         _regular_or_absent(target, destination, change.path)
-        origin = _inside(source, change.path, "the source") if change.kind == "copy" else None
+        origin = _inside(source, change.source or change.path, "the source") if change.kind == "copy" else None
         checked.append((change, destination, origin))
     return checked
 
