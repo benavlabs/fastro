@@ -27,18 +27,25 @@ from .tools import MissingToolError
 
 HELP = "Start and maintain FastAPI projects."
 GROUPS: dict[str, tuple[typer.Typer, str]] = {
-    "make": (_make_cmd.app, "Generate files the project owns, such as the deploy compose files."),
     "env": (_env_cmd.app, "Inspect and prepare the runtime environment."),
     "blueprint": (_blueprint_cmd.app, "Check and verify a blueprint repo."),
 }
-COMMANDS: dict[str, Callable[..., None]] = {"sync": _sync_cmd.sync}
+COMMANDS: dict[str, Callable[..., None]] = {"make": _make_cmd.make, "sync": _sync_cmd.sync}
+VERBATIM = {"make"}
 ORDER = ("make", "env", "sync", "blueprint")
 BUILT_IN_ANYWAY = {("env", "secret"), ("env", "validate")}
 REPORTS_THE_CATALOG = {"sync", "blueprint", "make"}
-TAKES_EVERY_WORD = {"make"}
 NO_COMMANDS = "this repo's declared commands aren't available, so there's no validator to run."
 NOT_DECLARED = "this selection has no env validate command, so there's no validator to run."
 UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
+
+
+class _Verbatim(TyperCommand):
+    """A command that hands its callback every argument after its words, ``--`` and ``--help`` included."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        ctx.args = list(args)
+        return []
 
 
 def _root() -> None:
@@ -50,7 +57,7 @@ def _application(groups: Mapping[str, typer.Typer]) -> typer.Typer:
     built.callback()(_root)
     for name in ORDER:
         if name in COMMANDS:
-            built.command(name=name)(COMMANDS[name])
+            built.command(name=name, cls=_Verbatim if name in VERBATIM else None)(COMMANDS[name])
         else:
             built.add_typer(groups[name], name=name, help=GROUPS[name][1])
     return built
@@ -128,14 +135,6 @@ def _built(commands: Mapping[tuple[str, ...], tuple[str, Callable[[typer.Context
     return built
 
 
-class _Verbatim(TyperCommand):
-    """A command that hands its callback every argument after its words, ``--`` and ``--help`` included."""
-
-    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
-        ctx.args = list(args)
-        return []
-
-
 def _warn(message: str) -> None:
     typer.secho(f"warning: {message}", fg=typer.colors.YELLOW, err=True)
 
@@ -155,7 +154,7 @@ def _kept(commands: Mapping[tuple[str, ...], Command]) -> dict[tuple[str, ...], 
 
 
 def _shadows(words: tuple[str, ...]) -> bool:
-    if words[0] in COMMANDS or words[0] in TAKES_EVERY_WORD:
+    if words[0] in COMMANDS:
         return True
     if words[0] not in GROUPS:
         return False

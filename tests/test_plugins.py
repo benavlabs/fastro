@@ -37,10 +37,7 @@ def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Install:
 
 def test_a_bp_features_entry_point_is_never_loaded(installed: Install, tmp_path: Path) -> None:
     marker = installed("old_feature", "bp.features")
-    project = tmp_path / "acme"
-    (project / "backend").mkdir(parents=True)
-
-    result = runner.invoke(fastro.cli.app, ["make", "deploy", "local", "-o", str(project), "--dry-run"])
+    result = runner.invoke(fastro.cli.app, ["env", "secret"])
 
     assert result.exit_code == 0, result.output
     assert not marker.exists()
@@ -72,7 +69,8 @@ def test_a_plugin_cannot_take_a_built_in_name(
     fastro.cli._mount_command_plugins()
 
     assert f"plugin command '{name}' shadows a built-in or declared command; ignoring." in capsys.readouterr().err
-    assert [group.name for group in app.registered_groups].count(name) == 1
+    taken = [*(group.name for group in app.registered_groups), *(command.name for command in app.registered_commands)]
+    assert taken.count(name) == 1
 
 
 def test_a_plugin_can_take_a_name_fastro_no_longer_uses(installed: Install, app: typer.Typer) -> None:

@@ -64,7 +64,7 @@ def unreadable(root: Path, path: str) -> str | None:
     """Why fastro may not read ``path`` in ``root``, or ``None`` when it resolves to a regular file inside ``root``
     (spec 1.10). Where its symlinks finally lead is what counts, wherever they pass on the way."""
     try:
-        return _breaks_the_rule(root, path)
+        return breaks_the_rule(root, path)
     except OSError as error:
         return f"can't be resolved: {error.strerror}"
 
@@ -104,7 +104,7 @@ def present(path: Path) -> bool:
     return True
 
 
-def _breaks_the_rule(root: Path, path: str) -> str | None:
+def breaks_the_rule(root: Path, path: str) -> str | None:
     """How ``path`` in ``root`` breaks spec 1.10's rule, or ``None`` when it doesn't.
 
     Raises:
@@ -136,7 +136,7 @@ def unreadable_config(root: Path, name: str) -> str | None:
         OSError: the system won't let fastro look at the path or resolve it, which is a file it won't let fastro
             open (spec 1.10, 8).
     """
-    reason = _breaks_the_rule(root, name) if present(root / name) else None
+    reason = breaks_the_rule(root, name) if present(root / name) else None
     return f"{root / name} {reason}. fastro reads {name} only as a regular file inside the repo." if reason else None
 
 

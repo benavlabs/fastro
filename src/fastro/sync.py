@@ -25,8 +25,8 @@ class UsageError(Exception):
 class Unreadable(Exception):
     """A file ``sync`` needs can't be read (spec 8: exit 3)."""
 
-    def __init__(self, file: Path, error: OSError) -> None:
-        super().__init__(f"can't read {file}: {error.strerror}. Check its permissions, then run fastro sync again.")
+    def __init__(self, file: Path, error: OSError, command: str = "sync") -> None:
+        super().__init__(f"can't read {file}: {error.strerror}. Check its permissions, then run fastro {command} again.")
 
 
 @dataclass(frozen=True)
@@ -38,8 +38,8 @@ class Source:
     project: Project
 
 
-def load_source(root: Path) -> Source:
-    """The blueprint repo at ``root``.
+def load_source(root: Path, command: str = "sync") -> Source:
+    """The blueprint repo at ``root``, for ``fastro <command>``.
 
     Raises:
         UsageError: ``root`` has no ``fastro.toml``, it doesn't set ``source = true``, there's no
@@ -48,21 +48,22 @@ def load_source(root: Path) -> Source:
         CatalogError: either file has a problem, or isn't UTF-8.
     """
     toml = root / "fastro.toml"
-    if not _present(toml):
-        raise UsageError(f"{root} has no fastro.toml. Run fastro sync in a blueprint repo or a project.")
-    if (refused := _refused(root, "fastro.toml")) is not None:
+    if not _present(toml, command):
+        where = "a blueprint repo or a project" if command == "sync" else "a blueprint repo"
+        raise UsageError(f"{root} has no fastro.toml. Run fastro {command} in {where}.")
+    if (refused := _refused(root, "fastro.toml", command)) is not None:
         raise UsageError(refused)
-    text = _read(toml)
+    text = _read(toml, command)
     if not project.load("fastro.toml", text).source:
         raise UsageError(
-            "fastro.toml doesn't set source = true, so this is a project, and fastro sync in a project isn't here yet."
+            f"fastro.toml doesn't set source = true, so this is a project, and fastro {command} in a project isn't here yet."
         )
     file = root / "blueprint.toml"
-    if not _present(file):
+    if not _present(file, command):
         raise UsageError("fastro.toml sets source = true, but there's no blueprint.toml beside it.")
-    if (refused := _refused(root, "blueprint.toml")) is not None:
+    if (refused := _refused(root, "blueprint.toml", command)) is not None:
         raise UsageError(refused)
-    catalog = blueprint.load("blueprint.toml", _read(file), installed_version())
+    catalog = blueprint.load("blueprint.toml", _read(file, command), installed_version())
     return Source(root, catalog, project.load("fastro.toml", text, catalog))
 
 
@@ -82,7 +83,7 @@ def wiring_changes(source: Source) -> list[Change]:
         if path in rendered:
             if _current(source.root, path) != rendered[path]:
                 found.append(Change("write", path, rendered[path]))
-        elif _present(source.root / path):
+        elif _present(source.root / path, "sync"):
             found.append(Change("delete", path))
     return found
 
@@ -106,25 +107,25 @@ def diff(root: Path, change: Change) -> str:
     return "".join(difflib.unified_diff(old, new, before, after))
 
 
-def _present(file: Path) -> bool:
+def _present(file: Path, command: str) -> bool:
     try:
         return present(file)
     except OSError as error:
-        raise Unreadable(file, error) from None
+        raise Unreadable(file, error, command) from None
 
 
-def _refused(root: Path, name: str) -> str | None:
+def _refused(root: Path, name: str, command: str) -> str | None:
     try:
         return unreadable_config(root, name)
     except OSError as error:
-        raise Unreadable(root / name, error) from None
+        raise Unreadable(root / name, error, command) from None
 
 
-def _read(file: Path) -> str:
+def _read(file: Path, command: str) -> str:
     try:
         return catalog_check.read_text(file)
     except OSError as error:
-        raise Unreadable(file, error) from None
+        raise Unreadable(file, error, command) from None
 
 
 def _current(root: Path, path: str) -> str | None:

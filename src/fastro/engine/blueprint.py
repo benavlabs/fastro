@@ -311,6 +311,7 @@ class Generator:
     register: Register | None
     types: Mapping[str, Mapping[str, Any]]
     at: KeyPath
+    modes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -753,10 +754,11 @@ class Reader:
         )
 
     def generator(self, path: KeyPath, name: str, value: object) -> Generator | None:
-        table = self.table(path, value, ("templates", "params", "register", "types"), ("templates",))
+        table = self.table(path, value, ("templates", "modes", "params", "register", "types"), ("templates",))
         if table is None:
             return None
         templates = self.text(path, table, "templates", spec.repo_path)
+        modes = self.modes(path, name, table)
         params = [self.param(at, param, item) for at, param, item in self.named(path, table, "params", spec.option_name)]
         for key in ("register", "types"):
             if key in table and name != MODULE_GENERATOR:
@@ -773,7 +775,19 @@ class Reader:
             register,
             types if module else {},
             path,
+            modes,
         )
+
+    def modes(self, path: KeyPath, name: str, table: dict[str, Any]) -> tuple[str, ...]:
+        if "modes" not in table:
+            return ()
+        if name == MODULE_GENERATOR:
+            self.fail((*path, "modes"), "isn't for the module generator, whose arguments come with make module.")
+            return ()
+        if table["modes"] == []:
+            self.fail((*path, "modes"), "should list at least one mode, or be left out for a generator without modes.")
+        self.repeats((*path, "modes"), table["modes"])
+        return self.texts(path, table, "modes", spec.mode_name)
 
     def param(self, path: KeyPath, name: str, value: object) -> Param | None:
         keys = ("type", "default", "help", "choices", "private_only", "max_prefix")
@@ -1308,6 +1322,24 @@ def _data_format(text: str) -> str:
 def _param_type(text: str) -> str:
     if text not in PARAM_TYPES:
         raise SpecError(f"should be one of {', '.join(PARAM_TYPES)}, not {text!r}.")
+    return text
+
+
+def param_value(param: Param, text: str) -> str | int:
+    """``text``, given for ``param`` on the command line, read by the param's type and checked as its ``default`` is
+    (spec 2.9). A ``bool`` param takes no value.
+
+    Raises:
+        SpecError: the param's rules refuse it.
+    """
+    if param.type == "int":
+        if re.fullmatch(r"-?[0-9]+", text) is None:
+            raise SpecError(f"{text!r} isn't an integer: give an optional '-' and ASCII digits.")
+        return int(text)
+    if param.type == "choice":
+        return _in(param.choices)(text)
+    if param.type == "cidr":
+        return _network(text, param.private_only, param.max_prefix)
     return text
 
 

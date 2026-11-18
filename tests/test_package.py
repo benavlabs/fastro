@@ -60,7 +60,7 @@ def test_the_wheel_installs_the_fastro_command_and_the_bp_shim(wheel: zipfile.Zi
 
 
 def test_the_wheel_carries_every_file_in_the_package_and_nothing_else(wheel: zipfile.ZipFile) -> None:
-    """The deploy templates and ``py.typed`` aren't Python, and a build can leave them behind."""
+    """``py.typed`` isn't Python, and a build can leave it behind."""
     packaged = {name for name in wheel.namelist() if ".dist-info/" not in name}
     on_disk = {
         path.relative_to(PACKAGE.parent).as_posix()
@@ -70,7 +70,6 @@ def test_the_wheel_carries_every_file_in_the_package_and_nothing_else(wheel: zip
 
     assert packaged == on_disk
     assert "fastro/py.typed" in packaged
-    assert sum(name.endswith(".j2") for name in packaged) == 4
 
 
 def test_python_dash_m_fastro_runs_the_cli() -> None:

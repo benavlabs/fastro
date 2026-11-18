@@ -32,10 +32,9 @@ src/fastro/
 ├── plugins.py             entry-point loader for fastro.commands
 ├── engine/                the catalog engine: catalogs and selections in, files out
 ├── commands/              in-tree command sub-apps
-│   ├── make.py            fastro make deploy <mode>
+│   ├── make.py            fastro make <generator> [mode]
 │   └── env.py             the built-in fastro env secret / fastro env validate
-├── _legacy_deploy/        compose and nginx templates for local/prod/nginx
-└── lib/                   shared helpers (project discovery, prompts, render)
+└── make.py                renders a blueprint's [generators.*] (spec 2.9)
 ```
 
 ## Plugin extension point

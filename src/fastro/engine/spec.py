@@ -80,6 +80,11 @@ def generator_name(text: str) -> str:
     return blueprint_name(text, "generator")
 
 
+def mode_name(text: str) -> str:
+    """``text``, if it's a valid mode name, which becomes the argument after a generator's name (spec 2.9)."""
+    return blueprint_name(text, "mode")
+
+
 def starter_name(text: str) -> str:
     """``text``, if it's a valid starter name (spec 5a)."""
     return blueprint_name(text, "starter")

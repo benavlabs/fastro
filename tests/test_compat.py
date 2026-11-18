@@ -8,8 +8,6 @@ import pytest
 
 from fastro.compat import translate
 
-FIXTURES = Path(__file__).parent / "fixtures" / "deploy"
-
 
 def _bp(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     """Run the ``bp`` console script's entry point in a fresh interpreter."""
@@ -31,18 +29,6 @@ def _bp(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 )
 def test_the_old_spellings_become_the_new_ones(old: list[str], new: list[str]) -> None:
     assert translate(old) == new
-
-
-def test_bp_deploy_generate_writes_what_b2c2900_wrote(tmp_path: Path) -> None:
-    project = tmp_path / "acme"
-    (project / "backend").mkdir(parents=True)
-
-    result = _bp("deploy", "generate", "local", "-o", str(project), cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert (project / "docker-compose.yml").read_bytes() == (FIXTURES / "local" / "docker-compose.yml").read_bytes()
-    assert result.stderr.splitlines()[0] == f"bp is now fastro. Next time, run: fastro make deploy local -o {project}"
-    assert "bp is now fastro" not in result.stdout
 
 
 def test_bp_env_gen_secret_prints_only_the_key_on_stdout(tmp_path: Path) -> None:

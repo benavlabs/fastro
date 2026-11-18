@@ -1,0 +1,19 @@
+[generators.deploy]
+templates = "blueprint/templates/deploy"
+
+[generators.deploy.params.api_port]
+type = "int"
+default = 8000
+help = "Host port to publish the API on."
+
+[generators.deploy.params.workers]
+type = "int"
+default = 4
+help = "Number of API workers, for the prod and nginx modes."
+
+[generators.deploy.params.internal_subnet]
+type = "cidr"
+default = "172.31.240.0/24"
+max_prefix = { v4 = 8, v6 = 48 }
+help = "The compose network, and the only peers uvicorn takes forwarded headers from, in nginx mode."
+

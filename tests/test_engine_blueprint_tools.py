@@ -3,9 +3,9 @@
 import pytest
 from packaging.version import Version
 
-from fastro.engine.blueprint import Blueprint, Command, Generator, Param, PluginApi, Prefix, Register, load
+from fastro.engine.blueprint import Blueprint, Command, Generator, Param, PluginApi, Prefix, Register, load, param_value
 from fastro.engine.problems import CatalogError
-from fastro.engine.spec import RepoPath
+from fastro.engine.spec import RepoPath, SpecError
 
 MINIMAL = """\
 [blueprint]
@@ -18,6 +18,7 @@ requires_fastro = ">=0.1.0.dev0"
 TOOLS = """\
 [generators.deploy]
 templates = "blueprint/templates/deploy"
+modes = ["local", "prod", "nginx"]
 
 [generators.deploy.params.api_port]
 type = "int"
@@ -128,6 +129,7 @@ def test_generators_are_read_with_their_params() -> None:
     assert deploy == Generator(
         name="deploy",
         templates=RepoPath("blueprint/templates/deploy"),
+        modes=("local", "prod", "nginx"),
         params={
             "api_port": Param("api_port", "int", 8000, help="The port the API listens on.", at=(*params, "api_port")),
             "debug": Param("debug", "bool", False, at=(*params, "debug")),
@@ -152,6 +154,7 @@ def test_the_module_generator_also_has_register_and_types() -> None:
     module = _load(MINIMAL + TOOLS).generators["module"]
 
     assert module.templates == RepoPath("blueprint/templates/module/")
+    assert module.modes == ()
     assert module.register == Register(
         paths=("backend/src/modules/{name}/", "backend/tests/integration/{name}/"),
         contributes={"routers": ({"ref": "src.modules.{name}.routes:router as {name}_router", "prefix": "/{name_dashed}"},)},
@@ -329,9 +332,24 @@ PATTERN = "isn't a module, or a package followed by '.*', such as 'src.infrastru
             "path: it's absolute. Write it relative to the repo root, with '/'.",
         ),
         (
+            DEPLOY + "output = []\n",
+            "8: generators.deploy.output: isn't a key of [generators.deploy].\n"
+            "  The keys of [generators.deploy] are modes, params, register, templates, types.",
+        ),
+        (
             DEPLOY + "modes = []\n",
-            "8: generators.deploy.modes: isn't a key of [generators.deploy].\n"
-            "  The keys of [generators.deploy] are params, register, templates, types.",
+            "8: generators.deploy.modes: should list at least one mode, or be left out for a generator without modes.",
+        ),
+        (DEPLOY + 'modes = "local"\n', "8: generators.deploy.modes: should be a list of strings, not a string."),
+        (
+            DEPLOY + 'modes = ["local", "Prod"]\n',
+            "8: generators.deploy.modes[1]: 'Prod' isn't a valid mode name: use lowercase letters, digits and hyphens, "
+            "starting with a letter.",
+        ),
+        (DEPLOY + 'modes = ["local", "local"]\n', "8: generators.deploy.modes[1]: 'local' is listed twice."),
+        (
+            MODULE.replace("[generators.module.register]\n", 'modes = ["a"]\n'),
+            "8: generators.module.modes: isn't for the module generator, whose arguments come with make module.",
         ),
         (
             DEPLOY + "[generators.deploy.register]\npaths = []\n",
@@ -621,3 +639,41 @@ def test_a_key_that_breaks_its_rule_is_refused_at_its_line(body: str, problem: s
 
 def test_a_plugin_api_that_isnt_a_table_is_refused() -> None:
     assert _problems("plugin_api = 1\n" + MINIMAL) == ["blueprint.toml:1: plugin_api: should be a table, not an integer."]
+
+
+@pytest.mark.parametrize(
+    ("param", "text", "value"),
+    [
+        ("api_port", "9000", 9000),
+        ("api_port", "-3", -3),
+        ("domain", " any text ", " any text "),
+        ("proxy", "caddy", "caddy"),
+        ("internal_subnet", "10.1.0.0/16", "10.1.0.0/16"),
+    ],
+)
+def test_a_value_given_for_a_param_is_read_by_its_type(param: str, text: str, value: str | int) -> None:
+    generator = _load(MINIMAL + TOOLS).generators["deploy"]
+
+    assert param_value(generator.params[param], text) == value
+
+
+@pytest.mark.parametrize(
+    ("param", "text", "problem"),
+    [
+        ("api_port", "+3", "'+3' isn't an integer: give an optional '-' and ASCII digits."),
+        ("api_port", " 8", "' 8' isn't an integer: give an optional '-' and ASCII digits."),
+        ("api_port", "1_000", "'1_000' isn't an integer: give an optional '-' and ASCII digits."),
+        ("api_port", "٣", "'٣' isn't an integer: give an optional '-' and ASCII digits."),
+        ("api_port", "8\n", "'8\\n' isn't an integer: give an optional '-' and ASCII digits."),
+        ("proxy", "apache", "'apache' isn't one of the choices: 'nginx', 'caddy'."),
+        ("internal_subnet", "8.8.8.0/24", "'8.8.8.0/24' isn't a private network, and private_only is set."),
+        ("internal_subnet", "10.0.0.0/8", "'10.0.0.0/8' is wider than max_prefix allows"),
+    ],
+)
+def test_a_value_given_for_a_param_is_checked_as_its_default_is(param: str, text: str, problem: str) -> None:
+    generator = _load(MINIMAL + TOOLS).generators["deploy"]
+
+    with pytest.raises(SpecError) as refused:
+        param_value(generator.params[param], text)
+
+    assert str(refused.value).startswith(problem)

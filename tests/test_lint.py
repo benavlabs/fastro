@@ -915,3 +915,16 @@ def test_an_env_example_the_system_wont_let_lint_open_exits_3(repo: Path) -> Non
 
     assert (code, out) == (3, "")
     assert f"error: can't read {repo / ENV_EXAMPLE}: Permission denied." in err
+
+
+def test_each_mode_of_a_generator_is_a_directory_that_must_hold_a_tracked_file(repo: Path) -> None:
+    _append(repo, '[generators.deploy]\ntemplates = "blueprint/deploy"\nmodes = ["local", "prod"]\n')
+    _track(repo, "blueprint/deploy/local/compose.yml.j2", "blueprint/deploy/README.md")
+
+    found = [str(finding["message"]) for finding in _findings()]
+
+    assert found == ["generators.deploy.modes[1]: 'blueprint/deploy/prod/' holds no tracked file."]
+
+    _track(repo, "blueprint/deploy/prod/compose.yml.j2")
+
+    assert _findings() == []

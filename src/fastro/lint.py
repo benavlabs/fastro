@@ -188,7 +188,7 @@ def _read(file: Path, root: Path) -> str:
 
 
 def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
-    """BP002: each feature, ``when``, generator-template and overlay path that isn't among ``tracked`` (2.13)."""
+    """BP002: each feature, ``when``, generator template and mode, and overlay path that isn't among ``tracked`` (2.13)."""
     declared: list[tuple[KeyPath, RepoPath]] = []
     for feature in catalog.features:
         declared += [((*feature.at, "paths", index), path) for index, path in enumerate(feature.paths)]
@@ -196,6 +196,10 @@ def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
             declared += [((*feature.at, "when", number, "paths", index), path) for index, path in enumerate(when.paths)]
     for generator in catalog.generators.values():
         declared.append(((*generator.at, "templates"), _directory(generator.templates)))
+        declared += [
+            ((*generator.at, "modes", index), RepoPath(f"{_directory(generator.templates).text}{mode}/"))
+            for index, mode in enumerate(generator.modes)
+        ]
     if catalog.info.overlay is not None:
         declared.append((("blueprint", "overlay"), _directory(catalog.info.overlay)))
     found = []

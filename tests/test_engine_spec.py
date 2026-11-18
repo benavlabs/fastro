@@ -20,6 +20,7 @@ from fastro.engine.spec import (
     feature_name,
     generator_name,
     label,
+    mode_name,
     option_key,
     option_name,
     repo_path,
@@ -282,8 +283,8 @@ def test_any_other_check_code_is_refused(text: str) -> None:
         check_code(text)
 
 
-@pytest.mark.parametrize(("rule", "kind"), [(generator_name, "generator"), (starter_name, "starter")])
-def test_generator_and_starter_names_follow_the_blueprint_name_rule_in_their_own_words(
+@pytest.mark.parametrize(("rule", "kind"), [(generator_name, "generator"), (mode_name, "mode"), (starter_name, "starter")])
+def test_generator_mode_and_starter_names_follow_the_blueprint_name_rule_in_their_own_words(
     rule: Callable[[str], str], kind: str
 ) -> None:
     assert rule("b2b-api") == "b2b-api"

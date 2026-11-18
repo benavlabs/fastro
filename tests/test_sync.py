@@ -140,7 +140,7 @@ def test_a_directory_without_fastro_toml_is_a_usage_error(tmp_path: Path, monkey
     code, _, err = _sync("--check")
 
     assert code == 2
-    assert "has no fastro.toml" in err
+    assert f"{tmp_path} has no fastro.toml. Run fastro sync in a blueprint repo or a project." in err
 
 
 def test_a_project_s_sync_isnt_here_yet_and_says_so(repo: Path) -> None:
