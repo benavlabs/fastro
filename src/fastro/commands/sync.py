@@ -9,6 +9,7 @@ import typer
 from .. import sync as syncing
 from ..apply import ApplyError, apply
 from ..apply import check as allowed
+from ..engine.blueprint import IncompatibleCatalog
 from ..engine.problems import CatalogError
 from ..engine.render import RenderError
 from ..engine.resolve import SelectionError
@@ -36,7 +37,7 @@ def sync(
         problems = error.problems if isinstance(error, CatalogError) else [error]
         for problem in problems:
             typer.echo(str(problem), err=True)
-        raise typer.Exit(1) from None
+        raise typer.Exit(3 if isinstance(error, IncompatibleCatalog) else 1) from None
     if check or dry_run:
         try:
             allowed(found, source.root, source.root, only=syncing.wiring_paths(source))

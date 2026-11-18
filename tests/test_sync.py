@@ -163,6 +163,34 @@ def test_a_catalog_problem_is_reported_and_exits_1(repo: Path) -> None:
     assert "blueprint.toml:4: blueprint.schema: should be an integer, not a string." in err
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "said"),
+    [
+        (
+            'requires_fastro = ">=0.1.0.dev0"',
+            'requires_fastro = ">=99"',
+            "blueprint.toml:5: blueprint.requires_fastro: is '>=99', which doesn't include this fastro,",
+        ),
+        ("schema = 1", "schema = 2", "blueprint.toml:4: blueprint.schema: is 2, and this fastro reads schema 1.\n"),
+    ],
+)
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]])
+def test_a_catalog_for_another_fastro_is_reported_and_exits_3(
+    repo: Path, old: str, new: str, said: str, flags: list[str]
+) -> None:
+    catalog = repo / "blueprint.toml"
+    catalog.write_text(catalog.read_text().replace(old, new))
+    before = _tree(repo)
+
+    code, out, err = _sync(*flags)
+
+    assert (code, out) == (3, "")
+    assert err.startswith(said)
+    assert err.endswith("\n  Upgrade fastro (uv tool upgrade fastro), then run this again.\n")
+    assert err.count("\n") == 2
+    assert _tree(repo) == before
+
+
 def test_a_fastro_toml_problem_is_reported_and_exits_1(repo: Path) -> None:
     toml = repo / "fastro.toml"
     toml.write_text(toml.read_text().replace('"billing.provider" = "stripe"', '"billing.provider" = "square"'))
