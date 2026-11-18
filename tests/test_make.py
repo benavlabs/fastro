@@ -348,6 +348,11 @@ def test_a_mode_given_to_a_generator_without_modes_is_a_usage_error(repo: Path) 
             '[generators.deploy.params.no_cache]\ntype = "str"\ndefault = ""\n',
             "generators.deploy.params.no_cache takes the flag --no-cache, which is param cache's.",
         ),
+        (
+            '[generators.deploy.params.yes]\ntype = "int"\ndefault = 1\n'
+            '[generators.deploy.params.force]\ntype = "bool"\ndefault = true\n',
+            "generators.deploy.params.yes takes the flag --yes, which is fastro make's own.",
+        ),
     ],
 )
 def test_a_generator_whose_flags_clash_is_refused_when_make_runs_it(repo: Path, params: str, error: str) -> None:

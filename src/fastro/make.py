@@ -67,19 +67,35 @@ def flags(generator: Generator) -> dict[str, tuple[Param, bool | None]]:
     Raises:
         Refused: a param's flag, or a ``bool`` param's ``--no-`` flag, is one of make's own or another param's.
     """
+    found, clashing = _flags_of(generator)
+    if clashing:
+        param, reason = clashing[0]
+        raise Refused(f"generators.{generator.name}.params.{param.name} {reason} Rename the param in blueprint.toml.")
+    return found
+
+
+def clashes(generator: Generator) -> list[tuple[Param, str]]:
+    """Each of ``generator``'s params whose flag, or ``--no-`` flag for a ``bool`` param, is one of make's own or an
+    earlier param's, once, with its first clash (spec 2.9, 2.13). A param that clashes still takes its other flag."""
+    return _flags_of(generator)[1]
+
+
+def _flags_of(generator: Generator) -> tuple[dict[str, tuple[Param, bool | None]], list[tuple[Param, str]]]:
     found: dict[str, tuple[Param, bool | None]] = {}
+    clashing: list[tuple[Param, str]] = []
     for param in generator.params.values():
         flag = f"--{param.name.replace('_', '-')}"
         taken = [(flag, True), (f"--no-{flag[2:]}", False)] if param.type == "bool" else [(flag, None)]
+        reason = None
         for name, value in taken:
             if name in OWN_FLAGS or name in found:
                 owner = "fastro make's own" if name in OWN_FLAGS else f"param {found[name][0].name}'s"
-                raise Refused(
-                    f"generators.{generator.name}.params.{param.name} takes the flag {name}, which is {owner}. "
-                    "Rename the param in blueprint.toml."
-                )
+                reason = reason or f"takes the flag {name}, which is {owner}."
+                continue
             found[name] = (param, value)
-    return found
+        if reason is not None:
+            clashing.append((param, reason))
+    return found, clashing
 
 
 def parse(catalog: Blueprint, args: Sequence[str]) -> Request:

@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fastro import make
 from fastro.apply import RepositoryError, present, tracked_files, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
-from fastro.engine.blueprint import Blueprint, Command, IncompatibleCatalog
+from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Problem
 from fastro.engine.project import Project
@@ -20,7 +21,7 @@ from fastro.engine.spec import Ref, RepoPath
 from fastro.tools import installed_version
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "FR014", "FR016")
+RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR014", "FR016")
 CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
@@ -34,6 +35,8 @@ ANY_NAME = None
 MARKER = re.compile(r"# @fastro option=(\S+)")
 ASSIGNED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 SOURCE_FIX = "Add source = true to fastro.toml."
+COMMAND_CLASH_FIX = "Rename one of the commands, so that no command's words begin another's."
+FLAG_CLASH_FIX = "Rename the param, so that its flags are its own."
 
 
 class UsageError(Exception):
@@ -141,6 +144,7 @@ def lint(root: Path) -> Report:
         found.extend(_missing_modules(catalog, tracked))
         found.extend(_unresolved_refs(root, catalog, tracked))
         found.extend(_open_verify_sets(catalog))
+        found.extend(_name_clashes(catalog))
         found.extend(_unmarked_env(root, catalog, tracked))
     toml = root / "fastro.toml"
     if os.path.lexists(toml):
@@ -356,6 +360,28 @@ def _open_verify_sets(catalog: Blueprint) -> list[Problem]:
                     message = f"lists {feature!r}, which requires {required!r}, and the set doesn't list it."
                     at = ("verify", "sets", name, index)
                     found.append(catalog.document.problem(at, message, f"Add {required!r} to the set.", "BP004"))
+    return found
+
+
+def _name_clashes(catalog: Blueprint) -> list[Problem]:
+    """BP006: each command whose words begin another's, naming the first longer one in declaration order, and each
+    param of a generator but ``module`` whose flag clashes with make's own or an earlier param's (2.13)."""
+    commands: list[Command] = [*catalog.commands.values()]
+    for feature in catalog.features:
+        commands += feature.commands.values()
+    commands.sort(key=lambda command: catalog.document.line(command.at))
+    found = []
+    for command in commands:
+        size = len(command.words)
+        longer = next((other for other in commands if len(other.words) > size and other.words[:size] == command.words), None)
+        if longer is not None:
+            shown, other = " ".join(command.words), " ".join(longer.words)
+            message = f"{shown!r} begins the command {other!r}, and fastro {shown} can't be both a command and a group."
+            found.append(catalog.document.problem(command.at, message, COMMAND_CLASH_FIX, "BP006"))
+    for name, generator in catalog.generators.items():
+        if name != MODULE_GENERATOR:
+            for param, reason in make.clashes(generator):
+                found.append(catalog.document.problem(param.at, reason, FLAG_CLASH_FIX, "BP006"))
     return found
 
 

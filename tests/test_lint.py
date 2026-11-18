@@ -68,7 +68,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "FR014", "FR016"],
+        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR014", "FR016"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -387,6 +387,151 @@ def test_a_command_running_an_installed_package_isnt_checked(repo: Path) -> None
     _append(repo, COMMAND.format(module="alembic.config"))
 
     assert _findings() == []
+
+
+INSTALLED = 'module = "alembic.config"\n'
+ADMIN = 'module = "src.modules.admin.site"\n'
+TASKS = 'module = "src.modules.tasks.jobs"\n'
+CLASH_FIX = "Rename one of the commands, so that no command's words begin another's."
+
+
+def _clashes() -> list[tuple[object, object, object]]:
+    return [(finding["code"], finding["message"], finding["fix"]) for finding in _findings()]
+
+
+def test_a_command_whose_words_begin_another_s_is_bp006_at_that_command(repo: Path) -> None:
+    _append(repo, f'[commands.db]\n{INSTALLED}[commands."db baseline"]\n{INSTALLED}[commands."db upgrade"]\n{INSTALLED}')
+
+    code, _, _ = _lint()
+    (finding,) = _findings()
+
+    assert code == 1
+    assert finding["line"] == 191
+    assert (finding["code"], finding["message"], finding["fix"]) == (
+        "BP006",
+        "commands.db: 'db' begins the command 'db baseline', and fastro db can't be both a command and a group.",
+        CLASH_FIX,
+    )
+
+
+def test_bp006_spans_the_top_level_and_features_whether_or_not_a_selection_holds_both(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml", "[features.admin]\n", f'[features.admin.commands."users unlock"]\n{ADMIN}\n[features.admin]\n'
+    )
+    _edit(repo / "blueprint.toml", "[features.admin]\n", f"[features.tasks.commands.jobs]\n{TASKS}\n[features.admin]\n")
+    _append(repo, f'[commands.users]\n{INSTALLED}[commands."jobs run"]\n{INSTALLED}')
+    _edit(repo / "fastro.toml", ', "admin"', "")
+
+    found = sorted(str(message) for _, message, _ in _clashes())
+
+    assert found == [
+        "commands.users: 'users' begins the command 'users unlock', and fastro users can't be both a command and a group.",
+        "features.tasks.commands.jobs: 'jobs' begins the command 'jobs run', and fastro jobs can't be both a command and a "
+        "group.",
+    ]
+
+
+def test_bp006_names_the_first_longer_command_in_declaration_order_and_reports_each_level(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        "[features.admin]\n",
+        f'[features.admin.commands."users lock now"]\n{ADMIN}\n[features.admin]\n',
+    )
+    _append(repo, f'[commands."users unlock"]\n{INSTALLED}[commands.users]\n{INSTALLED}[commands."users lock"]\n{INSTALLED}')
+
+    found = sorted(str(message) for code, message, _ in _clashes() if code == "BP006")
+
+    assert found == [
+        "commands.\"users lock\": 'users lock' begins the command 'users lock now', and fastro users lock can't be both a "
+        "command and a group.",
+        "commands.users: 'users' begins the command 'users lock now', and fastro users can't be both a command and a group.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("params", "at", "message"),
+    [
+        (
+            '[generators.deploy.params.dry_run]\ntype = "int"\ndefault = 1\n',
+            "generators.deploy.params.dry_run",
+            "takes the flag --dry-run, which is fastro make's own.",
+        ),
+        (
+            '[generators.deploy.params.output_dir]\ntype = "str"\ndefault = ""\n',
+            "generators.deploy.params.output_dir",
+            "takes the flag --output-dir, which is fastro make's own.",
+        ),
+        (
+            '[generators.deploy.params.cache]\ntype = "bool"\ndefault = true\n'
+            '[generators.deploy.params.no_cache]\ntype = "str"\ndefault = ""\n',
+            "generators.deploy.params.no_cache",
+            "takes the flag --no-cache, which is param cache's.",
+        ),
+        (
+            '[generators.deploy.params.no_cache]\ntype = "str"\ndefault = ""\n'
+            '[generators.deploy.params.cache]\ntype = "bool"\ndefault = true\n',
+            "generators.deploy.params.cache",
+            "takes the flag --no-cache, which is param no_cache's.",
+        ),
+        (
+            '[generators.deploy.params.help]\ntype = "bool"\ndefault = true\n',
+            "generators.deploy.params.help",
+            "takes the flag --help, which is fastro make's own.",
+        ),
+    ],
+    ids=["own", "own-with-value", "no-flag", "no-flag-later", "bool-own"],
+)
+def test_a_generator_param_whose_flag_clashes_is_bp006_at_the_param(repo: Path, params: str, at: str, message: str) -> None:
+    _append(repo, '[generators.deploy]\ntemplates = "blueprint/deploy"\n' + params)
+    _track(repo, "blueprint/deploy/compose.yml")
+
+    assert _clashes() == [("BP006", f"{at}: {message}", "Rename the param, so that its flags are its own.")]
+
+
+def test_each_param_that_clashes_is_a_finding_once(repo: Path) -> None:
+    _append(
+        repo,
+        '[generators.deploy]\ntemplates = "blueprint/deploy"\n'
+        '[generators.deploy.params.no_force]\ntype = "str"\ndefault = ""\n'
+        '[generators.deploy.params.force]\ntype = "bool"\ndefault = true\n'
+        '[generators.deploy.params.yes]\ntype = "int"\ndefault = 1\n',
+    )
+    _track(repo, "blueprint/deploy/compose.yml")
+
+    found = [str(message) for _, message, _ in _clashes()]
+
+    assert found == [
+        "generators.deploy.params.force: takes the flag --force, which is fastro make's own.",
+        "generators.deploy.params.yes: takes the flag --yes, which is fastro make's own.",
+    ]
+
+
+@pytest.mark.parametrize("own", ["force", "help"])
+def test_a_bool_param_that_clashes_with_make_s_own_flag_still_takes_its_no_flag(repo: Path, own: str) -> None:
+    _append(
+        repo,
+        '[generators.deploy]\ntemplates = "blueprint/deploy"\n'
+        f'[generators.deploy.params.{own}]\ntype = "bool"\ndefault = true\n'
+        f'[generators.deploy.params.no_{own}]\ntype = "str"\ndefault = ""\n',
+    )
+    _track(repo, "blueprint/deploy/compose.yml")
+
+    found = [str(message) for _, message, _ in _clashes()]
+
+    assert found == [
+        f"generators.deploy.params.{own}: takes the flag --{own}, which is fastro make's own.",
+        f"generators.deploy.params.no_{own}: takes the flag --no-{own}, which is param {own}'s.",
+    ]
+
+
+def test_the_module_generator_s_params_arent_make_s_flags(repo: Path) -> None:
+    _append(
+        repo,
+        '[generators.module]\ntemplates = "blueprint/module"\n[generators.module.params.dry_run]\ntype = "int"\ndefault = 1\n',
+    )
+    _track(repo, "blueprint/module/x.py")
+
+    assert _clashes() == []
 
 
 def test_a_catalog_that_doesnt_load_isnt_checked_against_the_files(repo: Path) -> None:
