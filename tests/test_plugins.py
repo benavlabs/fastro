@@ -1,7 +1,8 @@
 """Which plugin entry points fastro loads, from distributions installed on ``sys.path``."""
 
+import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -54,10 +55,12 @@ TYPER_PLUGIN = typer_plugin()
 
 
 @pytest.fixture
-def app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
-    """The root app, with any group a test mounts dropped again afterwards."""
+def app(monkeypatch: pytest.MonkeyPatch) -> Iterator[typer.Typer]:
+    """The root app, with any group a test mounts dropped again afterwards, and plugins discovered afresh."""
     monkeypatch.setattr(fastro.cli.app, "registered_groups", [*fastro.cli.app.registered_groups])
-    return fastro.cli.app
+    fastro.cli._command_plugins.cache_clear()
+    yield fastro.cli.app
+    fastro.cli._command_plugins.cache_clear()
 
 
 @pytest.mark.parametrize("name", ["make", "env"])
@@ -68,7 +71,7 @@ def test_a_plugin_cannot_take_a_built_in_name(
 
     fastro.cli._mount_command_plugins()
 
-    assert f"plugin command '{name}' shadows a built-in" in capsys.readouterr().err
+    assert f"plugin command '{name}' shadows a built-in or declared command; ignoring." in capsys.readouterr().err
     assert [group.name for group in app.registered_groups].count(name) == 1
 
 
@@ -144,3 +147,32 @@ def test_a_broken_plugin_warns_and_the_rest_still_mount(
     assert says in capsys.readouterr().err
     assert result.stdout == "hello from a plugin\n"
     assert runner.invoke(app, ["make", "deploy", "--help"]).exit_code == 0
+
+
+def test_the_cli_for_a_directory_mounts_the_plugins_and_loads_each_once(
+    installed: Install, app: typer.Typer, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    installed("broken", "fastro.commands", "raise RuntimeError('boom')\n")
+    installed("greet", "fastro.commands", TYPER_PLUGIN)
+
+    fastro.cli._mount_command_plugins()
+    result = runner.invoke(fastro.cli.for_directory(tmp_path, []), ["greet", "hello"])
+
+    assert result.stdout == "hello from a plugin\n"
+    assert capsys.readouterr().err.count("Failed to load plugin 'broken'") == 1
+
+
+def test_a_plugin_cannot_take_a_declared_commands_name(
+    installed: Install, app: typer.Typer, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo = tmp_path / "mini"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "blueprints" / "mini", repo)
+    with (repo / "blueprint.toml").open("a") as catalog:
+        catalog.write('\n[commands."greet hello"]\nmodule = "scripts.greet"\n')
+    installed("greet", "fastro.commands", typer_plugin("from the plugin"))
+
+    built = fastro.cli.for_directory(repo, [])
+
+    assert "warning: plugin command 'greet' shadows a built-in or declared command; ignoring." in capsys.readouterr().err
+    assert runner.invoke(built, ["greet", "--help"]).exit_code == 0
+    assert [group.name for group in built.registered_groups].count("greet") == 1

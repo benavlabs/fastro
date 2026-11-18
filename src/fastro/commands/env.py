@@ -1,78 +1,47 @@
-"""``fastro env``: inspect and prepare the runtime environment.
+"""``fastro env``: the built-in ``env secret`` and ``env validate``, for where the blueprint declares neither (spec 2.9).
 
-Both commands run the project's own scripts in its interpreter:
-
-- ``fastro env secret`` runs ``scripts.gen_secret``, which prints a key the
-  project's rules accept. Outside a project it prints ``secrets.token_hex``.
-
-- ``fastro env validate`` runs ``scripts.validate_env``, the production security
-  validator, regardless of the configured environment.
+- ``fastro env secret`` prints ``secrets.token_hex``.
+- ``fastro env validate`` refuses, since only a blueprint's own validator can audit a project.
 """
 
 from __future__ import annotations
 
 import secrets
-from pathlib import Path
+from collections.abc import Callable
 
 import typer
 
-from .. import runner
-from ..lib.project import discover_project
-from ..lib.prompts import error
-from ..tools import MissingToolError
-
-VALIDATE_MODULE = "scripts.validate_env"
-GEN_SECRET_MODULE = "scripts.gen_secret"
-UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
+from ..runner import TOKEN_BYTES, TOKEN_DEFAULT
 
 app = typer.Typer(no_args_is_help=True, help="Inspect and prepare the runtime environment.")
 
 
-def _project_backend() -> Path | None:
-    """The ``backend/`` of the project this command was run in, if there is one."""
-    backend = discover_project().backend_dir
-    return backend if (backend / "pyproject.toml").is_file() else None
-
-
-def _run_script(command: str, backend: Path, module: str, args: list[str]) -> None:
-    """Run ``module`` in the project's interpreter, and exit with its code."""
-    script = runner.module_file(backend, module)
-    if not script.is_file():
-        shown = script.relative_to(backend.parent)
-        error(f"`fastro env {command}` is not available in this project: {shown} doesn't exist.")
-        raise typer.Exit(code=3)
-
-    try:
-        code = runner.run_module(backend, module, args)
-    except MissingToolError as missing:
-        error(
-            f"`fastro env {command}` runs in the project through {missing.tool}, which isn't on PATH. "
-            f"Install it: {UV_INSTALL_URL}"
-        )
-        raise typer.Exit(code=3) from missing
-
-    raise typer.Exit(code=code)
-
-
 @app.command("secret")
 def secret(
-    bytes_: int = typer.Option(32, "--bytes", min=16, max=128, help="Number of random bytes (hex output is 2x)."),
+    bytes_: int = typer.Option(
+        TOKEN_DEFAULT,
+        "--bytes",
+        min=TOKEN_BYTES.start,
+        max=TOKEN_BYTES.stop - 1,
+        help="Number of random bytes (hex output is 2x).",
+    ),
 ) -> None:
     """Generate a high-entropy hex secret suitable for ``SECRET_KEY``."""
-    backend = _project_backend()
-    if backend is None:
-        typer.echo(secrets.token_hex(bytes_))
-        return
-
-    _run_script("secret", backend, GEN_SECRET_MODULE, ["--bytes", str(bytes_)])
+    typer.echo(secrets.token_hex(bytes_))
 
 
-@app.command("validate")
-def validate() -> None:
-    """Run the production security validator against the current settings."""
-    backend = _project_backend()
-    if backend is None:
-        error("No `backend/pyproject.toml` in this directory or above it: run this from inside a project.")
-        raise typer.Exit(code=1)
+OUTSIDE = "fastro env validate runs in a project. Run it from inside one."
 
-    _run_script("validate", backend, VALIDATE_MODULE, [])
+
+def validate_command(reason: str) -> Callable[[], None]:
+    """The built-in ``env validate``, which exits 2 saying ``reason``: there's no project, or no validator to run."""
+
+    def validate() -> None:
+        """Audit this environment the way production would, with the blueprint's own validator."""
+        typer.echo(f"error: {reason}", err=True)
+        raise typer.Exit(2)
+
+    return validate
+
+
+app.command("validate")(validate_command(OUTSIDE))

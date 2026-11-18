@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 
 def check_cwd() -> None:
@@ -22,6 +23,6 @@ def check_cwd() -> None:
 def main() -> None:
     """Check the current directory, then run the CLI."""
     check_cwd()
-    from .cli import app  # noqa: PLC0415
+    from .cli import for_directory  # noqa: PLC0415
 
-    app()
+    for_directory(Path.cwd(), sys.argv[1:])()

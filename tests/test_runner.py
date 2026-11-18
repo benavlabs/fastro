@@ -167,13 +167,6 @@ def test_require_gives_a_tool_s_path_or_raises(monkeypatch: pytest.MonkeyPatch) 
         require("uv")
 
 
-def test_the_old_run_module_still_runs_through_require(tmp_path: Path, uv: Path) -> None:
-    (tmp_path / "backend").mkdir()
-
-    assert runner.run_module(tmp_path / "backend", "scripts.validate_env") == 0
-    assert _calls(uv)[0]["argv"][-2:] == ["-m", "scripts.validate_env"]  # type: ignore[index]
-
-
 def test_a_relative_project_runs_with_absolute_paths_since_uv_starts_in_the_command_s_cwd(
     tmp_path: Path, uv: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

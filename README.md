@@ -25,14 +25,15 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 
 ```
 src/fastro/
-├── cli.py                 root Typer app + plugin discovery
+├── cli.py                 root Typer app, plugin discovery and the declared commands
+├── declared.py            finds fastro.toml and the commands its blueprint declares
 ├── compat.py              the bp command, kept for 0.1.x
 ├── runner.py              runs a project's scripts in its own interpreter
 ├── plugins.py             entry-point loader for fastro.commands
 ├── engine/                the catalog engine: catalogs and selections in, files out
 ├── commands/              in-tree command sub-apps
 │   ├── make.py            fastro make deploy <mode>
-│   └── env.py             fastro env secret / fastro env validate
+│   └── env.py             the built-in fastro env secret / fastro env validate
 ├── _legacy_deploy/        compose and nginx templates for local/prod/nginx
 └── lib/                   shared helpers (project discovery, prompts, render)
 ```

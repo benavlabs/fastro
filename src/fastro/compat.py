@@ -5,8 +5,9 @@ from __future__ import annotations
 import shlex
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
-from .cli import app
+from .cli import for_directory
 from .start import check_cwd
 
 RENAMED: dict[tuple[str, str], tuple[str, str]] = {
@@ -29,4 +30,4 @@ def bp_main() -> None:
     check_cwd()
     argv = translate(sys.argv[1:])
     print(f"bp is now fastro. Next time, run: {shlex.join(['fastro', *argv])}", file=sys.stderr)
-    app(args=argv, prog_name="fastro")
+    for_directory(Path.cwd(), argv)(args=argv, prog_name="fastro")

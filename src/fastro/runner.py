@@ -78,25 +78,6 @@ def run_captured(argv: Sequence[str], cwd: Path, environment: Mapping[str, str])
     return completed.returncode, (completed.stdout + completed.stderr).strip()
 
 
-def module_file(python_root: Path, module: str) -> Path:
-    """The file ``python -m module`` runs from ``python_root``."""
-    return python_root.joinpath(*module.split(".")).with_suffix(".py")
-
-
-def run_module(python_root: Path, module: str, args: Sequence[str] = ()) -> int:
-    """Run ``python -m module args`` with ``uv run --project python_root``, from ``python_root``.
-
-    Raises:
-        MissingToolError: ``uv`` isn't on ``PATH``.
-    """
-    return _uv(python_root, module, args, python_root)
-
-
-def _uv(backend: Path, module: str, args: Sequence[str], cwd: Path) -> int:
-    command = [require("uv"), "run", "--project", str(backend), "python", "-m", module, *args]
-    return subprocess.run(command, cwd=cwd, check=False).returncode
-
-
 def _token_bytes(words: str, args: Sequence[str]) -> int:
     """N from ``--bytes N`` or ``--bytes=N``, or 32 with no arguments."""
     refused = TokenUsageError(f"fastro {words} outside a project takes only --bytes N, an integer from 16 to 128.")
