@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import ast
+import codecs
 import dataclasses
 import os
 import re
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from packaging.version import InvalidVersion, Version
 
 from fastro import make
 from fastro.apply import RepositoryError, present, tracked_files, unreadable, unreadable_config
@@ -16,12 +20,12 @@ from fastro.engine import blueprint, catalog_check, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Problem
-from fastro.engine.project import Project
+from fastro.engine.project import PROJECT_NAME, Project
 from fastro.engine.spec import Ref, RepoPath
 from fastro.tools import installed_version
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR014", "FR016")
+RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR002", "FR014", "FR016")
 CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
@@ -37,6 +41,7 @@ ASSIGNED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 SOURCE_FIX = "Add source = true to fastro.toml."
 COMMAND_CLASH_FIX = "Rename one of the commands, so that no command's words begin another's."
 FLAG_CLASH_FIX = "Rename the param, so that its flags are its own."
+NAME_RULE = "use letters, digits, '.', '_' and '-', starting and ending with a letter or digit, as PEP 508 says."
 
 
 class UsageError(Exception):
@@ -108,7 +113,8 @@ def lint(root: Path) -> Report:
         UsageError: ``root`` has no ``blueprint.toml``, isn't a git repository, or has a ``blueprint.toml`` or
             ``fastro.toml`` fastro may not read (spec 1.10).
         MissingToolError: ``git`` isn't on ``PATH``.
-        Unreadable: ``blueprint.toml``, ``fastro.toml``, a module file or ``.env.example`` can't be opened.
+        Unreadable: ``blueprint.toml``, ``fastro.toml``, a module file, ``pyproject.toml`` or ``.env.example`` can't be
+            opened.
         IncompatibleCatalog: the catalog is for another version of fastro.
         NotInstalled: fastro isn't installed.
     """
@@ -145,6 +151,7 @@ def lint(root: Path) -> Report:
         found.extend(_unresolved_refs(root, catalog, tracked))
         found.extend(_open_verify_sets(catalog))
         found.extend(_name_clashes(catalog))
+        found.extend(_unmatched_pyproject(root, catalog, tracked))
         found.extend(_unmarked_env(root, catalog, tracked))
     toml = root / "fastro.toml"
     if os.path.lexists(toml):
@@ -382,6 +389,57 @@ def _name_clashes(catalog: Blueprint) -> list[Problem]:
         if name != MODULE_GENERATOR:
             for param, reason in make.clashes(generator):
                 found.append(catalog.document.problem(param.at, reason, FLAG_CLASH_FIX, "BP006"))
+    return found
+
+
+def _unmatched_pyproject(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """FR002: ``[blueprint].version`` that doesn't equal ``{python_root}/pyproject.toml``'s ``[project].version``
+    under PEP 440, or that file without a valid ``[project].name``, each at ``[blueprint].version`` (2.13).
+
+    Raises:
+        Unreadable: the system won't let lint open the file.
+    """
+    file = f"{catalog.info.python_root.text.rstrip('/')}/pyproject.toml"
+    version = catalog.info.version
+
+    def problem(message: str, fix: str) -> Problem:
+        return catalog.document.problem(("blueprint", "version"), message, fix, "FR002")
+
+    unchecked = f"can't be checked against {file}, since it"
+    if file not in tracked:
+        return [problem(f"{unchecked} isn't a tracked file.", f"Add {file} to git.")]
+    if (reason := unreadable(root, file)) is not None:
+        return [problem(f"{unchecked} {reason}, {READS_ONLY}.", f"Make {file} a regular file in the repo.")]
+    try:
+        data = (root / file).read_bytes()
+    except OSError as error:
+        raise Unreadable(root / file, error) from None
+    try:
+        document = tomllib.loads(data.removeprefix(codecs.BOM_UTF8).decode("utf-8"))
+    except UnicodeDecodeError:
+        return [problem(f"{unchecked} isn't UTF-8 text.", f"Save {file} as UTF-8.")]
+    except tomllib.TOMLDecodeError as error:
+        return [problem(f"{unchecked} isn't valid TOML: {error}.", f"Fix {file} so it parses.")]
+    table = document.get("project")
+    table = table if isinstance(table, dict) else {}
+    found = []
+    name = table.get("name")
+    name_fix = f'Set name under [project] in {file} to a valid PEP 508 name, such as name = "my-api".'
+    if not isinstance(name, str):
+        found.append(problem(f"{file} has no [project].name string: {NAME_RULE}", name_fix))
+    elif not PROJECT_NAME.fullmatch(name):
+        found.append(problem(f"{file} has [project].name {name!r}, which isn't a valid name: {NAME_RULE}", name_fix))
+    given = table.get("version")
+    version_fix = f'Set version = "{version}" under [project] in {file}, or change [blueprint].version to match it.'
+    try:
+        parsed = Version(given) if isinstance(given, str) else None
+    except InvalidVersion:
+        parsed = None
+    if parsed is None:
+        message = f"can't be compared, since {file} has no [project].version string that's a PEP 440 version."
+        found.append(problem(message, version_fix))
+    elif parsed != version:
+        found.append(problem(f"is {version}, and {file}'s [project].version is {given!r}.", version_fix))
     return found
 
 

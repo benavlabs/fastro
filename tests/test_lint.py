@@ -1,4 +1,4 @@
-"""``fastro blueprint lint``: a blueprint repo's load problems as findings, BP001 and BP003 (spec 2.13, 7, 8)."""
+"""``fastro blueprint lint``: a repo's problems as findings, BP001 to BP006, FR002, FR014 and FR016 (spec 2.13, 7, 8)."""
 
 import json
 import shutil
@@ -68,7 +68,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR014", "FR016"],
+        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR002", "FR014", "FR016"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -1073,3 +1073,153 @@ def test_each_mode_of_a_generator_is_a_directory_that_must_hold_a_tracked_file(r
     _track(repo, "blueprint/deploy/prod/compose.yml.j2")
 
     assert _findings() == []
+
+
+PYPROJECT = "backend/pyproject.toml"
+NAME_FIX = f'Set name under [project] in {PYPROJECT} to a valid PEP 508 name, such as name = "my-api".'
+VERSION_FIX = f'Set version = "0.1.0" under [project] in {PYPROJECT}, or change [blueprint].version to match it.'
+
+
+def _pyproject(repo: Path, text: str | bytes) -> None:
+    file = repo / PYPROJECT
+    if isinstance(text, str):
+        file.write_text(text)
+    else:
+        file.write_bytes(text)
+
+
+def _fr002() -> list[tuple[object, object, object, object]]:
+    return [
+        (finding["line"], finding["message"], finding["fix"], finding["file"])
+        for finding in _findings()
+        if finding["code"] == "FR002"
+    ]
+
+
+@pytest.mark.parametrize("version", ["0.1.0", "0.1", "0.1.0.0", "v0.1.0"])
+def test_a_pyproject_version_equal_to_the_blueprint_s_under_pep_440_is_fine(repo: Path, version: str) -> None:
+    _pyproject(repo, f'[project]\nname = "mini-backend"\nversion = "{version}"\n')
+
+    assert _findings() == []
+
+
+def test_a_pyproject_read_past_a_byte_order_mark_is_fine(repo: Path) -> None:
+    _pyproject(repo, b'\xef\xbb\xbf[project]\nname = "mini-backend"\nversion = "0.1.0"\n')
+
+    assert _findings() == []
+
+
+def test_a_pyproject_version_that_differs_is_fr002_at_the_blueprint_version(repo: Path) -> None:
+    _pyproject(repo, '[project]\nname = "mini-backend"\nversion = "0.2.0"\n')
+
+    code, _, _ = _lint()
+
+    assert code == 1
+    assert _fr002() == [
+        (
+            3,
+            f"blueprint.version: is 0.1.0, and {PYPROJECT}'s [project].version is '0.2.0'.",
+            VERSION_FIX,
+            "blueprint.toml",
+        )
+    ]
+
+
+@pytest.mark.parametrize("version", ['version = "lots"', "version = 1", ""])
+def test_a_pyproject_without_a_pep_440_version_string_is_fr002(repo: Path, version: str) -> None:
+    _pyproject(repo, f'[project]\nname = "mini-backend"\n{version}\n')
+
+    assert _fr002() == [
+        (
+            3,
+            f"blueprint.version: can't be compared, since {PYPROJECT} has no [project].version string that's a PEP 440 "
+            "version.",
+            VERSION_FIX,
+            "blueprint.toml",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("", "has no [project].name string"),
+        ("name = 3", "has no [project].name string"),
+        ('name = "-mini"', "has [project].name '-mini', which isn't a valid name"),
+        ('name = "mini backend"', "has [project].name 'mini backend', which isn't a valid name"),
+    ],
+)
+def test_a_pyproject_without_a_valid_name_is_fr002_saying_so(repo: Path, name: str, said: str) -> None:
+    _pyproject(repo, f'[project]\n{name}\nversion = "0.1.0"\n')
+
+    assert _fr002() == [
+        (
+            3,
+            f"blueprint.version: {PYPROJECT} {said}: use letters, digits, '.', '_' and '-', starting and ending with a "
+            "letter or digit, as PEP 508 says.",
+            NAME_FIX,
+            "blueprint.toml",
+        )
+    ]
+
+
+@pytest.mark.parametrize("text", ['title = "no project table"\n', 'project = "mini-backend"\n'])
+def test_a_version_problem_and_a_name_problem_are_a_finding_each(repo: Path, text: str) -> None:
+    _pyproject(repo, text)
+
+    found = [str(message) for _, message, _, _ in _fr002()]
+
+    assert found == [
+        f"blueprint.version: {PYPROJECT} has no [project].name string: use letters, digits, '.', '_' and '-', starting "
+        "and ending with a letter or digit, as PEP 508 says.",
+        f"blueprint.version: can't be compared, since {PYPROJECT} has no [project].version string that's a PEP 440 version.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("make", "said", "fix"),
+    [
+        ("untracked", "isn't a tracked file", f"Add {PYPROJECT} to git."),
+        ("not-utf-8", "isn't UTF-8 text", f"Save {PYPROJECT} as UTF-8."),
+        ("not-toml", "isn't valid TOML", f"Fix {PYPROJECT} so it parses."),
+    ],
+)
+def test_a_pyproject_lint_cant_read_is_one_fr002_finding_saying_why(repo: Path, make: str, said: str, fix: str) -> None:
+    if make == "untracked":
+        _git(repo, "rm", "-q", "--cached", PYPROJECT)
+    if make == "not-utf-8":
+        _pyproject(repo, b'[project]\nname = "mini\xff"\nversion = "0.1.0"\n')
+    if make == "not-toml":
+        _pyproject(repo, "[project\n")
+
+    ((line, message, found_fix, file),) = _fr002()
+
+    assert (line, file, found_fix) == (3, "blueprint.toml", fix)
+    assert str(message).startswith(f"blueprint.version: can't be checked against {PYPROJECT}, since it {said}")
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", NOT_READ)
+def test_a_pyproject_fastro_may_not_read_is_one_fr002_finding_saying_why(repo: Path, replace: Replace, make: str) -> None:
+    reason = replace(repo, PYPROJECT, make)
+
+    assert _fr002() == [
+        (
+            3,
+            f"blueprint.version: can't be checked against {PYPROJECT}, since it {reason}, and lint reads only regular "
+            "files inside the repo.",
+            f"Make {PYPROJECT} a regular file in the repo.",
+            "blueprint.toml",
+        )
+    ]
+
+
+def test_a_pyproject_the_system_wont_let_lint_open_exits_3(repo: Path) -> None:
+    (repo / PYPROJECT).chmod(0)
+    try:
+        code, out, err = _lint("--json")
+    finally:
+        (repo / PYPROJECT).chmod(0o644)
+
+    assert (code, out) == (3, "")
+    assert f"error: can't read {repo / PYPROJECT}: Permission denied." in err
