@@ -1223,3 +1223,18 @@ def test_a_pyproject_the_system_wont_let_lint_open_exits_3(repo: Path) -> None:
 
     assert (code, out) == (3, "")
     assert f"error: can't read {repo / PYPROJECT}: Permission denied." in err
+
+
+def test_a_pyproject_lint_isnt_allowed_to_resolve_is_an_fr002_finding_saying_why(repo: Path) -> None:
+    (repo / "backend").chmod(0o600)
+    try:
+        code, out, _ = _lint("--json")
+    finally:
+        (repo / "backend").chmod(0o755)
+
+    found = [finding for finding in json.loads(out)["findings"] if finding["code"] == "FR002"]
+    assert code == 1
+    assert [finding["message"] for finding in found] == [
+        f"blueprint.version: can't be checked against {PYPROJECT}, since it can't be resolved: Permission denied, and "
+        "lint reads only regular files inside the repo."
+    ]

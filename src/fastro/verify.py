@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from fastro import lint as linting
 from fastro.apply import ApplyError, Change, apply, changes, file_kind, tracked_files
 from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint
@@ -28,6 +29,7 @@ from fastro.tools import require
 EVERYTHING = "everything"
 LOCK = "uv.lock"
 REPORTED_LINES = 40
+REFUSED = "verify can't build a set:"
 BASELINE = ("db", "baseline")
 OUTSIDE_THE_BUILD = ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME")
 QUIET = "import warnings, logging; warnings.simplefilter('ignore'); logging.disable(50); "
@@ -115,6 +117,22 @@ def build(
     return into
 
 
+def _named(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> None:
+    """Refuse the run when ``{python_root}/pyproject.toml`` gives a build no name (spec 2.13).
+
+    Raises:
+        Unbuildable: it isn't tracked, 1.10 rules it out, it isn't UTF-8, it doesn't parse, or it has no
+            ``[project].name`` string that's a valid name by section 3's rule.
+        OSError: the system won't let fastro resolve or open it.
+    """
+    file = f"{catalog.info.python_root.text.rstrip('/')}/pyproject.toml"
+    table = linting.project_table(root, file, {path.text for path in tracked}, "verify", strict=True)
+    if isinstance(table, linting.Unread):
+        raise Unbuildable(f"{REFUSED} {file} {table.reason}. {table.fix}")
+    if (problem := linting.name_problem(file, table)) is not None:
+        raise Unbuildable(f"{REFUSED} {problem} {linting.name_fix(file)}")
+
+
 def _python_root_lock(catalog: Blueprint) -> str:
     return f"{catalog.info.python_root.text.rstrip('/')}/{LOCK}"
 
@@ -152,13 +170,15 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
         UnknownSet: a name isn't a verify set. Nothing has been built.
         RepositoryError: ``root`` isn't a git repository. Nothing has been built.
         MissingToolError: ``git`` isn't on ``PATH``, and nothing has been built; or a check needs ``uv`` and it isn't.
-        Unbuildable: a set's wiring can't be rendered. The run ends there.
+        Unbuildable: ``{python_root}/pyproject.toml`` gives a build no name, and nothing has been built; or a set's
+            wiring can't be rendered, and the run ends there.
         ApplyError: a set's build is refused. The run ends there.
         OSError: the system won't let a build read or write a file. The run ends there.
     """
     unknown(catalog, names)
     sets = verify_sets(catalog)
     tracked = tracked_files(root)
+    _named(root, catalog, tracked)
     lock = starting_lock(catalog, tracked)
     scratch = Path(tempfile.mkdtemp(prefix="fastro-verify-"))
     failures = 0
@@ -253,8 +273,8 @@ def _directories(backend: Path, names: Sequence[str]) -> tuple[list[str], dict[s
 
 def _dev_dependencies(pyproject: Path) -> list[str]:
     """The ``uv`` flags that add a build's dev dependencies: ``--extra dev`` for ``[project.optional-dependencies].dev``,
-    ``--group dev`` for ``[dependency-groups].dev``, both when both are there, and none when neither is or the file
-    can't be read (6.3)."""
+    ``--group dev`` for ``[dependency-groups].dev``, both when both are there, and none when neither is. A run ends
+    before it builds anything when ``pyproject.toml`` can't be read, so the empty result for one is only a guard."""
     try:
         data = tomllib.loads(catalog_check.read_text(pyproject))
     except (OSError, CatalogError, tomllib.TOMLDecodeError):

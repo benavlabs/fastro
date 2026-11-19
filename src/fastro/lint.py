@@ -15,7 +15,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from fastro import make
-from fastro.apply import RepositoryError, present, tracked_files, unreadable, unreadable_config
+from fastro.apply import RepositoryError, breaks_the_rule, present, tracked_files, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
@@ -392,6 +392,54 @@ def _name_clashes(catalog: Blueprint) -> list[Problem]:
     return found
 
 
+@dataclass(frozen=True)
+class Unread:
+    """Why a ``pyproject.toml`` can't be read: the end of "since it ...", and how to fix it."""
+
+    reason: str
+    fix: str
+
+
+def project_table(root: Path, file: str, tracked: set[str], reader: str, strict: bool = False) -> dict[str, Any] | Unread:
+    """The ``[project]`` table of ``file``, read from its tracked file past a byte order mark, or why ``reader`` can't
+    read it: it isn't tracked, 1.10 rules it out, it isn't UTF-8 or it doesn't parse (2.13). Lint and verify both
+    read ``{python_root}/pyproject.toml`` through it, so they can't disagree.
+
+    Raises:
+        OSError: the system won't let fastro open the file, or, when ``strict``, resolve it (1.10).
+    """
+    if file not in tracked:
+        return Unread("isn't a tracked file", f"Add {file} to git.")
+    if (reason := (breaks_the_rule if strict else unreadable)(root, file)) is not None:
+        return Unread(
+            f"{reason}, and {reader} reads only regular files inside the repo", f"Make {file} a regular file in the repo."
+        )
+    data = (root / file).read_bytes()
+    try:
+        document = tomllib.loads(data.removeprefix(codecs.BOM_UTF8).decode("utf-8"))
+    except UnicodeDecodeError:
+        return Unread("isn't UTF-8 text", f"Save {file} as UTF-8.")
+    except tomllib.TOMLDecodeError as error:
+        return Unread(f"isn't valid TOML: {error}", f"Fix {file} so it parses.")
+    table = document.get("project")
+    return table if isinstance(table, dict) else {}
+
+
+def name_problem(file: str, table: dict[str, Any]) -> str | None:
+    """What's wrong with ``[project].name`` in ``file``'s ``table`` by section 3's rule, or ``None`` when it's valid."""
+    name = table.get("name")
+    if not isinstance(name, str):
+        return f"{file} has no [project].name string: {NAME_RULE}"
+    if not PROJECT_NAME.fullmatch(name):
+        return f"{file} has [project].name {name!r}, which isn't a valid name: {NAME_RULE}"
+    return None
+
+
+def name_fix(file: str) -> str:
+    """How to fix a ``[project].name`` :func:`name_problem` reports."""
+    return f'Set name under [project] in {file} to a valid PEP 508 name, such as name = "my-api".'
+
+
 def _unmatched_pyproject(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
     """FR002: ``[blueprint].version`` that doesn't equal ``{python_root}/pyproject.toml``'s ``[project].version``
     under PEP 440, or that file without a valid ``[project].name``, each at ``[blueprint].version`` (2.13).
@@ -405,30 +453,15 @@ def _unmatched_pyproject(root: Path, catalog: Blueprint, tracked: set[str]) -> l
     def problem(message: str, fix: str) -> Problem:
         return catalog.document.problem(("blueprint", "version"), message, fix, "FR002")
 
-    unchecked = f"can't be checked against {file}, since it"
-    if file not in tracked:
-        return [problem(f"{unchecked} isn't a tracked file.", f"Add {file} to git.")]
-    if (reason := unreadable(root, file)) is not None:
-        return [problem(f"{unchecked} {reason}, {READS_ONLY}.", f"Make {file} a regular file in the repo.")]
     try:
-        data = (root / file).read_bytes()
+        table = project_table(root, file, tracked, "lint")
     except OSError as error:
         raise Unreadable(root / file, error) from None
-    try:
-        document = tomllib.loads(data.removeprefix(codecs.BOM_UTF8).decode("utf-8"))
-    except UnicodeDecodeError:
-        return [problem(f"{unchecked} isn't UTF-8 text.", f"Save {file} as UTF-8.")]
-    except tomllib.TOMLDecodeError as error:
-        return [problem(f"{unchecked} isn't valid TOML: {error}.", f"Fix {file} so it parses.")]
-    table = document.get("project")
-    table = table if isinstance(table, dict) else {}
+    if isinstance(table, Unread):
+        return [problem(f"can't be checked against {file}, since it {table.reason}.", table.fix)]
     found = []
-    name = table.get("name")
-    name_fix = f'Set name under [project] in {file} to a valid PEP 508 name, such as name = "my-api".'
-    if not isinstance(name, str):
-        found.append(problem(f"{file} has no [project].name string: {NAME_RULE}", name_fix))
-    elif not PROJECT_NAME.fullmatch(name):
-        found.append(problem(f"{file} has [project].name {name!r}, which isn't a valid name: {NAME_RULE}", name_fix))
+    if (named := name_problem(file, table)) is not None:
+        found.append(problem(named, name_fix(file)))
     given = table.get("version")
     version_fix = f'Set version = "{version}" under [project] in {file}, or change [blueprint].version to match it.'
     try:

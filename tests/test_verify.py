@@ -954,3 +954,99 @@ def test_any_other_value_error_in_a_build_is_a_bug_and_isnt_caught(
     with pytest.raises(ValueError, match="a fastro bug") as raised:
         build(repo, CATALOG, verify_sets(CATALOG)["minimal"], tmp_path / "scratch" / "minimal")
     assert type(raised.value) is ValueError
+
+
+PYPROJECT = "backend/pyproject.toml"
+NAME_RULE = "use letters, digits, '.', '_' and '-', starting and ending with a letter or digit, as PEP 508 says."
+NAME_FIX = f'Set name under [project] in {PYPROJECT} to a valid PEP 508 name, such as name = "my-api".'
+NAMELESS = [
+    (
+        '[project]\nversion = "0.1.0"\n',
+        f"{PYPROJECT} has no [project].name string: {NAME_RULE} {NAME_FIX}",
+    ),
+    (
+        '[project]\nname = 7\nversion = "0.1.0"\n',
+        f"{PYPROJECT} has no [project].name string: {NAME_RULE} {NAME_FIX}",
+    ),
+    (
+        '[project]\nname = "mini backend"\nversion = "0.1.0"\n',
+        f"{PYPROJECT} has [project].name 'mini backend', which isn't a valid name: {NAME_RULE} {NAME_FIX}",
+    ),
+    (b'[project]\nname = "mini\xff"\n', f"{PYPROJECT} isn't UTF-8 text. Save {PYPROJECT} as UTF-8."),
+    ("[project\n", f"{PYPROJECT} isn't valid TOML: "),
+    (None, f"{PYPROJECT} isn't a tracked file. Add {PYPROJECT} to git."),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "said"), NAMELESS, ids=["missing", "not-text", "invalid", "not-utf-8", "not-toml", "untracked"]
+)
+def test_a_pyproject_a_build_cant_take_its_name_from_exits_1_before_anything_is_built(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, text: str | bytes | None, said: str
+) -> None:
+    monkeypatch.chdir(repo)
+    file = repo / PYPROJECT
+    if text is None:
+        _git(repo, "rm", "-q", "--cached", PYPROJECT)
+    elif isinstance(text, bytes):
+        file.write_bytes(text)
+    else:
+        file.write_text(text)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+
+    code, out, err = _verify_cli("minimal")
+
+    assert (code, out) == (1, "")
+    assert err.startswith(f"error: verify can't build a set: {said}")
+    assert _calls(uv) == []
+
+
+@pytest.mark.usefixtures("hang_guard")
+def test_a_pyproject_fastro_may_not_read_exits_1_saying_why(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, replace: Callable[[Path, str, str], str]
+) -> None:
+    monkeypatch.chdir(repo)
+    reason = replace(repo, PYPROJECT, "outside")
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+
+    code, _, err = _verify_cli("minimal")
+
+    assert code == 1
+    assert err == (
+        f"error: verify can't build a set: {PYPROJECT} {reason}, and verify reads only regular files inside the repo. "
+        f"Make {PYPROJECT} a regular file in the repo.\n"
+    )
+
+
+def test_a_pyproject_the_system_wont_let_verify_open_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    (repo / PYPROJECT).chmod(0)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    try:
+        code, _, err = _verify_cli("minimal")
+    finally:
+        (repo / PYPROJECT).chmod(0o644)
+
+    assert code == 3
+    assert f"error: {repo / PYPROJECT}: Permission denied." in err
+
+
+def test_verify_refuses_a_nameless_pyproject_itself(repo: Path) -> None:
+    (repo / PYPROJECT).write_text('[project]\nversion = "0.1.0"\n')
+
+    with pytest.raises(Unbuildable, match="has no \\[project\\].name string"):
+        verify(repo, CATALOG, ["minimal"], lambda project, selection: [], keep=False)
+
+
+def test_a_pyproject_verify_isnt_allowed_to_resolve_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    (repo / "backend").chmod(0o600)
+    try:
+        code, out, err = _verify_cli("minimal")
+    finally:
+        (repo / "backend").chmod(0o755)
+
+    assert (code, out) == (3, "")
+    assert f"error: {repo / PYPROJECT}: Permission denied. Fix that, then run fastro blueprint verify again.\n" in err
+    assert _calls(uv) == []
