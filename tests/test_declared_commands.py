@@ -105,7 +105,7 @@ def test_fastro_toml_is_found_from_a_directory_below_it(repo: Path, uv: UvCalls)
 def test_the_groups_help_lists_each_command_with_its_help(repo: Path, words: list[str]) -> None:
     result = _run(repo, *words)
 
-    assert re.search(r"baseline\s+Write the baseline migration\.", result.stdout), result.output
+    assert re.search(r"baseline\s+Write the baseline migration\.", re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)), result.output
 
 
 @pytest.mark.parametrize(("features", "found"), [('"accounts", "admin"', True), ('"accounts"', False)])
