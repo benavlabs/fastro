@@ -1054,6 +1054,93 @@ def test_a_pyproject_the_system_wont_let_verify_open_exits_3(repo: Path, uv: Pat
     assert f"error: {repo / PYPROJECT}: Permission denied." in err
 
 
+ENV_EXAMPLE = "backend/.env.example"
+NOT_UTF_8 = "# caf\xe9\nA=1\n".encode("latin-1")
+
+
+def test_a_tracked_env_example_that_isnt_utf_8_exits_1_before_anything_is_built(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repo)
+    (repo / ENV_EXAMPLE).write_bytes(NOT_UTF_8)
+    _git(repo, "add", ENV_EXAMPLE)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+
+    code, out, err = _verify_cli("minimal")
+
+    assert (code, out) == (1, "")
+    assert err == f"error: verify can't build a set: {ENV_EXAMPLE} isn't UTF-8 text. Save {ENV_EXAMPLE} as UTF-8.\n"
+    assert _calls(uv) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "tracked"), [(NOT_UTF_8, False), ("\ufeffA=1\n".encode(), True)], ids=["untracked", "byte-order-mark"]
+)
+def test_an_env_example_a_build_can_read_or_wont_copy_isnt_refused(repo: Path, text: bytes, tracked: bool) -> None:
+    (repo / ENV_EXAMPLE).write_bytes(text)
+    if tracked:
+        _git(repo, "add", ENV_EXAMPLE)
+
+    assert verify(repo, CATALOG, ["minimal"], lambda project, selection: [], keep=False) == 0
+
+
+@pytest.mark.usefixtures("hang_guard")
+def test_an_env_example_fastro_may_not_read_isnt_read_for_utf_8(
+    repo: Path,
+    uv: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replace: Callable[[Path, str, str], str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(repo)
+    (repo / ENV_EXAMPLE).write_bytes(NOT_UTF_8)
+    _git(repo, "add", ENV_EXAMPLE)
+    replace(repo, ENV_EXAMPLE, "outside")
+    _scratch_at(monkeypatch, tmp_path / "scratch")
+
+    code, _, err = _verify_cli("minimal")
+
+    assert (code, err) == (
+        1,
+        f"error: verify set 'minimal' can't be built: '{ENV_EXAMPLE}' is a symlink in the source, and apply doesn't "
+        "follow one, so nothing was changed.\n",
+    )
+
+
+def test_an_env_example_the_system_wont_let_verify_open_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    (repo / ENV_EXAMPLE).write_text("A=1\n")
+    _git(repo, "add", ENV_EXAMPLE)
+    (repo / ENV_EXAMPLE).chmod(0)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    try:
+        code, _, err = _verify_cli("minimal")
+    finally:
+        (repo / ENV_EXAMPLE).chmod(0o644)
+
+    assert code == 3
+    assert f"error: {repo / ENV_EXAMPLE}: Permission denied." in err
+
+
+def test_an_env_example_verify_isnt_allowed_to_resolve_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    locked = repo / "locked"
+    locked.mkdir()
+    (locked / "env").write_text("A=1\n")
+    (repo / ENV_EXAMPLE).symlink_to(locked / "env")
+    _git(repo, "add", ENV_EXAMPLE, "locked/env")
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    locked.chmod(0o600)
+    try:
+        code, out, err = _verify_cli("minimal")
+    finally:
+        locked.chmod(0o755)
+
+    assert (code, out) == (3, "")
+    assert "Permission denied" in err
+    assert _calls(uv) == []
+
+
 def test_verify_refuses_a_nameless_pyproject_itself(repo: Path) -> None:
     (repo / PYPROJECT).write_text('[project]\nversion = "0.1.0"\n')
 
