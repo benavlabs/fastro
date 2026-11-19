@@ -481,7 +481,8 @@ def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Pro
     ``{python_root}/.env.example`` (6.1, 2.13)."""
     example = f"{catalog.info.python_root.text.rstrip('/')}/.env.example"
     reason = "isn't a tracked file" if example not in tracked else unreadable(root, example)
-    markers = _markers(root / example) if reason is None else None
+    text = _env_text(root, example) if reason is None else None
+    markers = _markers(text) if text is not None else None
     found = []
     for feature in catalog.features:
         for option in feature.options.values():
@@ -493,6 +494,9 @@ def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Pro
                 fix = f"Put {marker} on its own line, directly above {var}= in {example}."
                 if markers is None and example not in tracked:
                     message = f"has no {marker} marker, since {example} {reason}."
+                elif markers is None and reason is None:
+                    message = f"has no {marker} marker, since {example} isn't UTF-8 text."
+                    fix = f"Save {example} as UTF-8."
                 elif markers is None:
                     message = f"has no {marker} marker, since {example} {reason}, {READS_ONLY}."
                     fix = f"Make {example} a regular file in the repo."
@@ -508,17 +512,35 @@ def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Pro
     return found
 
 
-def _markers(file: Path) -> dict[tuple[str, str], list[int]]:
-    """Each ``(feature.option, VAR)`` a marker line names with the line under it, and the markers' line numbers.
+def _env_text(root: Path, file: str) -> str | None:
+    """Lint's reading of ``file`` through :func:`env_text`.
 
     Raises:
-        Unreadable: the system won't let lint open ``file``.
+        Unreadable: the system won't let lint open it.
     """
     try:
-        data = file.read_bytes()
+        return env_text(root, file)
     except OSError as error:
-        raise Unreadable(file, error) from None
-    lines = data.decode("utf-8", "replace").splitlines()
+        raise Unreadable(root / file, error) from None
+
+
+def env_text(root: Path, file: str) -> str | None:
+    """``file``, an ``.env.example``, as UTF-8 text past a byte order mark, or ``None`` when it isn't UTF-8 (1.9).
+    Lint and verify both read ``{python_root}/.env.example`` through it, so they can't disagree.
+
+    Raises:
+        OSError: the system won't let fastro open it.
+    """
+    try:
+        return (root / file).read_bytes().removeprefix(codecs.BOM_UTF8).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _markers(text: str) -> dict[tuple[str, str], list[int]]:
+    """Each ``(feature.option, VAR)`` a marker line in ``text`` names with the line under it, and the markers' line
+    numbers."""
+    lines = text.splitlines()
     found: dict[tuple[str, str], list[int]] = {}
     for number, (line, below) in enumerate(zip(lines, lines[1:], strict=False), start=1):
         marker, assigned = MARKER.fullmatch(line.rstrip()), ASSIGNED.match(below)

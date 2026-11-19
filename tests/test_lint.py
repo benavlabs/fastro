@@ -983,6 +983,26 @@ def test_an_env_example_fastro_may_not_read_makes_every_option_env_var_fr016_say
     assert finding["fix"] == f"Make {ENV_EXAMPLE} a regular file in the repo."
 
 
+def test_an_env_example_that_isnt_utf_8_makes_every_option_env_var_fr016_saying_so(repo: Path) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n")
+    (repo / ENV_EXAMPLE).write_bytes(f"# caf\xe9\n{MARKER}CACHE_BACKEND=memory\n".encode("latin-1"))
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR016"
+    assert finding["message"] == (
+        "features.cache.options.backend.env.CACHE_BACKEND: has no '# @fastro option=cache.backend' marker, since "
+        f"{ENV_EXAMPLE} isn't UTF-8 text."
+    )
+    assert finding["fix"] == f"Save {ENV_EXAMPLE} as UTF-8."
+
+
+def test_an_env_example_is_read_past_a_byte_order_mark(repo: Path) -> None:
+    _env(repo, f"\ufeff{MARKER}CACHE_BACKEND=memory\n")
+
+    assert _findings() == []
+
+
 def test_an_env_example_whose_symlink_leaves_the_repo_and_comes_back_is_read(repo: Path, replace: Replace) -> None:
     _env(repo, f"{MARKER}CACHE_BACKEND=memory\n")
     replace(repo, ENV_EXAMPLE, "back")
