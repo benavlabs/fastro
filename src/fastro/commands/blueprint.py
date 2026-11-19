@@ -8,9 +8,10 @@ from pathlib import Path
 import typer
 
 from .. import lint as linting
+from .. import sync as syncing
 from .. import verify as verifying
 from ..apply import ApplyError, RepositoryError, present, unreadable_config
-from ..engine import blueprint, catalog_check
+from ..engine import catalog_check
 from ..engine.blueprint import IncompatibleCatalog
 from ..engine.problems import CatalogError
 from ..tools import MissingToolError, NotInstalled, installed_version, require
@@ -28,7 +29,7 @@ def lint(json_: bool = typer.Option(False, "--json", help="Print spec 7's lint d
     except linting.UsageError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(2) from None
-    except (linting.Unreadable, NotInstalled) as error:
+    except (linting.Unreadable, syncing.Extending, NotInstalled) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(3) from None
     except MissingToolError as missing:
@@ -71,7 +72,7 @@ def verify(
         typer.echo(f"error: {refused}", err=True)
         raise typer.Exit(2)
     try:
-        catalog = blueprint.load("blueprint.toml", catalog_check.read_text(file), installed_version())
+        catalog = syncing.load_catalog(catalog_check.read_text(file))
         verifying.unknown(catalog, sets or [])
         require("uv")
         code = verifying.verify(root, catalog, sets or [], verifying.checks_for(catalog), keep)
@@ -80,6 +81,9 @@ def verify(
             typer.echo(str(problem), err=True)
         typer.echo("Fix these first: fastro blueprint lint lists them all.", err=True)
         raise typer.Exit(3 if isinstance(error, IncompatibleCatalog) else 1) from None
+    except syncing.Extending as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(3) from None
     except (verifying.Unbuildable, ApplyError) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(1) from None

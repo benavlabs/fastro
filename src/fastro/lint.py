@@ -15,14 +15,14 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from fastro import make
+from fastro import sync as syncing
 from fastro.apply import RepositoryError, breaks_the_rule, present, tracked_files, unreadable, unreadable_config
-from fastro.engine import blueprint, catalog_check, project
+from fastro.engine import catalog_check, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Problem
 from fastro.engine.project import PROJECT_NAME, Project
 from fastro.engine.spec import Ref, RepoPath
-from fastro.tools import installed_version
 
 LOAD_PROBLEM = "BP001"
 RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR002", "FR014", "FR016")
@@ -116,6 +116,7 @@ def lint(root: Path) -> Report:
         Unreadable: ``blueprint.toml``, ``fastro.toml``, a module file, ``pyproject.toml`` or ``.env.example`` can't be
             opened.
         IncompatibleCatalog: the catalog is for another version of fastro.
+        Extending: the catalog extends another, which this fastro can't merge yet (2.10).
         NotInstalled: fastro isn't installed.
     """
     file = root / "blueprint.toml"
@@ -134,9 +135,8 @@ def lint(root: Path) -> Report:
             raise UsageError(refused)
     found: list[Problem] = []
     catalog = loaded = None
-    tool = installed_version()
     try:
-        catalog = blueprint.load("blueprint.toml", _read(file, root), tool)
+        catalog = syncing.load_catalog(_read(file, root))
     except IncompatibleCatalog:
         raise
     except CatalogError as error:

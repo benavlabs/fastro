@@ -27,6 +27,14 @@ from fastro.verify import REPORTED_LINES, Result, Unbuildable, UnknownSet, build
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 CATALOG = blueprint.load("blueprint.toml", (MINI / "blueprint.toml").read_text(), Version("0.1.0"))
 
+EXTENDS: dict[str, tuple[str, str]] = {
+    "named": ('extends = { name = "base", version = "1.0.0" }', "base"),
+    "key-problem": ('extends = { name = "base", version = "1.0.0" }\nbogus = 1', "another catalog"),
+    "not-a-table": ('extends = "base"', "another catalog"),
+    "no-version": ('extends = { name = "base" }', "another catalog"),
+}
+EXTENDING = "error: blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet.\n"
+
 
 def _git(root: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
@@ -517,6 +525,21 @@ def test_a_catalog_for_another_fastro_exits_3(repo: Path, uv: Path, monkeypatch:
     (repo / "blueprint.toml").write_text(text.replace('requires_fastro = ">=0.1.0.dev0"', 'requires_fastro = ">=99"'))
 
     assert _verify_cli()[0] == 3
+
+
+@pytest.mark.parametrize("case", list(EXTENDS))
+def test_an_extending_catalog_is_refused_before_anything_is_built(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    extends, name = EXTENDS[case]
+    text = (repo / "blueprint.toml").read_text()
+    (repo / "blueprint.toml").write_text(
+        text.replace('requires_fastro = ">=0.1.0.dev0"', f'requires_fastro = ">=0.1.0.dev0"\n{extends}')
+    )
+
+    assert _verify_cli() == (3, "", EXTENDING.format(name=name))
 
 
 def test_an_unreadable_catalog_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:

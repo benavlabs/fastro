@@ -15,6 +15,13 @@ from fastro.cli import app
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 VERSION = metadata.version("fastro")
+EXTENDS: dict[str, tuple[str, str]] = {
+    "named": ('extends = { name = "base", version = "1.0.0" }', "base"),
+    "key-problem": ('extends = { name = "base", version = "1.0.0" }\nbogus = 1', "another catalog"),
+    "not-a-table": ('extends = "base"', "another catalog"),
+    "no-version": ('extends = { name = "base" }', "another catalog"),
+}
+EXTENDING = "error: blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet.\n"
 OWNED = 'paths = ["backend/src/modules/accounts/", "backend/tests/test_accounts.py"]'
 
 
@@ -211,6 +218,16 @@ def test_a_catalog_this_fastro_can_t_read_exits_3(repo: Path) -> None:
 
     assert (code, out) == (3, "")
     assert "requires_fastro" in err
+
+
+@pytest.mark.parametrize("flags", [[], ["--json"]])
+@pytest.mark.parametrize("case", list(EXTENDS))
+def test_an_extending_catalog_is_refused_and_exits_3_whatever_else_it_holds(repo: Path, case: str, flags: list[str]) -> None:
+    extends, name = EXTENDS[case]
+    _edit(repo / "blueprint.toml", 'requires_fastro = ">=0.1.0.dev0"', f'requires_fastro = ">=0.1.0.dev0"\n{extends}')
+    _edit(repo / "fastro.toml", "source = true", "source = false")
+
+    assert _lint(*flags) == (3, "", EXTENDING.format(name=name))
 
 
 @pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])

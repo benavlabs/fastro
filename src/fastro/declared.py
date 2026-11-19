@@ -6,15 +6,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from fastro import sync as syncing
 from fastro.apply import present, unreadable_config
-from fastro.engine import blueprint, project
+from fastro.engine import project
 from fastro.engine.blueprint import Command
 from fastro.engine.catalog_check import read_text
 from fastro.engine.problems import CatalogError
 from fastro.engine.resolve import SelectionError, select
 from fastro.engine.spec import RepoPath
 from fastro.runner import available
-from fastro.tools import NotInstalled, installed_version
+from fastro.tools import NotInstalled
 
 
 class Unavailable(Exception):
@@ -48,10 +49,12 @@ def find(start: Path) -> Path | None:
 
 
 def load(root: Path) -> Declared:
-    """The declared commands of the blueprint repo at ``root``, read as ``sync`` reads its two files (spec 3).
+    """The declared commands of the blueprint repo at ``root``: ``fastro.toml`` must set ``source = true``, then
+    ``blueprint.toml`` is loaded beside it, refused when it extends another catalog (spec 2.9, 2.10).
 
     Raises:
-        Unavailable: ``root`` is a project, its files can't be read or have problems, or fastro isn't installed.
+        Unavailable: ``root`` is a project, its files can't be read or have problems, its catalog extends another,
+            or fastro isn't installed.
     """
     try:
         text = _config(root, "fastro.toml")
@@ -62,7 +65,7 @@ def load(root: Path) -> Declared:
             )
         if not present(root / "blueprint.toml"):
             raise Unavailable("fastro.toml sets source = true, but there's no blueprint.toml beside it.")
-        catalog = blueprint.load("blueprint.toml", _config(root, "blueprint.toml"), installed_version())
+        catalog = syncing.load_catalog(_config(root, "blueprint.toml"))
         loaded = project.load("fastro.toml", text, catalog)
         selection = select(catalog, loaded.features, loaded.app.requires, loaded.options)
     except OSError as error:
@@ -74,7 +77,7 @@ def load(root: Path) -> Declared:
             f"{error.problems[0].file} has problems, so this repo's declared commands aren't available. "
             "fastro blueprint lint lists them."
         ) from None
-    except SelectionError as error:
+    except (SelectionError, syncing.Extending) as error:
         raise Unavailable(f"{error} So this repo's declared commands aren't available.") from None
     except NotInstalled as error:
         raise Unavailable(str(error)) from None

@@ -70,18 +70,31 @@ def load_source(root: Path, command: str = "sync") -> Source:
         raise UsageError(NO_CATALOG.format(command=command))
     if (refused := _refused(root, "blueprint.toml", command)) is not None:
         raise UsageError(refused)
-    try:
-        catalog = blueprint.load("blueprint.toml", _read(file, command), installed_version())
-    except ExtendingCatalogError:
-        raise Extending(EXTENDS.format(name="another catalog")) from None
-    if catalog.info.extends is not None:
-        raise Extending(EXTENDS.format(name=catalog.info.extends.name))
+    catalog = load_catalog(_read(file, command))
     text = _read(toml, command)
     if not project.load("fastro.toml", text).source:
         raise UsageError(
             f"fastro.toml doesn't set source = true, so this is a project, and fastro {command} in a project isn't here yet."
         )
     return Source(root, catalog, project.load("fastro.toml", text, catalog))
+
+
+def load_catalog(text: str) -> Blueprint:
+    """``text`` as ``blueprint.toml``, refused when it extends another catalog, whatever else it holds (spec 2.10).
+
+    Raises:
+        Extending: the catalog has a ``[blueprint].extends`` key.
+        IncompatibleCatalog: the catalog's ``schema`` or ``requires_fastro`` rules out this fastro.
+        CatalogError: the catalog has a problem.
+        NotInstalled: fastro isn't installed.
+    """
+    try:
+        catalog = blueprint.load("blueprint.toml", text, installed_version())
+    except ExtendingCatalogError:
+        raise Extending(EXTENDS.format(name="another catalog")) from None
+    if catalog.info.extends is not None:
+        raise Extending(EXTENDS.format(name=catalog.info.extends.name))
+    return catalog
 
 
 def wiring_changes(source: Source) -> list[Change]:

@@ -155,6 +155,7 @@ NO_COMMANDS = "error: this repo's declared commands aren't available, so there's
         ("unselected-feature", NOT_DECLARED),
         ("project", NO_COMMANDS),
         ("broken-catalog", NO_COMMANDS),
+        ("extending", NO_COMMANDS),
         ("outside", "error: fastro env validate runs in a project. Run it from inside one.\n"),
     ],
 )
@@ -172,6 +173,8 @@ def test_the_built_in_env_validate_is_a_usage_error_that_says_why(
         toml.write_text(toml.read_text().replace("source = true\n", ""))
     if where == "broken-catalog":
         catalog.write_text(catalog.read_text().replace('module = "scripts.baseline"', 'module = "not a module"'))
+    if where == "extending":
+        _extend(repo, 'extends = { name = "base", version = "1.0.0" }')
 
     result = _run(outside if where == "outside" else repo, "env", "validate")
 
@@ -276,6 +279,38 @@ def test_a_catalog_with_problems_warns_that_its_commands_are_missing_unless_the_
         "fastro blueprint lint lists them.\n"
     )
     assert capsys.readouterr().err == (warning if warned else "")
+
+
+def _extend(repo: Path, extends: str) -> None:
+    catalog = repo / "blueprint.toml"
+    old = 'requires_fastro = ">=0.1.0.dev0"'
+    assert old in catalog.read_text()
+    catalog.write_text(catalog.read_text().replace(old, f"{old}\n{extends}"))
+
+
+@pytest.mark.parametrize(
+    ("extends", "name"),
+    [
+        ('extends = { name = "base", version = "1.0.0" }', "base"),
+        ('extends = { name = "base", version = "1.0.0" }\nbogus = 1', "another catalog"),
+        ('extends = "base"', "another catalog"),
+    ],
+    ids=["named", "key-problem", "not-a-table"],
+)
+def test_an_extending_catalog_adds_no_declared_commands_and_warns_why(
+    repo: Path, uv: UvCalls, capsys: pytest.CaptureFixture[str], extends: str, name: str
+) -> None:
+    _extend(repo, extends)
+
+    result = _run(repo, "db", "baseline")
+
+    assert result.exit_code == 2
+    assert "No such command" in result.output
+    assert capsys.readouterr().err == (
+        f"warning: blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet. "
+        "So this repo's declared commands aren't available.\n"
+    )
+    assert uv() is None
 
 
 def test_a_project_that_isnt_a_blueprint_repo_warns_that_its_commands_wait(
@@ -435,6 +470,6 @@ def test_a_fastro_that_isnt_installed_says_so(
     def missing() -> None:
         raise NotInstalled("fastro isn't installed.")
 
-    monkeypatch.setattr("fastro.declared.installed_version", missing)
+    monkeypatch.setattr("fastro.sync.installed_version", missing)
 
     assert _unavailable(repo, capsys) == "warning: fastro isn't installed.\n"
