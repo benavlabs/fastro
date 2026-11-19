@@ -14,6 +14,17 @@ from fastro.cli import app
 from fastro.engine.render import RenderError
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
+NO_CATALOG = (
+    "there's no blueprint.toml beside fastro.toml. fastro {command} runs in a blueprint repo, which has both; in a "
+    "project it isn't here yet."
+)
+EXTENDS = 'requires_fastro = ">=0.1.0.dev0"\nextends = { name = "base", version = "1.0.0" }'
+EXTENDING = "error: blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet.\n"
+FASTRO_TOML_PROBLEMS = {
+    "not-toml": lambda text: text + "bogus = [\n",
+    "stray-key": lambda text: text + "bogus_key = 1\n",
+    "not-source": lambda text: text.replace("source = true\n", ""),
+}
 MENU = "frontend/menu.ts"
 SITE = "backend/src/wiring/admin.py"
 APP = "backend/src/wiring/app.py"
@@ -271,7 +282,18 @@ def test_a_blueprint_repo_without_its_blueprint_toml_is_a_usage_error(repo: Path
     code, _, err = _sync("--check")
 
     assert code == 2
-    assert "fastro.toml sets source = true, but there's no blueprint.toml beside it." in err
+    assert err == f"error: {NO_CATALOG.format(command='sync')}\n"
+
+
+@pytest.mark.parametrize("source", ["source = true\n", ""])
+def test_without_a_blueprint_toml_sync_says_so_whatever_fastro_toml_holds(repo: Path, source: str) -> None:
+    (repo / "blueprint.toml").unlink()
+    toml = repo / "fastro.toml"
+    toml.write_text(toml.read_text().replace("source = true\n", source) + "bogus = [\n")
+
+    code, _, err = _sync("--check")
+
+    assert (code, err) == (2, f"error: {NO_CATALOG.format(command='sync')}\n")
 
 
 @pytest.mark.parametrize("name", ["fastro.toml", "blueprint.toml"])
@@ -497,3 +519,70 @@ def test_any_other_value_error_in_sync_is_a_bug_and_isnt_caught(repo: Path, monk
     result = CliRunner().invoke(app, ["sync", "--check"])
 
     assert type(result.exception) is ValueError
+
+
+def _catalog(repo: Path, new: str) -> None:
+    catalog = repo / "blueprint.toml"
+    catalog.write_text(catalog.read_text().replace('requires_fastro = ">=0.1.0.dev0"', new))
+
+
+@pytest.mark.parametrize("flags", [[], ["--check"], ["--dry-run"]])
+def test_an_extending_catalog_is_refused_and_exits_3(repo: Path, flags: list[str]) -> None:
+    _catalog(repo, EXTENDS)
+    before = _tree(repo)
+
+    code, out, err = _sync(*flags)
+
+    assert (code, out, err) == (3, "", EXTENDING.format(name="base"))
+    assert _tree(repo) == before
+
+
+@pytest.mark.parametrize(
+    "extends",
+    [
+        EXTENDS + "\nbogus = 1",
+        'requires_fastro = ">=0.1.0.dev0"\nextends = "base"',
+        'requires_fastro = ">=0.1.0.dev0"\nextends = { name = "base" }',
+    ],
+    ids=["key-problem", "not-a-table", "no-version"],
+)
+def test_an_extending_catalog_whose_keys_dont_read_is_refused_saying_it_extends(repo: Path, extends: str) -> None:
+    _catalog(repo, extends)
+
+    code, out, err = _sync("--check")
+
+    assert (code, out, err) == (3, "", EXTENDING.format(name="another catalog"))
+
+
+@pytest.mark.parametrize("problem", list(FASTRO_TOML_PROBLEMS))
+@pytest.mark.parametrize(
+    ("new", "said"),
+    [
+        ('requires_fastro = ">=99"', "blueprint.toml:5: blueprint.requires_fastro: is '>=99'"),
+        (EXTENDS, EXTENDING.format(name="base").rstrip("\n")),
+    ],
+    ids=["incompatible", "extends"],
+)
+def test_a_catalog_this_fastro_cant_use_is_refused_whatever_fastro_toml_holds(
+    repo: Path, problem: str, new: str, said: str
+) -> None:
+    _catalog(repo, new)
+    toml = repo / "fastro.toml"
+    toml.write_text(FASTRO_TOML_PROBLEMS[problem](toml.read_text()))
+
+    code, out, err = _sync("--check")
+
+    assert (code, out) == (3, "")
+    assert err.startswith(said)
+
+
+def test_a_catalog_problem_is_reported_before_fastro_toml_is_read(repo: Path) -> None:
+    catalog = repo / "blueprint.toml"
+    catalog.write_text(catalog.read_text().replace("schema = 1", 'schema = "one"'))
+    toml = repo / "fastro.toml"
+    toml.write_text(toml.read_text().replace("source = true\n", "") + "bogus = [\n")
+
+    code, _, err = _sync("--check")
+
+    assert code == 1
+    assert err == "blueprint.toml:4: blueprint.schema: should be an integer, not a string.\n"

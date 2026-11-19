@@ -11,12 +11,10 @@ import typer
 from .. import make as making
 from .. import sync as syncing
 from ..apply import RepositoryError, file_kind, tracked_files
-from ..engine.blueprint import ExtendingCatalogError, IncompatibleCatalog
+from ..engine.blueprint import IncompatibleCatalog
 from ..engine.problems import CatalogError
 from ..engine.resolve import SelectionError, select
 from ..tools import MissingToolError, NotInstalled, installed_version
-
-EXTENDS = "blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet."
 
 
 def make(context: typer.Context) -> None:
@@ -30,16 +28,12 @@ def make(context: typer.Context) -> None:
             _lines(making.usage(None))
             raise typer.Exit(0) from None
         _fail(str(error), 2)
-    except (syncing.Unreadable, NotInstalled) as error:
+    except (syncing.Unreadable, syncing.Extending, NotInstalled) as error:
         _fail(str(error), 3)
-    except ExtendingCatalogError:
-        _fail(EXTENDS.format(name="another catalog"), 3)
     except IncompatibleCatalog as error:
         _problems(error, 3)
     except CatalogError as error:
         _problems(error, 1)
-    if source.catalog.info.extends is not None:
-        _fail(EXTENDS.format(name=source.catalog.info.extends.name), 3)
     if not args or args[0] == making.HELP:
         _lines(making.usage(source.catalog))
         raise typer.Exit(0)

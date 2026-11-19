@@ -658,3 +658,39 @@ def test_help_shows_a_bool_params_default_as_its_flag_and_no_default_for_an_empt
     assert re.search(r"--debug / --no-debug\s+Debug\. \(default: --no-debug\)\n", result.stdout)
     assert result.stdout.count("--no-debug") == 2
     assert re.search(r"--title STR\s+A title\.\n", result.stdout)
+
+
+def test_without_a_blueprint_toml_make_says_so_whatever_fastro_toml_holds(repo: Path) -> None:
+    (repo / "blueprint.toml").unlink()
+    toml = repo / "fastro.toml"
+    toml.write_text(toml.read_text().replace("source = true\n", ""))
+
+    result = _make("deploy", "local")
+
+    assert (result.exit_code, result.stderr) == (
+        2,
+        "error: there's no blueprint.toml beside fastro.toml. fastro make runs in a blueprint repo, which has both; in "
+        "a project it isn't here yet.\n",
+    )
+
+
+@pytest.mark.parametrize(
+    ("new", "said"),
+    [
+        ('requires_fastro = ">=99"', "blueprint.toml:5: blueprint.requires_fastro: is '>=99'"),
+        (
+            'requires_fastro = ">=0.1.0.dev0"\nextends = { name = "base", version = "1.0.0" }',
+            "error: blueprint.toml extends base, and this fastro can't merge an extending catalog with its base yet.",
+        ),
+    ],
+    ids=["incompatible", "extends"],
+)
+def test_a_catalog_this_fastro_cant_use_is_refused_whatever_fastro_toml_holds(repo: Path, new: str, said: str) -> None:
+    _catalog(repo, 'requires_fastro = ">=0.1.0.dev0"', new)
+    toml = repo / "fastro.toml"
+    toml.write_text(toml.read_text().replace("source = true\n", ""))
+
+    result = _make("deploy", "local")
+
+    assert result.exit_code == 3, result.output
+    assert result.stderr.startswith(said)

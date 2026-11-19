@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastro.apply import Change, file_kind, present, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, project
-from fastro.engine.blueprint import Blueprint
+from fastro.engine.blueprint import Blueprint, ExtendingCatalogError
 from fastro.engine.plan import plan
 from fastro.engine.project import Project
 from fastro.engine.render import render
@@ -16,10 +16,19 @@ from fastro.engine.resolve import select
 from fastro.tools import installed_version
 
 DEV_NULL = "/dev/null"
+NO_CATALOG = (
+    "there's no blueprint.toml beside fastro.toml. fastro {command} runs in a blueprint repo, which has both; in a "
+    "project it isn't here yet."
+)
+EXTENDS = "blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet."
 
 
 class UsageError(Exception):
     """``sync`` was run where it can't apply (spec 8: exit 2)."""
+
+
+class Extending(Exception):
+    """The catalog extends another, and this fastro can't merge the two yet (spec 2.10, 8: exit 3)."""
 
 
 class Unreadable(Exception):
@@ -39,12 +48,15 @@ class Source:
 
 
 def load_source(root: Path, command: str = "sync") -> Source:
-    """The blueprint repo at ``root``, for ``fastro <command>``.
+    """The blueprint repo at ``root``, for ``fastro <command>``, read in spec 3's order: both files must be there,
+    then ``blueprint.toml`` is loaded, then ``fastro.toml``.
 
     Raises:
-        UsageError: ``root`` has no ``fastro.toml``, it doesn't set ``source = true``, there's no
-            ``blueprint.toml`` beside it, or either file is one fastro may not read (spec 1.10).
+        UsageError: ``root`` has no ``fastro.toml``, there's no ``blueprint.toml`` beside it, either file is one
+            fastro may not read (spec 1.10), or ``fastro.toml`` doesn't set ``source = true``.
         Unreadable: either file can't be read.
+        Extending: the catalog extends another, which this fastro can't merge yet (2.10).
+        IncompatibleCatalog: the catalog's ``schema`` or ``requires_fastro`` rules out this fastro.
         CatalogError: either file has a problem, or isn't UTF-8.
     """
     toml = root / "fastro.toml"
@@ -53,17 +65,22 @@ def load_source(root: Path, command: str = "sync") -> Source:
         raise UsageError(f"{root} has no fastro.toml. Run fastro {command} in {where}.")
     if (refused := _refused(root, "fastro.toml", command)) is not None:
         raise UsageError(refused)
+    file = root / "blueprint.toml"
+    if not _present(file, command):
+        raise UsageError(NO_CATALOG.format(command=command))
+    if (refused := _refused(root, "blueprint.toml", command)) is not None:
+        raise UsageError(refused)
+    try:
+        catalog = blueprint.load("blueprint.toml", _read(file, command), installed_version())
+    except ExtendingCatalogError:
+        raise Extending(EXTENDS.format(name="another catalog")) from None
+    if catalog.info.extends is not None:
+        raise Extending(EXTENDS.format(name=catalog.info.extends.name))
     text = _read(toml, command)
     if not project.load("fastro.toml", text).source:
         raise UsageError(
             f"fastro.toml doesn't set source = true, so this is a project, and fastro {command} in a project isn't here yet."
         )
-    file = root / "blueprint.toml"
-    if not _present(file, command):
-        raise UsageError("fastro.toml sets source = true, but there's no blueprint.toml beside it.")
-    if (refused := _refused(root, "blueprint.toml", command)) is not None:
-        raise UsageError(refused)
-    catalog = blueprint.load("blueprint.toml", _read(file, command), installed_version())
     return Source(root, catalog, project.load("fastro.toml", text, catalog))
 
 

@@ -30,7 +30,7 @@ def sync(
     except syncing.UsageError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(2) from None
-    except (syncing.Unreadable, NotInstalled) as error:
+    except (syncing.Unreadable, syncing.Extending, NotInstalled) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(3) from None
     except (CatalogError, SelectionError, RenderError) as error:
