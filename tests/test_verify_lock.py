@@ -22,6 +22,13 @@ MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 TEXT = (MINI / "blueprint.toml").read_text()
 LOCKED_OUT = 'requires_fastro = ">=0.1.0.dev0"\nblueprint_only = ["pyproject.toml", "uv.lock", "backend/uv.lock"]'
 CATALOG = blueprint.load("blueprint.toml", TEXT.replace('requires_fastro = ">=0.1.0.dev0"', LOCKED_OUT), Version("0.1.0"))
+PINNED = blueprint.load(
+    "blueprint.toml",
+    TEXT.replace('requires_fastro = ">=0.1.0.dev0"', LOCKED_OUT).replace(
+        "[presets]\n", '[blueprint.dependencies]\nruntime = ["pinned>=1"]\n\n[presets]\n'
+    ),
+    Version("0.1.0"),
+)
 
 
 def _git(root: Path, *arguments: str) -> None:
@@ -166,11 +173,45 @@ def test_a_build_that_starts_from_the_workspace_lock_cant_pick_up_a_newer_releas
     tracked = tuple(path for path in tracked_files(repo) if locked or path.text != "uv.lock")
     before = _status(repo)
 
-    project = build(repo, CATALOG, (), tmp_path / "core", tracked)
+    project = build(repo, PINNED, (), tmp_path / "core", tracked)
     assert _status(repo) == before
-    install = checks_for(CATALOG)(project, select(CATALOG, ()))[0]
+    install = checks_for(PINNED)(project, select(PINNED, ()))[0]
 
     assert (install.name, install.ok) == ("install", True), install.output
-    venv_python = project.parent / ".venv" / "bin" / "python"
+    venv_python = project.parent / ".venvs" / project.name / "bin" / "python"
     shown = subprocess.run([str(venv_python), "-c", "import pinned; print(pinned.VERSION)"], capture_output=True, text=True)
     assert shown.stdout.strip() == installed
+
+
+def test_a_set_with_a_feature_s_dependency_and_one_without_each_install_into_their_own_environment(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "1.0")
+    for name, value in {
+        "UV_FIND_LINKS": str(wheels),
+        "UV_NO_INDEX": "1",
+        "UV_OFFLINE": "1",
+        "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
+        "UV_PYTHON": sys.executable,
+    }.items():
+        monkeypatch.setenv(name, value)
+    (repo / "backend/pyproject.toml").write_text(
+        '[project]\nname = "mini-backend"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n\n[tool.uv]\npackage = false\n'
+    )
+    text = TEXT.replace(
+        'summary = "A cache for slow reads"\n', 'summary = "A cache for slow reads"\ndependencies = ["pinned>=1"]\n'
+    )
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    sets = {"cached": ("cache",), "plain": ()}
+    for name, features in sets.items():
+        project = build(repo, catalog, features, tmp_path / "scratch" / name)
+        install = checks_for(catalog)(project, select(catalog, features))[0]
+        assert (install.name, install.ok) == ("install", True), install.output
+
+    imported = {
+        name: subprocess.run([str(tmp_path / "scratch/.venvs" / name / "bin/python"), "-c", "import pinned"]).returncode
+        for name in sets
+    }
+    assert imported == {"cached": 0, "plain": 1}

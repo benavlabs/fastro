@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from pathlib import Path
@@ -329,14 +330,14 @@ def test_the_built_in_checks_run_in_the_build_through_its_own_interpreter(repo: 
     assert calls[5]["argv"][4:] == ["-m", "scripts.baseline", "--check"]
 
 
-def test_every_check_shares_one_environment_drops_virtual_env_and_gets_the_toolchain_env(
+def test_every_check_of_a_set_shares_its_own_environment_drops_virtual_env_and_gets_the_toolchain_env(
     repo: Path, tmp_path: Path, uv: Path
 ) -> None:
     project, selection = _built(repo, tmp_path, APP_CATALOG, "minimal")
 
     checks_for(APP_CATALOG)(project, selection)
 
-    environment = str(tmp_path / "scratch" / ".venv")
+    environment = str(tmp_path / "scratch" / ".venvs" / "minimal")
     assert {json.dumps(call["env"]) for call in _calls(uv)} == {
         json.dumps(
             {
@@ -1160,3 +1161,55 @@ def test_a_pyproject_verify_isnt_allowed_to_resolve_exits_3(repo: Path, uv: Path
     assert (code, out) == (3, "")
     assert f"error: {repo / PYPROJECT}: Permission denied. Fix that, then run fastro blueprint verify again.\n" in err
     assert _calls(uv) == []
+
+
+def _runtime(pyproject: Path) -> object:
+    return tomllib.loads(pyproject.read_text())["project"]["dependencies"]
+
+
+def test_a_set_with_a_feature_s_dependency_and_one_without_both_pass_each_with_its_own_dependencies_and_environment(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    toml = repo / "blueprint.toml"
+    text = toml.read_text().replace('[[verify.checks]]\nname = "smoke"\nrun = ["python", "-c", "pass"]\nif = "tasks"\n', "")
+    toml.write_text(
+        text.replace(
+            'summary = "A cache for slow reads"\n', 'summary = "A cache for slow reads"\ndependencies = ["cachetools>=5"]\n'
+        )
+    )
+
+    code, out, _ = _verify_cli("queues", "minimal", "--keep")
+
+    assert code == 0
+    assert "FAIL" not in out
+    assert _runtime(scratch / "queues/backend/pyproject.toml") == ["cachetools>=5"]
+    assert _runtime(scratch / "minimal/backend/pyproject.toml") == []
+    installs = {call["cwd"]: call["env"]["UV_PROJECT_ENVIRONMENT"] for call in _calls(uv) if call["argv"][0] == "sync"}
+    assert installs == {
+        str((scratch / name / "backend").resolve()): str(scratch / ".venvs" / name) for name in ("queues", "minimal")
+    }
+
+
+def test_a_set_whose_dependencies_cant_be_merged_exits_1_naming_the_set(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    toml = repo / "blueprint.toml"
+    text = toml.read_text().replace("[presets]\n", '[blueprint.dependencies]\nruntime = ["uvloop"]\n\n[presets]\n')
+    toml.write_text(
+        text.replace(
+            'summary = "A cache for slow reads"\n',
+            """summary = "A cache for slow reads"\ndependencies = ["uvloop; os_name == 'posix'"]\n""",
+        )
+    )
+
+    code, out, err = _verify_cli("queues")
+
+    assert code == 1
+    assert "error: verify set 'queues' can't be built: uvloop has entries with different environment markers" in err
+    assert f"scratch copies left in {scratch}" in out

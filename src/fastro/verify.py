@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastro import lint as linting
+from fastro import pyproject
 from fastro.apply import ApplyError, Change, apply, breaks_the_rule, changes, file_kind, tracked_files
 from fastro.engine import catalog_check
 from fastro.engine.blueprint import Blueprint
@@ -96,20 +97,30 @@ def build(
     root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
 ) -> Path:
     """The project ``features`` give, built into ``into`` from the tracked files of the blueprint repo at ``root``
-    (``tracked``, or git's list when it's ``None``): what the plan copies, the wiring it renders, and the lock it
-    starts from as ``{python_root}/uv.lock``.
+    (``tracked``, or git's list when it's ``None``): what the plan copies, the wiring it renders, its
+    ``{python_root}/pyproject.toml`` rewritten for the selection (6.3), and the lock it starts from as
+    ``{python_root}/uv.lock``.
 
     Raises:
-        Unbuildable: the wiring can't be rendered.
+        Unbuildable: the wiring can't be rendered, or the selection's runtime dependencies can't be merged.
         ApplyError: a file the build would copy is one apply refuses.
     """
     files = tracked_files(root) if tracked is None else tracked
-    made = plan(catalog, select(catalog, features), files)
+    selection = select(catalog, features)
+    made = plan(catalog, selection, files)
     try:
         rendered = render(made)
     except (RenderError, SelectionError) as error:
         raise Unbuildable(str(error)) from None
     found = changes(made, rendered)
+    file = f"{catalog.info.python_root.text.rstrip('/')}/pyproject.toml"
+    for index, change in enumerate(found):
+        if change.path == file:
+            try:
+                text = pyproject.rewrite((root / file).read_bytes().decode("utf-8"), catalog, selection)
+            except pyproject.PyprojectError as error:
+                raise Unbuildable(str(error)) from None
+            found[index] = Change("write", file, text)
     lock = starting_lock(catalog, files)
     if lock is not None:
         found.append(Change("copy", _python_root_lock(catalog), source=lock.text))
@@ -179,7 +190,7 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
         MissingToolError: ``git`` isn't on ``PATH``, and nothing has been built; or a check needs ``uv`` and it isn't.
         Unbuildable: ``{python_root}/pyproject.toml`` gives a build no name, or a tracked
             ``{python_root}/.env.example`` isn't UTF-8, and nothing has been built; or a set's wiring can't be
-            rendered, and the run ends there.
+            rendered or its runtime dependencies can't be merged (6.3), and the run ends there.
         ApplyError: a set's build is refused. The run ends there.
         OSError: the system won't let a build read or write a file. The run ends there.
     """
@@ -223,8 +234,8 @@ def checks_for(catalog: Blueprint) -> Checks:
     interpreter, ``uv run --project {python_root}`` with the same dev dependencies: the app import (when
     ``[verify].app`` is set), every module importing, ruff, mypy and the tests. The migration baseline, when there's
     a ``db baseline`` command, runs that declared command as spec 2.9 runs it. Then each ``[[verify.checks]]`` whose
-    ``if`` holds runs from its ``cwd``. Every build of a run, ``scratch/<set>``, shares the environment at
-    ``scratch/.venv``. The environment is fastro's, without ``VIRTUAL_ENV``, ``PYTHONPATH`` and ``PYTHONHOME``, which
+    ``if`` holds runs from its ``cwd``. Each build of a run, ``scratch/<set>``, has its own environment at
+    ``scratch/.venvs/<set>``. The environment is fastro's, without ``VIRTUAL_ENV``, ``PYTHONPATH`` and ``PYTHONHOME``, which
     would point the checks outside the build, and with ``[checks.toolchain.env]`` on top.
     """
     root = catalog.info.import_root
@@ -232,7 +243,7 @@ def checks_for(catalog: Blueprint) -> Checks:
     environment.update(catalog.toolchain_env)
 
     def run(project: Path, selection: Selection) -> list[Result]:
-        shared = {**environment, "UV_PROJECT_ENVIRONMENT": str(project.parent / ".venv")}
+        shared = {**environment, "UV_PROJECT_ENVIRONMENT": str(project.parent / ".venvs" / project.name)}
         backend = (project / catalog.info.python_root.text.rstrip("/")).resolve()
         dev = _dev_dependencies(backend / "pyproject.toml")
         python = [require("uv"), "run", "--project", str(backend), *dev, "python"]

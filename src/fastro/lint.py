@@ -11,9 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from fastro import make
+from fastro import pyproject as rewriting
 from fastro import sync as syncing
 from fastro.apply import RepositoryError, breaks_the_rule, present, tracked_files, unreadable, unreadable_config
 from fastro.engine import catalog_check, envfile, project
@@ -149,6 +152,7 @@ def lint(root: Path) -> Report:
         found.extend(_open_verify_sets(catalog))
         found.extend(_name_clashes(catalog))
         found.extend(_unmatched_pyproject(root, catalog, tracked))
+        found.extend(_unmergeable(catalog))
         found.extend(_unmarked_env(root, catalog, tracked))
     toml = root / "fastro.toml"
     if os.path.lexists(toml):
@@ -398,9 +402,22 @@ class Unread:
 
 
 def project_table(root: Path, file: str, tracked: set[str], reader: str, strict: bool = False) -> dict[str, Any] | Unread:
-    """The ``[project]`` table of ``file``, read from its tracked file past a byte order mark, or why ``reader`` can't
-    read it: it isn't tracked, 1.10 rules it out, it isn't UTF-8 or it doesn't parse (2.13). Lint and verify both
-    read ``{python_root}/pyproject.toml`` through it, so they can't disagree.
+    """The ``[project]`` table of ``file``, read as :func:`pyproject_data` reads it, or why ``reader`` can't read it.
+
+    Raises:
+        OSError: as :func:`pyproject_data` says.
+    """
+    data = pyproject_data(root, file, tracked, reader, strict)
+    if isinstance(data, Unread):
+        return data
+    table = data.get("project")
+    return table if isinstance(table, dict) else {}
+
+
+def pyproject_data(root: Path, file: str, tracked: set[str], reader: str, strict: bool = False) -> dict[str, Any] | Unread:
+    """``file``, read from its tracked file past a byte order mark, or why ``reader`` can't read it: it isn't tracked,
+    1.10 rules it out, it isn't UTF-8 or it doesn't parse (2.13). Lint and verify both read
+    ``{python_root}/pyproject.toml`` through it, so they can't disagree.
 
     Raises:
         OSError: the system won't let fastro open the file, or, when ``strict``, resolve it (1.10).
@@ -413,13 +430,11 @@ def project_table(root: Path, file: str, tracked: set[str], reader: str, strict:
         )
     data = (root / file).read_bytes()
     try:
-        document = tomllib.loads(data.removeprefix(codecs.BOM_UTF8).decode("utf-8"))
+        return tomllib.loads(data.removeprefix(codecs.BOM_UTF8).decode("utf-8"))
     except UnicodeDecodeError:
         return Unread("isn't UTF-8 text", f"Save {file} as UTF-8.")
     except tomllib.TOMLDecodeError as error:
         return Unread(f"isn't valid TOML: {error}", f"Fix {file} so it parses.")
-    table = document.get("project")
-    return table if isinstance(table, dict) else {}
 
 
 def name_problem(file: str, table: dict[str, Any]) -> str | None:
@@ -439,7 +454,8 @@ def name_fix(file: str) -> str:
 
 def _unmatched_pyproject(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
     """FR002: ``[blueprint].version`` that doesn't equal ``{python_root}/pyproject.toml``'s ``[project].version``
-    under PEP 440, or that file without a valid ``[project].name``, each at ``[blueprint].version`` (2.13).
+    under PEP 440, or that file without a valid ``[project].name``, each at ``[blueprint].version``; and a declared dev
+    dependency no dev table in that file lists, at its entry (2.13).
 
     Raises:
         Unreadable: the system won't let lint open the file.
@@ -451,12 +467,14 @@ def _unmatched_pyproject(root: Path, catalog: Blueprint, tracked: set[str]) -> l
         return catalog.document.problem(("blueprint", "version"), message, fix, "FR002")
 
     try:
-        table = project_table(root, file, tracked, "lint")
+        data = pyproject_data(root, file, tracked, "lint")
     except OSError as error:
         raise Unreadable(root / file, error) from None
-    if isinstance(table, Unread):
-        return [problem(f"can't be checked against {file}, since it {table.reason}.", table.fix)]
-    found = []
+    if isinstance(data, Unread):
+        return [problem(f"can't be checked against {file}, since it {data.reason}.", data.fix)]
+    table = data.get("project")
+    table = table if isinstance(table, dict) else {}
+    found = _unlisted_dev(catalog, file, data)
     if (named := name_problem(file, table)) is not None:
         found.append(problem(named, name_fix(file)))
     given = table.get("version")
@@ -470,6 +488,60 @@ def _unmatched_pyproject(root: Path, catalog: Blueprint, tracked: set[str]) -> l
         found.append(problem(message, version_fix))
     elif parsed != version:
         found.append(problem(f"is {version}, and {file}'s [project].version is {given!r}.", version_fix))
+    return found
+
+
+def _unlisted_dev(catalog: Blueprint, file: str, data: dict[str, Any]) -> list[Problem]:
+    """FR002: each ``[blueprint.dependencies].dev`` entry, and each ``dev_dependencies`` entry of a feature or a
+    ``when``, whose package no dev table in ``file`` lists, at that entry (2.1, 6.3)."""
+    project = data.get("project")
+    tables = [project.get("optional-dependencies") if isinstance(project, dict) else None, data.get("dependency-groups")]
+    listed = set()
+    for table in tables:
+        dev = table.get("dev") if isinstance(table, dict) else None
+        listed |= {rewriting.package(item) for item in dev} if isinstance(dev, list) else set()
+    declared = [(rewriting.CORE, "dev")]
+    for feature in catalog.features:
+        declared += [(feature.at, "dev_dependencies"), *((when.at, "dev_dependencies") for when in feature.when)]
+    found = []
+    for path, key in declared:
+        for index, text in enumerate(rewriting.written(catalog, path, key)):
+            if canonicalize_name(Requirement(text).name) not in listed:
+                message = f"{text!r} isn't listed in a dev table of {file}, so no project gets it."
+                fix = (
+                    f"Add {text!r} to [project.optional-dependencies].dev or [dependency-groups].dev in {file}, or "
+                    "remove it here."
+                )
+                found.append(catalog.document.problem((*path, key, index), message, fix, "FR002"))
+    return found
+
+
+def _unmergeable(catalog: Blueprint) -> list[Problem]:
+    """FR002: each runtime dependency entry that 6.3 can't merge with one before it in ``blueprint.toml``, at that
+    entry, naming the first. Two entries from different values of one option are never compared (2.13)."""
+    declared: list[tuple[KeyPath, KeyPath | None, str | int]] = [(rewriting.CORE, None, "runtime")]
+    for feature in catalog.features:
+        declared += [(feature.at, None, "dependencies"), *((when.at, None, "dependencies") for when in feature.when)]
+        for option in feature.options.values():
+            declared += [((*option.at, "dependencies"), option.at, choice) for choice in option.dependencies]
+    entries = [
+        ((*path, key, index), text, Requirement(text), option, key)
+        for path, option, key in declared
+        for index, text in enumerate(rewriting.written(catalog, path, key))
+    ]
+    entries.sort(key=lambda entry: catalog.document.line(entry[0]))
+    found = []
+    for later, (at, text, requirement, owner, choice) in enumerate(entries):
+        name = canonicalize_name(requirement.name)
+        for earlier_at, earlier_text, earlier, earlier_owner, earlier_choice in entries[:later]:
+            exclusive = owner is not None and owner == earlier_owner and choice != earlier_choice
+            if canonicalize_name(earlier.name) != name or exclusive:
+                continue
+            if (reason := rewriting.refusal([(earlier_text, earlier), (text, requirement)])) is not None:
+                line = catalog.document.line(earlier_at)
+                message = f"{text!r} can't be merged with {earlier_text!r} on line {line}, since {name} {reason}."
+                found.append(catalog.document.problem(at, message, rewriting.MERGE_FIX.format(name=name), "FR002"))
+                break
     return found
 
 

@@ -1288,3 +1288,174 @@ def test_a_pyproject_lint_isnt_allowed_to_resolve_is_an_fr002_finding_saying_why
         f"blueprint.version: can't be checked against {PYPROJECT}, since it can't be resolved: Permission denied, and "
         "lint reads only regular files inside the repo."
     ]
+
+
+DEV_PYPROJECT = (
+    '[project]\nname = "mini-backend"\nversion = "0.1.0"\n\n'
+    '[project.optional-dependencies]\ndev = ["pytest", "Fake_Redis>=2"]\n\n'
+    '[dependency-groups]\ndev = ["freezegun", { include-group = "lint" }, "not a requirement ~"]\nlint = ["ruff"]\n'
+)
+CACHE_SUMMARY = 'summary = "A cache for slow reads"\n'
+DEV_FIX = (
+    "Add {text!r} to [project.optional-dependencies].dev or [dependency-groups].dev in " + PYPROJECT + ", or remove it here."
+)
+MERGE_FIX = (
+    "Give every entry for {name} the same environment marker, and the same direct reference when one is a direct "
+    "reference, or drop all but one."
+)
+
+
+def _line_of(repo: Path, text: str) -> int:
+    lines = (repo / "blueprint.toml").read_text().splitlines()
+    return next(number for number, line in enumerate(lines, 1) if text in line)
+
+
+def test_dev_dependencies_every_dev_table_lists_by_normalized_name_are_fine(repo: Path) -> None:
+    _pyproject(repo, DEV_PYPROJECT)
+    _edit(repo / "blueprint.toml", "[presets]\n", '[blueprint.dependencies]\ndev = ["pytest>=8"]\n\n[presets]\n')
+    _edit(repo / "blueprint.toml", CACHE_SUMMARY, CACHE_SUMMARY + 'dev_dependencies = ["fake.redis[lua]", "FreezeGun"]\n')
+
+    assert _findings() == []
+
+
+def test_a_dev_dependency_no_dev_table_lists_is_fr002_at_its_entry(repo: Path) -> None:
+    _pyproject(repo, DEV_PYPROJECT)
+    toml = repo / "blueprint.toml"
+    _edit(toml, "[presets]\n", '[blueprint.dependencies]\ndev = ["mypy"]\n\n[presets]\n')
+    _edit(toml, CACHE_SUMMARY, CACHE_SUMMARY + 'dev_dependencies = ["pytest", "respx>=0.20"]\n')
+    _edit(toml, 'services = ["redis"]\n', 'services = ["redis"]\ndev_dependencies = ["ruff"]\n')
+
+    assert _fr002() == [
+        (
+            _line_of(repo, 'dev = ["mypy"]'),
+            f"blueprint.dependencies.dev[0]: 'mypy' isn't listed in a dev table of {PYPROJECT}, so no project gets it.",
+            DEV_FIX.format(text="mypy"),
+            "blueprint.toml",
+        ),
+        (
+            _line_of(repo, "respx"),
+            f"features.cache.dev_dependencies[1]: 'respx>=0.20' isn't listed in a dev table of {PYPROJECT}, so no "
+            "project gets it.",
+            DEV_FIX.format(text="respx>=0.20"),
+            "blueprint.toml",
+        ),
+        (
+            _line_of(repo, 'dev_dependencies = ["ruff"]'),
+            f"features.cache.when[0].dev_dependencies[0]: 'ruff' isn't listed in a dev table of {PYPROJECT}, so no "
+            "project gets it.",
+            DEV_FIX.format(text="ruff"),
+            "blueprint.toml",
+        ),
+    ]
+
+
+def test_without_dev_tables_every_declared_dev_dependency_is_fr002(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", CACHE_SUMMARY, CACHE_SUMMARY + 'dev_dependencies = ["pytest"]\n')
+
+    assert [message for _, message, _, _ in _fr002()] == [
+        f"features.cache.dev_dependencies[0]: 'pytest' isn't listed in a dev table of {PYPROJECT}, so no project gets it."
+    ]
+
+
+def test_a_pyproject_lint_cant_read_is_the_one_finding_for_the_dev_dependencies_too(repo: Path) -> None:
+    _pyproject(repo, "[project\n")
+    _edit(repo / "blueprint.toml", CACHE_SUMMARY, CACHE_SUMMARY + 'dev_dependencies = ["pytest"]\n')
+
+    assert [line for line, _, _, _ in _fr002()] == [3]
+
+
+def _runtime(repo: Path, core: str, cache: str = "", backend: str = "", billing: str = "", provider: str = "") -> None:
+    toml = repo / "blueprint.toml"
+    _edit(toml, "[presets]\n", f"[blueprint.dependencies]\nruntime = {core}\n\n[presets]\n")
+    _edit(toml, CACHE_SUMMARY, CACHE_SUMMARY + cache + "\n")
+    _edit(toml, 'default = "memory"\n', f'default = "memory"\n{backend}\n')
+    _edit(toml, 'summary = "Payments"\n', f'summary = "Payments"\n{billing}\n')
+    _edit(toml, 'default = "stripe"\n', f'default = "stripe"\n{provider}\n')
+
+
+def test_runtime_entries_with_different_environment_markers_are_fr002_at_the_later_naming_the_first(repo: Path) -> None:
+    _runtime(
+        repo,
+        """["uvloop; sys_platform != 'win32'"]""",
+        cache="""dependencies = ["UVLoop>=0.19; sys_platform == 'linux'"]""",
+        billing='dependencies = ["uvloop"]',
+    )
+    first = _line_of(repo, "runtime = ")
+
+    assert _fr002() == [
+        (
+            _line_of(repo, 'dependencies = ["uvloop"]'),
+            f"""features.billing.dependencies[0]: 'uvloop' can't be merged with "uvloop; sys_platform != 'win32'" on """
+            f"line {first}, since uvloop has entries with different environment markers.",
+            MERGE_FIX.format(name="uvloop"),
+            "blueprint.toml",
+        ),
+        (
+            _line_of(repo, "UVLoop"),
+            f"""features.cache.dependencies[0]: "UVLoop>=0.19; sys_platform == 'linux'" can't be merged with """
+            f""""uvloop; sys_platform != 'win32'" on line {first}, since uvloop has entries with different """
+            "environment markers.",
+            MERGE_FIX.format(name="uvloop"),
+            "blueprint.toml",
+        ),
+    ]
+
+
+def test_the_order_is_the_file_s_so_core_written_last_gets_the_finding(repo: Path) -> None:
+    toml = repo / "blueprint.toml"
+    _edit(toml, CACHE_SUMMARY, CACHE_SUMMARY + """dependencies = ["uvloop; os_name == 'nt'"]\n""")
+    toml.write_text(toml.read_text() + '\n[blueprint.dependencies]\nruntime = ["uvloop"]\n')
+
+    assert [message for _, message, _, _ in _fr002()] == [
+        "blueprint.dependencies.runtime[0]: 'uvloop' can't be merged with \"uvloop; os_name == 'nt'\" on line "
+        f"{_line_of(repo, 'os_name')}, since uvloop has entries with different environment markers."
+    ]
+
+
+def test_entries_6_3_merges_are_fine_and_different_values_of_one_option_are_never_compared(repo: Path) -> None:
+    _runtime(
+        repo,
+        '["redis>=4", "pkg @ https://example.com/pkg-1.0.tar.gz"]',
+        cache='dependencies = ["Redis[hiredis]<6", "pkg@https://example.com/pkg-1.0.tar.gz"]',
+        backend="""dependencies = { memory = ["uvloop; os_name == 'nt'"], redis = ["uvloop"] }""",
+    )
+
+    assert _fr002() == []
+
+
+def test_a_direct_reference_that_isnt_the_same_is_fr002_and_a_when_s_if_isnt_considered(repo: Path) -> None:
+    _runtime(repo, '["pkg @ https://example.com/pkg-1.0.tar.gz"]')
+    _edit(repo / "blueprint.toml", 'services = ["redis"]\n', 'services = ["redis"]\ndependencies = ["pkg>=1"]\n')
+
+    assert [message for _, message, _, _ in _fr002()] == [
+        "features.cache.when[0].dependencies[0]: 'pkg>=1' can't be merged with 'pkg @ https://example.com/pkg-1.0.tar.gz' "
+        f"on line {_line_of(repo, 'runtime = ')}, since pkg has a direct reference, and its entries aren't the same "
+        "requirement."
+    ]
+
+
+def test_options_of_two_features_are_compared(repo: Path) -> None:
+    _runtime(
+        repo,
+        "[]",
+        backend='dependencies = { redis = ["uvloop"] }',
+        provider="""dependencies = { paddle = ["uvloop; os_name == 'nt'"] }""",
+    )
+
+    assert [line for line, _, _, _ in _fr002()] == [_line_of(repo, 'redis = ["uvloop"]')]
+
+
+def test_runtime_clashes_are_found_when_the_pyproject_cant_be_read(repo: Path) -> None:
+    _pyproject(repo, "[project\n")
+    _runtime(repo, '["uvloop"]', cache="""dependencies = ["uvloop; os_name == 'nt'"]""")
+
+    assert [line for line, _, _, _ in _fr002()] == [3, _line_of(repo, "os_name")]
+
+
+def test_two_entries_of_one_option_value_are_compared(repo: Path) -> None:
+    _runtime(repo, "[]", backend="""dependencies = { redis = ["uvloop", "uvloop; os_name == 'nt'"] }""")
+
+    assert [message for _, message, _, _ in _fr002()] == [
+        "features.cache.options.backend.dependencies.redis[1]: \"uvloop; os_name == 'nt'\" can't be merged with "
+        f"'uvloop' on line {_line_of(repo, 'redis = [')}, since uvloop has entries with different environment markers."
+    ]

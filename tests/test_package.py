@@ -49,7 +49,7 @@ def test_the_wheel_needs_no_backend(wheel: zipfile.ZipFile) -> None:
     assert requires is not None
     runtime = sorted(req.split(">")[0].split("=")[0] for req in requires if "extra ==" not in req)
 
-    assert runtime == ["jinja2", "packaging", "typer"]
+    assert runtime == ["jinja2", "packaging", "tomlkit", "typer"]
 
 
 def test_the_wheel_installs_the_fastro_command_and_the_bp_shim(wheel: zipfile.ZipFile) -> None:
