@@ -158,13 +158,22 @@ def test_the_diff_splits_lines_at_newline_only(repo: Path, separator: str) -> No
     assert syncing.diff(repo, Change("write", APP, f"a\nb{separator}c\n")) == ""
 
 
-def test_a_file_that_isnt_utf_8_differs(repo: Path) -> None:
+def test_a_file_that_isnt_utf_8_differs_and_diffs_as_git_shows_a_binary_file(repo: Path) -> None:
     (repo / APP).write_bytes(b"\xff\xfe")
 
     code, out, _ = _sync("--check")
 
+    assert (code, out) == (1, f"Binary files a/{APP} and b/{APP} differ\n")
+
+
+def test_a_file_that_isnt_utf_8_and_goes_diffs_to_dev_null(repo: Path) -> None:
+    _without_admin(repo)
+    (repo / MENU).write_bytes(b"\xff\xfe")
+
+    code, out, _ = _sync("--check")
+
     assert code == 1
-    assert f"--- a/{APP}\n+++ b/{APP}\n" in out
+    assert out.endswith(f"Binary files a/{MENU} and /dev/null differ\n")
 
 
 def test_check_and_dry_run_together_are_a_usage_error(repo: Path) -> None:
@@ -615,3 +624,227 @@ def test_a_catalog_problem_is_reported_before_fastro_toml_is_read(repo: Path) ->
 
     assert code == 1
     assert err == "blueprint.toml:4: blueprint.schema: should be an integer, not a string.\n"
+
+
+def _app(repo: Path, contributes: str) -> None:
+    toml = repo / "fastro.toml"
+    toml.write_text(toml.read_text() + f"\n[app.contributes]\n{contributes}\n")
+
+
+def _line(repo: Path, text: str) -> int:
+    return next(number for number, line in enumerate((repo / "fastro.toml").read_text().splitlines(), 1) if text in line)
+
+
+@pytest.mark.parametrize("arguments", [(), ("--check",), ("--dry-run",)])
+def test_an_app_ref_to_a_module_the_repo_doesnt_have_is_refused_at_its_line_before_anything_is_compared(
+    repo: Path, arguments: tuple[str, ...]
+) -> None:
+    _app(repo, 'routers = [{ ref = "src.nowhere:router", prefix = "/n" }]')
+    before = _tree(repo)
+
+    code, out, err = _sync(*arguments)
+
+    assert (code, out) == (1, "")
+    assert err.startswith(
+        f"fastro.toml:{_line(repo, 'src.nowhere')}: app.contributes.routers[0]: 'src.nowhere:router' names a module "
+        "the repo doesn't have: neither backend/src/nowhere.py nor backend/src/nowhere/__init__.py is there."
+    )
+    assert _tree(repo) == before
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["src.modules.cache:CacheSettings as app_cache", "src.health:database as app_db", "fastapi:FastAPI as app_api"],
+    ids=["package", "module", "outside-the-roots"],
+)
+def test_an_app_ref_to_a_module_file_or_package_or_outside_the_roots_is_fine(repo: Path, ref: str) -> None:
+    _app(repo, f'routers = [{{ ref = "{ref}", prefix = "/x" }}]')
+
+    code, out, err = _sync()
+
+    assert (code, err) == (0, "")
+    assert ref.split(" as ")[1] in (repo / APP).read_text()
+
+
+def test_an_app_ref_whose_module_is_a_symlink_out_of_the_repo_is_refused(repo: Path, tmp_path: Path) -> None:
+    (tmp_path / "outside.py").write_text("router = 1\n")
+    (repo / "backend/src/elsewhere.py").symlink_to(tmp_path / "outside.py")
+    _app(repo, 'routers = [{ ref = "src.elsewhere:router", prefix = "/n" }]')
+
+    code, _, err = _sync()
+
+    assert code == 1
+    assert "'src.elsewhere:router' names a module the repo doesn't have" in err
+
+
+def test_an_app_ref_to_a_literal_point_isnt_a_ref(repo: Path) -> None:
+    _app(repo, 'task_modules = ["src.nowhere.jobs"]')
+
+    assert _sync()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("contributes", "ref", "name"),
+    [
+        (
+            'routers = [{ ref = "src.health:database as accounts_router", prefix = "/x" }]',
+            "routers[0]: 'src.health:database as accounts_router'",
+            "accounts_router",
+        ),
+        ('settings = ["src.health:Mount"]', "settings[0]: 'src.health:Mount'", "Mount"),
+        (
+            'routers = [{ ref = "src.health:database as ROUTERS", prefix = "/x" }]',
+            "routers[0]: 'src.health:database as ROUTERS'",
+            "ROUTERS",
+        ),
+    ],
+    ids=["a-feature-s-alias", "an-import", "a-slot"],
+)
+def test_an_app_ref_whose_name_its_wiring_file_binds_otherwise_is_refused_naming_the_file(
+    repo: Path, contributes: str, ref: str, name: str
+) -> None:
+    _app(repo, contributes)
+    before = _tree(repo)
+
+    code, out, err = _sync("--check")
+
+    assert (code, out) == (1, "")
+    assert err == (
+        f"fastro.toml:{_line(repo, contributes[:12])}: app.contributes.{ref} binds {name!r} in {APP}, which that file "
+        "binds otherwise too.\n  Give it an alias nothing else in that file binds.\n"
+    )
+    assert _tree(repo) == before
+
+
+def test_an_app_ref_the_same_as_a_feature_s_import_is_merged_and_fine(repo: Path) -> None:
+    _app(repo, 'routers = [{ ref = "src.modules.accounts.routes:router as accounts_router", prefix = "/again" }]')
+
+    assert _sync()[0] == 0
+    assert (repo / APP).read_text().count("import router as accounts_router") == 1
+
+
+def test_of_two_app_refs_binding_one_name_the_later_is_refused_naming_the_first(repo: Path) -> None:
+    _app(
+        repo,
+        'routers = [{ ref = "src.health:database as mine", prefix = "/a" }]\n'
+        'settings = ["src.modules.cache.settings:CacheSettings as mine"]',
+    )
+
+    code, _, err = _sync()
+
+    assert code == 1
+    assert err == (
+        f"fastro.toml:{_line(repo, 'CacheSettings as mine')}: app.contributes.settings[0]: "
+        f"'src.modules.cache.settings:CacheSettings as mine' binds 'mine' in {APP}, which the app ref "
+        "'src.health:database as mine' binds too.\n  Give it an alias nothing else in that file binds.\n"
+    )
+
+
+def test_a_directory_where_an_app_ref_s_module_file_would_be_isnt_one(repo: Path) -> None:
+    (repo / "backend/src/nowhere.py").mkdir()
+    _app(repo, 'routers = [{ ref = "src.nowhere:router as mine", prefix = "/n" }]')
+
+    code, _, err = _sync()
+
+    assert code == 1
+    assert "'src.nowhere:router as mine' names a module the repo doesn't have" in err
+
+
+def test_the_same_app_ref_twice_binds_one_name_once(repo: Path) -> None:
+    _app(
+        repo,
+        'routers = [{ ref = "src.health:database as mine", prefix = "/a" }, '
+        '{ ref = "src.health:database as mine", prefix = "/b" }]',
+    )
+
+    assert _sync()[0] == 0
+
+
+def test_a_third_app_ref_binding_the_name_names_the_first(repo: Path) -> None:
+    _app(
+        repo,
+        'routers = [{ ref = "src.health:database as mine", prefix = "/a" }, '
+        '{ ref = "src.modules.accounts.routes:router as mine", prefix = "/b" }]\n'
+        'settings = ["src.modules.cache.settings:CacheSettings as mine"]',
+    )
+
+    code, _, err = _sync()
+
+    assert code == 1
+    assert err.count("which the app ref 'src.health:database as mine' binds too.") == 2
+
+
+def test_a_reexport_slot_binds_its_own_name_not_the_ref_s(repo: Path) -> None:
+    _without_admin(repo)
+    toml = repo / "blueprint.toml"
+    toml.write_text(
+        toml.read_text().replace(
+            'admin.py"\ndoc = "The admin site the app mounts."\n',
+            'admin.py"\ndoc = "The admin site the app mounts."\nimports = ["from ..health import database"]\n',
+        )
+    )
+    _app(repo, 'admin_site = ["src.modules.admin.site:database"]')
+
+    code, _, err = _sync()
+
+    assert (code, err) == (0, "")
+    assert "from ..modules.admin.site import database as SITE" in (repo / SITE).read_text()
+
+
+def test_a_utf_8_file_holding_one_nul_diffs_as_text(repo: Path) -> None:
+    (repo / APP).write_text("\0")
+
+    code, out, _ = _sync("--check")
+
+    assert code == 1
+    assert out.startswith(f"--- a/{APP}\n+++ b/{APP}\n@@ -1 +1,")
+    assert "-\0\n\\ No newline at end of file\n" in out
+
+
+def test_an_app_data_contribution_isnt_a_ref(repo: Path) -> None:
+    _app(repo, 'menu = [{ data = { href = "/mine", label = "Mine" } }]')
+
+    assert _sync()[0] == 0
+    assert "/mine" in (repo / MENU).read_text()
+
+
+def test_an_app_ref_whose_module_fastro_cant_look_at_exits_3(repo: Path) -> None:
+    locked = repo / "backend/src/locked"
+    locked.mkdir()
+    (locked / "mod.py").write_text("x = 1\n")
+    _app(repo, 'routers = [{ ref = "src.locked.mod:x as mine", prefix = "/l" }]')
+    locked.chmod(0)
+    try:
+        code, out, err = _sync()
+    finally:
+        locked.chmod(0o755)
+
+    assert (code, out) == (3, "")
+    assert (
+        err == f"error: can't read {locked / 'mod.py'}: Permission denied. Check its permissions, then run fastro sync again.\n"
+    )
+
+
+def test_an_app_ref_merging_with_a_feature_s_import_doesnt_hide_one_that_shadows_it(repo: Path) -> None:
+    _app(
+        repo,
+        'routers = [{ ref = "src.health:database as accounts_router", prefix = "/a" }, '
+        '{ ref = "src.modules.accounts.routes:router as accounts_router", prefix = "/b" }]',
+    )
+
+    code, _, err = _sync()
+
+    assert code == 1
+    assert "routers[0]: 'src.health:database as accounts_router' binds 'accounts_router'" in err
+    assert "which that file binds otherwise too." in err
+    assert "routers[1]: 'src.modules.accounts.routes:router as accounts_router'" in err
+
+
+@pytest.mark.parametrize("module", ["scripts.nowhere", "tests.nowhere"])
+def test_an_app_ref_under_scripts_or_tests_is_checked_too(repo: Path, module: str) -> None:
+    _app(repo, f'routers = [{{ ref = "{module}:x as mine", prefix = "/n" }}]')
+
+    code, _, err = _sync()
+
+    assert code == 1
+    assert f"'{module}:x as mine' names a module the repo doesn't have" in err

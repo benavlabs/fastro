@@ -19,16 +19,18 @@ from fastro import make
 from fastro import pyproject as rewriting
 from fastro import sync as syncing
 from fastro.apply import RepositoryError, breaks_the_rule, present, tracked_files, unreadable, unreadable_config
-from fastro.engine import catalog_check, envfile, project
+from fastro.engine import bindings, catalog_check, envfile, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
+from fastro.engine.plan import plan
 from fastro.engine.positions import KeyPath
-from fastro.engine.problems import CatalogError, Problem
+from fastro.engine.problems import CatalogError, Document, Problem
 from fastro.engine.project import PROJECT_NAME, Project
+from fastro.engine.render import RenderError, shadows
+from fastro.engine.resolve import SelectionError, select
 from fastro.engine.spec import Ref, RepoPath
 
 LOAD_PROBLEM = "BP001"
 RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR002", "FR014", "FR016")
-CHECKED_ROOTS = ("scripts", "tests")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
 APP_FIX = "Point app at a module the repo has, or add its file to git."
@@ -135,7 +137,8 @@ def lint(root: Path) -> Report:
         if refused is not None:
             raise UsageError(refused)
     found: list[Problem] = []
-    catalog = loaded = None
+    catalog = loaded = checked = None
+    tracked: set[str] = set()
     try:
         catalog = syncing.load_catalog(_read(file, root))
     except IncompatibleCatalog:
@@ -149,8 +152,7 @@ def lint(root: Path) -> Report:
             raise UsageError(f"{error}. Run fastro blueprint lint in a blueprint repo, which git tracks.") from None
         found.extend(_missing_paths(catalog, tracked))
         found.extend(_missing_modules(catalog, tracked))
-        found.extend(_overlay_collisions(catalog, tracked))
-        found.extend(_unresolved_refs(root, catalog, tracked))
+        found.extend(_unresolved_refs(root, catalog, tracked, catalog.document, _declared_refs(catalog)))
         found.extend(_open_verify_sets(catalog))
         found.extend(_name_clashes(catalog))
         found.extend(_unmatched_pyproject(root, catalog, tracked))
@@ -166,8 +168,15 @@ def lint(root: Path) -> Report:
                 found.append(loaded.document.problem(("source",), message, SOURCE_FIX))
             elif catalog is not None:
                 loaded = project.load("fastro.toml", text, catalog)
+                checked = loaded
         except CatalogError as error:
             found.extend(error.problems)
+    if catalog is not None:
+        found.extend(_overlay_collisions(catalog, tracked, checked.app.paths if checked is not None else ()))
+    if catalog is not None and checked is not None:
+        refs = syncing.app_refs(catalog, checked.app.contributes)
+        found.extend(_unresolved_refs(root, catalog, tracked, checked.document, refs))
+        found.extend(_shadowing(catalog, checked))
     return Report(tuple(sorted(_finding(problem) for problem in found)), catalog, loaded)
 
 
@@ -225,9 +234,10 @@ def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
     return found
 
 
-def _overlay_collisions(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
-    """BP003: each tracked overlay file whose project path a tracked file outside ``blueprint_only``, a wiring file or
-    an overlay file before it gives a project too, at ``[blueprint].overlay`` (2.1)."""
+def _overlay_collisions(catalog: Blueprint, tracked: set[str], app: tuple[RepoPath, ...]) -> list[Problem]:
+    """BP003: each tracked overlay file whose project path an ``[app].paths`` entry of the blueprint's own
+    ``fastro.toml`` covers, or a tracked file outside ``blueprint_only``, a wiring file or an overlay file before it
+    gives a project too, at ``[blueprint].overlay`` (2.1)."""
     if catalog.info.overlay is None:
         return []
     base = catalog.info.overlay.text.rstrip("/") + "/"
@@ -236,7 +246,11 @@ def _overlay_collisions(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
     found = []
     for path in sorted(path for path in tracked if path.startswith(base)):
         target = path.removeprefix(base).removesuffix(".j2")
-        if target in given:
+        entry = next((entry for entry in app if entry.covers(target)), None)
+        if entry is not None:
+            message = f"{path!r} gives a project {target!r}, which the [app].paths entry {entry.text!r} covers."
+            found.append(catalog.document.problem(("blueprint", "overlay"), message, OVERLAY_FIX, "BP003"))
+        elif target in given:
             message = f"{path!r} gives a project {target!r}, which {given[target]} gives it too."
             found.append(catalog.document.problem(("blueprint", "overlay"), message, OVERLAY_FIX, "BP003"))
         else:
@@ -256,7 +270,7 @@ def _missing_modules(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
         declared.append((("verify", "app"), catalog.verify.app, None, APP_FIX))
     for at, name, cwd_path, fix in declared:
         parts = name.split(".")
-        if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
+        if parts[0] not in (catalog.info.import_root, *syncing.CHECKED_ROOTS):
             continue
         cwd = (cwd_path or catalog.info.python_root).text.rstrip("/")
         module, package = f"{cwd}/{'/'.join(parts)}.py", f"{cwd}/{'/'.join(parts)}/__init__.py"
@@ -294,38 +308,50 @@ def _declared_refs(catalog: Blueprint) -> list[tuple[KeyPath, Ref]]:
     return found
 
 
-def _unresolved_refs(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
-    """FR014: each ref, to a module under ``import_root``, ``scripts`` or ``tests``, whose module's tracked file
-    doesn't bind its name at module level. The file is parsed, never imported (2.13)."""
-    python_root = catalog.info.python_root.text.rstrip("/")
+def _unresolved_refs(
+    root: Path, catalog: Blueprint, tracked: set[str], document: Document, refs: list[tuple[KeyPath, Ref]]
+) -> list[Problem]:
+    """FR014: each of ``refs``, written in ``document``, to a module under ``import_root``, ``scripts`` or ``tests``,
+    whose module's tracked file doesn't bind its name at module level. The file is parsed, never imported (2.13)."""
     bound: dict[str, frozenset[str] | str | None] = {}
     found = []
-    for at, ref in _declared_refs(catalog):
-        parts = ref.module.split(".")
-        if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
+    for at, ref in refs:
+        files = syncing.module_files(catalog, ref)
+        if files is None:
             continue
-        module, package = f"{python_root}/{'/'.join(parts)}.py", f"{python_root}/{'/'.join(parts)}/__init__.py"
+        module, package = files
         reasons = {path: unreadable(root, path) for path in (module, package) if path in tracked}
         file = next((path for path, reason in reasons.items() if reason is None), None)
         if file is None and reasons:
             first, reason = next(iter(reasons.items()))
             message = f"{str(ref)!r} can't be checked: {first} {reason}, {READS_ONLY}."
-            found.append(catalog.document.problem(at, message, READ_FIX, "FR014"))
+            found.append(document.problem(at, message, READ_FIX, "FR014"))
             continue
         if file is None:
             message = f"{str(ref)!r} names a module the repo doesn't have: neither {module} nor {package} is tracked."
-            found.append(catalog.document.problem(at, message, REF_MODULE_FIX, "FR014"))
+            found.append(document.problem(at, message, REF_MODULE_FIX, "FR014"))
             continue
         if file not in bound:
             bound[file] = _module_names(root / file)
         names = bound[file]
         if isinstance(names, str):
             message = f"{str(ref)!r} can't be checked: {file} doesn't parse ({names})."
-            found.append(catalog.document.problem(at, message, PARSE_FIX, "FR014"))
+            found.append(document.problem(at, message, PARSE_FIX, "FR014"))
         elif names is not ANY_NAME and ref.attr not in names:
             message = f"{str(ref)!r} names {ref.attr!r}, which {file} doesn't define at module level."
-            found.append(catalog.document.problem(at, message, REF_FIX, "FR014"))
+            found.append(document.problem(at, message, REF_FIX, "FR014"))
     return found
+
+
+def _shadowing(catalog: Blueprint, checked: Project) -> list[Problem]:
+    """BP001: each ``[app].contributes`` ref whose name a wiring file its selection renders binds otherwise, at the ref
+    in ``fastro.toml`` (3, 2.13). A selection whose wiring can't be rendered is checked no further."""
+    try:
+        selection = select(catalog, checked.features, checked.app.requires, checked.options)
+        found = shadows(plan(catalog, selection, ()), checked.app.contributes, checked.document.line)
+    except (RenderError, SelectionError):
+        return []
+    return [checked.document.problem(at, message, syncing.ALIAS_FIX) for at, message in found]
 
 
 def _module_names(file: Path) -> frozenset[str] | str | None:
@@ -343,39 +369,8 @@ def _module_names(file: Path) -> frozenset[str] | str | None:
         tree = ast.parse(source, str(file))
     except SyntaxError as error:
         return f"{error.msg} on line {error.lineno}" if error.lineno else error.msg
-    names: set[str] = set()
-    pending: list[ast.stmt] = list(tree.body)
-    while pending:
-        node = pending.pop()
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            names.update(name for target in node.targets for name in _targets(target))
-        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
-            names.update(_targets(node.target))
-        elif isinstance(node, ast.Import):
-            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if any(alias.name == "*" for alias in node.names):
-                return ANY_NAME
-            names.update(alias.asname or alias.name for alias in node.names)
-        elif isinstance(node, ast.If | ast.With | ast.AsyncWith):
-            pending += [*node.body, *(node.orelse if isinstance(node, ast.If) else [])]
-        elif isinstance(node, ast.Try | ast.TryStar):
-            pending += [*node.body, *node.orelse, *node.finalbody]
-            pending += [statement for handler in node.handlers for statement in handler.body]
-    return frozenset(names)
-
-
-def _targets(target: ast.expr) -> list[str]:
-    """The names an assignment target binds: a name, or the names a tuple, list or starred target unpacks into."""
-    if isinstance(target, ast.Name):
-        return [target.id]
-    if isinstance(target, ast.Starred):
-        return _targets(target.value)
-    if isinstance(target, ast.Tuple | ast.List):
-        return [name for element in target.elts for name in _targets(element)]
-    return []
+    found = bindings.bindings(tree)
+    return ANY_NAME if any(name == bindings.STAR for name, _ in found) else frozenset(name for name, _ in found)
 
 
 def _open_verify_sets(catalog: Blueprint) -> list[Problem]:

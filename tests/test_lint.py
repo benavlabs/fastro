@@ -1546,3 +1546,97 @@ def test_two_entries_of_one_option_value_are_compared(repo: Path) -> None:
         "features.cache.options.backend.dependencies.redis[1]: \"uvloop; os_name == 'nt'\" can't be merged with "
         f"'uvloop' on line {_line_of(repo, 'redis = [')}, since uvloop has entries with different environment markers."
     ]
+
+
+def _app(repo: Path, table: str) -> None:
+    toml = repo / "fastro.toml"
+    toml.write_text(toml.read_text() + f"\n{table}\n")
+
+
+def _toml_line(repo: Path, text: str) -> int:
+    return next(number for number, line in enumerate((repo / "fastro.toml").read_text().splitlines(), 1) if text in line)
+
+
+def test_an_app_ref_to_a_module_without_a_tracked_file_is_fr014_at_the_ref_in_fastro_toml(repo: Path) -> None:
+    (repo / "backend/src/untracked.py").write_text("router = 1\n")
+    _app(repo, '[app.contributes]\nrouters = [{ ref = "src.untracked:router as mine", prefix = "/m" }]')
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["line"], finding["code"]) == ("fastro.toml", _toml_line(repo, "untracked"), "FR014")
+    assert finding["message"] == (
+        "app.contributes.routers[0]: 'src.untracked:router as mine' names a module the repo doesn't have: neither "
+        "backend/src/untracked.py nor backend/src/untracked/__init__.py is tracked."
+    )
+
+
+def test_an_app_ref_whose_module_doesnt_bind_its_name_is_fr014(repo: Path) -> None:
+    _app(repo, '[app.contributes]\nrouters = [{ ref = "src.health:nothing as mine", prefix = "/m" }]')
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["code"]) == ("fastro.toml", "FR014")
+    assert finding["message"] == (
+        "app.contributes.routers[0]: 'src.health:nothing as mine' names 'nothing', which backend/src/health.py doesn't "
+        "define at module level."
+    )
+
+
+def test_an_app_ref_whose_name_its_wiring_file_binds_otherwise_is_bp001_at_the_ref(repo: Path) -> None:
+    _app(repo, '[app.contributes]\nrouters = [{ ref = "src.health:database as accounts_router", prefix = "/x" }]')
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["line"], finding["code"]) == ("fastro.toml", _toml_line(repo, "accounts_router"), "BP001")
+    assert finding["message"] == (
+        "app.contributes.routers[0]: 'src.health:database as accounts_router' binds 'accounts_router' in "
+        "backend/src/wiring/app.py, which that file binds otherwise too."
+    )
+    assert finding["fix"] == "Give it an alias nothing else in that file binds."
+
+
+def test_app_refs_arent_checked_when_fastro_toml_isnt_checked_against_the_catalog(repo: Path) -> None:
+    _app(repo, '[app.contributes]\nrouters = [{ ref = "src.nowhere:router as accounts_router", prefix = "/x" }]')
+    _edit(repo / "fastro.toml", "source = true\n", "")
+
+    assert [finding["code"] for finding in _findings()] == ["BP001"]
+
+
+def test_an_overlay_file_at_a_path_app_paths_covers_is_bp003_naming_the_entry(repo: Path) -> None:
+    _app(repo, '[app]\npaths = ["backend/src/mine/"]')
+
+    assert _overlay(repo, "overlay/backend/src/mine/x.py.j2") == [
+        (
+            _line_of(repo, 'overlay = "overlay"'),
+            "blueprint.overlay: 'overlay/backend/src/mine/x.py.j2' gives a project 'backend/src/mine/x.py', which the "
+            "[app].paths entry 'backend/src/mine/' covers.",
+            OVERLAY_FIX,
+        )
+    ]
+
+
+def test_a_selection_whose_wiring_cant_render_isnt_checked_for_shadowing(repo: Path) -> None:
+    _app(repo, '[app.contributes]\nemail_sender = ["src.health:database as accounts_router"]')
+
+    assert [finding["code"] for finding in _findings()] == []
+
+
+def test_an_app_data_contribution_isnt_a_ref_to_lint(repo: Path) -> None:
+    _app(repo, '[app.contributes]\nmenu = [{ data = { href = "/mine", label = "Mine" } }]')
+
+    assert _findings() == []
+
+
+def test_an_app_paths_entry_wins_over_a_core_file_at_the_same_path(repo: Path) -> None:
+    _app(repo, '[app]\npaths = ["backend/src/app.py"]')
+
+    assert [message for _, message, _ in _overlay(repo, "overlay/backend/src/app.py.j2")] == [
+        "blueprint.overlay: 'overlay/backend/src/app.py.j2' gives a project 'backend/src/app.py', which the "
+        "[app].paths entry 'backend/src/app.py' covers."
+    ]
+
+
+def test_an_app_ref_under_scripts_is_checked_by_fr014(repo: Path) -> None:
+    _app(repo, '[app.contributes]\nrouters = [{ ref = "scripts.nowhere:x as mine", prefix = "/n" }]')
+
+    assert [(finding["code"], finding["file"]) for finding in _findings()] == [("FR014", "fastro.toml")]

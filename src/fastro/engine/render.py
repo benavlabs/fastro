@@ -6,15 +6,18 @@ import ast
 import json
 import re
 import sys
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 
-from fastro.engine.blueprint import Blueprint, Contributions, Info, Slot, Wiring
+from fastro.engine import bindings
+from fastro.engine.blueprint import Blueprint, Contribution, Contributions, Info, Slot, Wiring
 from fastro.engine.plan import Plan
+from fastro.engine.positions import KeyPath
 from fastro.engine.resolve import APP, Taken, check_fallback_slots, check_one_points, taken
 from fastro.engine.spec import Ref, RepoPath
 
 CORE = "core"
+STAND_IN = "_fastro_app_"
 FUTURE, STDLIB, THIRD_PARTY, FIRST_PARTY, LOCAL = range(5)
 FIRST_PARTY_EXTRA = ("scripts", "tests")
 
@@ -174,6 +177,59 @@ def render(plan: Plan, app: Contributions | None = None) -> dict[str, str]:
     }
 
 
+def shadows(plan: Plan, app: Contributions, line: Callable[[KeyPath], int]) -> list[tuple[KeyPath, str]]:
+    """Each ``app`` ref whose name a Python wiring file it's rendered into binds otherwise, as FR014 reads a binding,
+    with where ``fastro.toml`` writes it and why: of two app refs that bind one name, the later one, by the ``line``
+    of ``fastro.toml`` each is written on and then by declaration order (3).
+
+    What a file binds otherwise is what it binds when each app ref is imported from a module of its own, so the
+    slots render as they will. An import the import block merges with the ref's own isn't another binding. A
+    ``reexport`` slot binds its own name, and a ``literal`` or ``data`` slot takes no refs.
+    """
+    catalog = plan.catalog
+    kept = {slot.point for file in catalog.wiring for slot in file.slots if slot.literal or slot.kind in ("data", "reexport")}
+    entries = [(point, item) for point, items in app.items() for item in items]
+    order = {id(item): (line(item.at), index) for index, (_, item) in enumerate(entries)}
+    stand_ins: dict[str, list[Contribution]] = {}
+    for index, (point, item) in enumerate(entries):
+        if point not in kept:
+            ref = as_ref(item.target)
+            item = replace(item, target=Ref(f"{STAND_IN}{index}", ref.attr, ref.alias))
+        stand_ins.setdefault(point, []).append(item)
+    rendered = render(plan, {point: tuple(items) for point, items in stand_ins.items()})
+    found = taken(catalog, plan.selection, app)
+    problems = []
+    for file in catalog.wiring:
+        if file.path.text not in rendered or file.slots[0].kind == "data":
+            continue
+        refs = sorted(
+            (
+                (order[id(item.contribution)], item.contribution.at, as_ref(item.contribution.target))
+                for slot in file.slots
+                if not slot.literal and slot.kind != "reexport"
+                for item in found.get(slot.point, ())
+                if item.owner == APP
+            ),
+            key=lambda entry: entry[0],
+        )
+        otherwise: dict[str, set[bindings.Source]] = {}
+        for name, source in bindings.bindings(ast.parse(rendered[file.path.text])):
+            if not (source and source[0] == "from" and str(source[2]).startswith(STAND_IN)):
+                otherwise.setdefault(name, set()).add(source)
+        first: dict[str, tuple[bindings.Source, Ref]] = {}
+        for _, at, ref in refs:
+            name, source = bindings.bindings(ast.parse(ref_import(ref, file.path, catalog.info)))[0]
+            if otherwise.get(name, {source}) - {source}:
+                problems.append((at, f"{str(ref)!r} binds {name!r} in {file.path.text}, which that file binds otherwise too."))
+            elif name in first and first[name][0] != source:
+                earlier = str(first[name][1])
+                problems.append(
+                    (at, f"{str(ref)!r} binds {name!r} in {file.path.text}, which the app ref {earlier!r} binds too.")
+                )
+            first.setdefault(name, (source, ref))
+    return problems
+
+
 def render_python(catalog: Blueprint, file: Wiring, found: Mapping[str, tuple[Taken, ...]]) -> str:
     """The text of the Python wiring ``file``, from each point's ordered contributions in ``found`` (2.6, 2.8).
 
@@ -216,13 +272,13 @@ def _item(catalog: Blueprint, file: Wiring, slot: Slot, item: Taken) -> tuple[st
     fields: dict[str, object] = {**slot.defaults, **contribution.fields}
     if slot.literal:
         return (slot.item or '"{value}"').format(**fields, value=contribution.target), []
-    ref = _ref(contribution.target)
+    ref = as_ref(contribution.target)
     fields.update(name=ref.alias or ref.attr, ref=str(ref), module=ref.module, attr=ref.attr)
     template = slot.item or ("{name}()" if contribution.call else "{name}")
     return template.format(**fields), [ref_import(ref, file.path, catalog.info)]
 
 
-def _ref(target: object) -> Ref:
+def as_ref(target: object) -> Ref:
     """A contribution's target as a ref: parsed already for a ``ref`` table, or parsed here from a bare string."""
     return target if isinstance(target, Ref) else Ref.parse(str(target))
 
@@ -253,7 +309,7 @@ def _list(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]
 def _value(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:
     """``NAME: ANN = name`` for its one contribution, or ``= FALLBACK`` with its imports when there's none (2.6)."""
     if items:
-        ref = _ref(items[0].contribution.target)
+        ref = as_ref(items[0].contribution.target)
         return f"{slot.name}: {slot.annotation} = {ref.alias or ref.attr}\n", [ref_import(ref, file.path, catalog.info)]
     if slot.fallback is None:
         raise RenderError(f"{slot.name} has no contribution and no fallback.")
@@ -265,9 +321,9 @@ def _class(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...
 
     The bases go on one line when it fits in the line length, and one per line with a trailing comma when it doesn't.
     """
-    refs = [_ref(item.contribution.target) for item in items]
+    refs = [as_ref(item.contribution.target) for item in items]
     if not refs and slot.fallback is not None:
-        refs = [_ref(slot.fallback)]
+        refs = [as_ref(slot.fallback)]
     refs += slot.append
     names = [ref.name for ref in refs]
     line = f"class {slot.name}({', '.join(names)}):" if names else f"class {slot.name}:"
@@ -289,9 +345,9 @@ def _reexport(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, 
     """``__all__ = ["NAME"]``, with ``from M import ATTR as NAME`` for the import block: the contribution, or else the
     fallback, and no ``as NAME`` when ATTR is NAME (2.6)."""
     if items:
-        ref = _ref(items[0].contribution.target)
+        ref = as_ref(items[0].contribution.target)
     elif slot.fallback is not None:
-        ref = _ref(slot.fallback)
+        ref = as_ref(slot.fallback)
     else:
         raise RenderError(f"{slot.name} has no contribution and no fallback.")
     bound = Ref(ref.module, ref.attr, None if ref.attr == slot.name else slot.name)

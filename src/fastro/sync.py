@@ -6,13 +6,16 @@ import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import Change, file_kind, present, unreadable, unreadable_config
+from fastro.apply import Change, breaks_the_rule, file_kind, present, unreadable, unreadable_config
 from fastro.engine import blueprint, catalog_check, envfile, project
-from fastro.engine.blueprint import Blueprint, ExtendingCatalogError
+from fastro.engine.blueprint import Blueprint, Contributions, ExtendingCatalogError
 from fastro.engine.plan import plan
+from fastro.engine.positions import KeyPath
+from fastro.engine.problems import CatalogError
 from fastro.engine.project import Project
-from fastro.engine.render import render
+from fastro.engine.render import as_ref, render, shadows
 from fastro.engine.resolve import select
+from fastro.engine.spec import Ref
 from fastro.tools import installed_version
 
 DEV_NULL = "/dev/null"
@@ -22,6 +25,16 @@ NO_CATALOG = (
     "project it isn't here yet."
 )
 EXTENDS = "blueprint.toml extends {name}, and this fastro can't merge an extending catalog with its base yet."
+CHECKED_ROOTS = ("scripts", "tests")
+MODULE_FIX = "Point the ref at a module the repo has, or add its file."
+ALIAS_FIX = "Give it an alias nothing else in that file binds."
+
+
+class _NotText:
+    """What a file holds when it isn't UTF-8 text: unequal to any text, so it always differs (spec 3)."""
+
+
+NOT_TEXT = _NotText()
 
 
 class UsageError(Exception):
@@ -103,11 +116,25 @@ def wiring_changes(source: Source) -> list[Change]:
     each wiring file on disk that the selection doesn't render, by path.
 
     Raises:
-        Unreadable: the system won't let fastro look at a wiring path or open the file there (spec 8).
+        CatalogError: an ``[app].contributes`` ref names a module the repo doesn't have, or binds a name its wiring
+            file binds otherwise (3).
+        Unreadable: the system won't let fastro look at a wiring path or a module file, or open a wiring file (spec 8).
     """
     loaded = source.project
     selection = select(source.catalog, loaded.features, loaded.app.requires, loaded.options)
-    rendered = render(plan(source.catalog, selection, ()), loaded.app.contributes)
+    made = plan(source.catalog, selection, ())
+    rendered = render(made, loaded.app.contributes)
+    problems = [
+        loaded.document.problem(at, f"{str(ref)!r} {reason}", MODULE_FIX)
+        for at, ref in app_refs(source.catalog, loaded.app.contributes)
+        if (reason := _missing_module(source.root, source.catalog, ref)) is not None
+    ]
+    problems += [
+        loaded.document.problem(at, message, ALIAS_FIX)
+        for at, message in shadows(made, loaded.app.contributes, loaded.document.line)
+    ]
+    if problems:
+        raise CatalogError(problems)
     found = []
     for file in sorted(source.catalog.wiring, key=lambda file: file.path.text):
         path = file.path.text
@@ -119,13 +146,49 @@ def wiring_changes(source: Source) -> list[Change]:
     return found
 
 
+def app_refs(catalog: Blueprint, contributes: Contributions) -> list[tuple[KeyPath, Ref]]:
+    """Each ``[app].contributes`` ref to a point no ``literal`` or ``data`` slot collects, with where it's written."""
+    values = {slot.point for file in catalog.wiring for slot in file.slots if slot.literal or slot.kind == "data"}
+    return [(item.at, as_ref(item.target)) for point, items in contributes.items() if point not in values for item in items]
+
+
+def module_files(catalog: Blueprint, ref: Ref) -> tuple[str, str] | None:
+    """The two files ``ref``'s module can be, ``<parts>.py`` and ``<parts>/__init__.py`` under ``python_root``, or
+    ``None`` when its first part isn't ``import_root``, ``scripts`` or ``tests`` and it isn't checked (2.13)."""
+    parts = ref.module.split(".")
+    if parts[0] not in (catalog.info.import_root, *CHECKED_ROOTS):
+        return None
+    base = f"{catalog.info.python_root.text.rstrip('/')}/{'/'.join(parts)}"
+    return f"{base}.py", f"{base}/__init__.py"
+
+
+def _missing_module(root: Path, catalog: Blueprint, ref: Ref) -> str | None:
+    """Why ``ref``'s module has no file in the repo that 1.10 doesn't rule out, or ``None`` when it has one or isn't
+    checked (3).
+
+    Raises:
+        Unreadable: the system won't let fastro look at either file.
+    """
+    files = module_files(catalog, ref)
+    if files is None:
+        return None
+    for file in files:
+        try:
+            if breaks_the_rule(root, file) is None:
+                return None
+        except OSError as error:
+            raise Unreadable(root / file, error) from None
+    return f"names a module the repo doesn't have: neither {files[0]} nor {files[1]} is there."
+
+
 def wiring_paths(source: Source) -> set[str]:
     """Every wiring path the catalog declares: the only files sync may change."""
     return {file.path.text for file in source.catalog.wiring}
 
 
 def diff(root: Path, change: Change) -> str:
-    """The unified diff ``change`` makes, from ``a/<path>`` to ``b/<path>``, with ``/dev/null`` for an absent side.
+    """The unified diff ``change`` makes, from ``a/<path>`` to ``b/<path>``, with ``/dev/null`` for an absent side, or
+    git's one line for a binary file when the file there isn't UTF-8.
 
     Raises:
         Unreadable: the system won't let fastro look at the path or open the file there (spec 8).
@@ -133,6 +196,8 @@ def diff(root: Path, change: Change) -> str:
     current = _current(root, change.path)
     before = f"a/{change.path}" if current is not None else DEV_NULL
     after = DEV_NULL if change.kind == "delete" else f"b/{change.path}"
+    if isinstance(current, _NotText):
+        return f"Binary files {before} and {after} differ\n"
     old = _lines(current or "")
     new = [] if change.kind == "delete" else _lines(change.text)
     return "".join(
@@ -168,9 +233,9 @@ def _read(file: Path, command: str) -> str:
         raise Unreadable(file, error, command) from None
 
 
-def _current(root: Path, path: str) -> str | None:
+def _current(root: Path, path: str) -> str | _NotText | None:
     """The text of ``path`` in ``root``, ``None`` when nothing is there or a symlink there can't be followed to
-    anything, or a NUL, which no rendered file holds, when it isn't UTF-8 or isn't a file fastro may read (spec 1.10).
+    anything, or :data:`NOT_TEXT` when it isn't UTF-8 or isn't a file fastro may read (spec 1.10).
 
     Raises:
         Unreadable: the system won't let fastro look at the path or open the file there (spec 8).
@@ -180,9 +245,9 @@ def _current(root: Path, path: str) -> str | None:
         if file_kind(file) is None:
             return None
         if unreadable(root, path) is not None:
-            return "\0"
+            return NOT_TEXT
         return file.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
-        return "\0"
+        return NOT_TEXT
     except OSError as error:
         raise Unreadable(file, error) from None

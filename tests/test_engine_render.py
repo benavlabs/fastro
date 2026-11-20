@@ -24,6 +24,7 @@ from fastro.engine.render import (
     render,
     render_data,
     render_python,
+    shadows,
 )
 from fastro.engine.resolve import NoContribution, TooManyContributions, select, taken
 from fastro.engine.spec import Ref, RepoPath
@@ -1043,3 +1044,135 @@ def test_render_refuses_a_selection_that_leaves_a_fallback_less_slot_empty() -> 
 
 def test_a_render_error_is_a_value_error() -> None:
     assert issubclass(RenderError, ValueError)
+
+
+def _app_shadows(contributes: str, features: tuple[str, ...] = ("accounts",)) -> list[tuple[tuple[str | int, ...], str]]:
+    loaded = project.load(
+        "fastro.toml",
+        'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+        + (contributes if contributes.startswith("[[") else f"[app.contributes]\n{contributes}\n"),
+    )
+    made = _mini_plan(features)
+    return shadows(made, loaded.app.contributes, loaded.document.line)
+
+
+APP_PY = "backend/src/wiring/app.py"
+
+
+def test_an_app_ref_whose_name_its_wiring_file_binds_otherwise_shadows_it() -> None:
+    assert _app_shadows('routers = [{ ref = "src.x:y as accounts_router", prefix = "/x" }]') == [
+        (
+            ("app", "contributes", "routers", 0),
+            f"'src.x:y as accounts_router' binds 'accounts_router' in {APP_PY}, which that file binds otherwise too.",
+        )
+    ]
+
+
+def test_an_app_ref_the_import_block_merges_with_a_feature_s_doesnt_shadow() -> None:
+    contributes = 'routers = [{ ref = "src.modules.accounts.routes:router as accounts_router", prefix = "/x" }]'
+
+    assert _app_shadows(contributes) == []
+
+
+def test_of_two_app_refs_binding_one_name_the_later_one_shadows_naming_the_first_and_one_ref_twice_doesnt() -> None:
+    contributes = (
+        'routers = [{ ref = "src.x:y as mine", prefix = "/a" }, { ref = "src.x:y as mine", prefix = "/b" }]\n'
+        'settings = ["src.z:Z as mine", "src.w:W as mine"]'
+    )
+
+    assert _app_shadows(contributes) == [
+        (
+            ("app", "contributes", "settings", index),
+            f"{ref!r} binds 'mine' in {APP_PY}, which the app ref 'src.x:y as mine' binds too.",
+        )
+        for index, ref in enumerate(["src.z:Z as mine", "src.w:W as mine"])
+    ]
+
+
+def test_literal_data_and_reexport_points_are_never_shadowed() -> None:
+    assert _app_shadows('task_modules = ["Mount"]\nmenu = [{ data = { href = "/", label = "Mount" } }]', ("admin",)) == []
+    assert _app_shadows('admin_site = ["src.x:database"]', ()) == []
+
+
+def test_the_later_of_two_app_refs_is_by_line_in_fastro_toml_not_by_point_or_slot() -> None:
+    contributes = (
+        '[[app.contributes.routers]]\nref = "src.x:y as other"\nprefix = "/a"\n'
+        '[[app.contributes.settings]]\nref = "src.z:Z as mine"\n'
+        '[[app.contributes.routers]]\nref = "src.w:W as mine"\nprefix = "/b"\n'
+    )
+
+    assert _app_shadows(contributes) == [
+        (
+            ("app", "contributes", "routers", 1),
+            f"'src.w:W as mine' binds 'mine' in {APP_PY}, which the app ref 'src.z:Z as mine' binds too.",
+        )
+    ]
+
+
+def test_an_app_ref_merging_with_a_feature_s_import_doesnt_hide_another_app_ref_that_shadows_it() -> None:
+    contributes = (
+        'routers = [{ ref = "src.health:database as accounts_router", prefix = "/a" }, '
+        '{ ref = "src.modules.accounts.routes:router as accounts_router", prefix = "/b" }]'
+    )
+
+    assert _app_shadows(contributes) == [
+        (
+            ("app", "contributes", "routers", 0),
+            f"'src.health:database as accounts_router' binds 'accounts_router' in {APP_PY}, which that file binds "
+            "otherwise too.",
+        ),
+        (
+            ("app", "contributes", "routers", 1),
+            f"'src.modules.accounts.routes:router as accounts_router' binds 'accounts_router' in {APP_PY}, which the "
+            "app ref 'src.health:database as accounts_router' binds too.",
+        ),
+    ]
+
+
+def test_an_app_ref_that_shadows_a_reexport_another_app_ref_fills_shadows_it() -> None:
+    text = MINI.read_text().replace(
+        'fallback = "src.admin_default:site"\n',
+        'fallback = "src.admin_default:site"\n\n[[wiring.slots]]\nkind = "list"\nname = "EXTRAS"\npoint = "extras"\n'
+        'annotation = "list[object]"\n',
+    )
+    text += '\n[points.extras]\ncardinality = "many"\ndoc = "Extra things."\n'
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    made = plan(catalog, select(catalog, ()), MINI_FILES)
+
+    def found(contributes: str) -> list[tuple[tuple[str | int, ...], str]]:
+        loaded = project.load(
+            "fastro.toml",
+            'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+            f"[app.contributes]\n{contributes}\n",
+        )
+        return shadows(made, loaded.app.contributes, loaded.document.line)
+
+    assert found('admin_site = ["src.a:Y"]\nextras = ["src.b:SITE"]') == [
+        (
+            ("app", "contributes", "extras", 0),
+            "'src.b:SITE' binds 'SITE' in backend/src/wiring/admin.py, which that file binds otherwise too.",
+        )
+    ]
+    assert found('admin_site = ["src.a:SITE"]\nextras = ["src.a:SITE"]') == []
+
+
+def test_a_plain_import_in_a_wiring_file_is_a_binding_too() -> None:
+    text = MINI.read_text().replace(
+        'imports = ["from collections.abc import Callable", "from ..mount import Mount"]',
+        'imports = ["import os", "from collections.abc import Callable", "from ..mount import Mount"]',
+    )
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    made = plan(catalog, select(catalog, ("accounts",)), MINI_FILES)
+
+    def found(contributes: str) -> list[tuple[tuple[str | int, ...], str]]:
+        loaded = project.load(
+            "fastro.toml",
+            'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+            f"[app.contributes]\n{contributes}\n",
+        )
+        return shadows(made, loaded.app.contributes, loaded.document.line)
+
+    assert found('routers = [{ ref = "src.x:y as mine", prefix = "/m" }]') == []
+    assert found('routers = [{ ref = "src.x:y as os", prefix = "/m" }]') == [
+        (("app", "contributes", "routers", 0), f"'src.x:y as os' binds 'os' in {APP_PY}, which that file binds otherwise too.")
+    ]
