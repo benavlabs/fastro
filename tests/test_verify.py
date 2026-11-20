@@ -1213,3 +1213,66 @@ def test_a_set_whose_dependencies_cant_be_merged_exits_1_naming_the_set(
     assert code == 1
     assert "error: verify set 'queues' can't be built: uvloop has entries with different environment markers" in err
     assert f"scratch copies left in {scratch}" in out
+
+
+CACHE_OPTION = 'choices = ["memory", "redis"]\ndefault = "memory"\n'
+CACHE_ENV = CACHE_OPTION + 'env = { CACHE_BACKEND = "backend-{value}" }\n'
+EXAMPLE = "APP=1\n\n# ===\n# Cache\n# ===\n# @fastro if=cache\n# @fastro option=cache.backend\r\nCACHE_BACKEND=memory\r\n"
+
+
+def _env_repo(repo: Path, example: str) -> None:
+    toml = repo / "blueprint.toml"
+    toml.write_text(toml.read_text().replace(CACHE_OPTION, CACHE_ENV))
+    (repo / ENV_EXAMPLE).write_text(example)
+    _git(repo, "add", ENV_EXAMPLE)
+
+
+def test_each_build_gets_its_env_example_processed_for_its_set(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(repo)
+    scratch = tmp_path / "scratch"
+    _scratch_at(monkeypatch, scratch)
+    _env_repo(repo, EXAMPLE)
+
+    _verify_cli("queues", "minimal", "--keep")
+
+    assert (
+        scratch / "queues" / ENV_EXAMPLE
+    ).read_bytes() == b"APP=1\n\n# ===\n# Cache\n# ===\nCACHE_BACKEND=backend-memory\r\n"
+    assert (scratch / "minimal" / ENV_EXAMPLE).read_bytes() == b"APP=1\n\n"
+    assert (repo / ENV_EXAMPLE).read_bytes() == EXAMPLE.encode()
+
+
+@pytest.mark.parametrize(
+    ("example", "said"),
+    [
+        (EXAMPLE + "# @fastro option=cache.nope\nX=1\n", "line 9: 'cache.nope' isn't an option of this catalog."),
+        ("APP=1\n", "CACHE_BACKEND has no '# @fastro option=cache.backend' marker directly above a CACHE_BACKEND= line."),
+        (
+            EXAMPLE + "# @fastro option=cache.backend\nCACHE_BACKEND=x\n",
+            "line 9: CACHE_BACKEND has 2 '# @fastro option=cache.backend' markers, on lines 7 and 9, and needs one.",
+        ),
+    ],
+    ids=["marker-line", "unmarked-var", "marked-twice"],
+)
+def test_an_env_example_6_1_refuses_exits_1_before_anything_is_built_saying_why(
+    repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, example: str, said: str
+) -> None:
+    monkeypatch.chdir(repo)
+    _env_repo(repo, example)
+    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+
+    code, out, err = _verify_cli("minimal")
+
+    assert (code, out) == (1, "")
+    assert err == f"error: verify can't build a set: {ENV_EXAMPLE} {said} Run fastro blueprint lint to see every problem.\n"
+    assert _calls(uv) == []
+
+
+def test_a_build_of_an_env_example_6_1_refuses_is_unbuildable(repo: Path, tmp_path: Path) -> None:
+    _env_repo(repo, "APP=1\n")
+    catalog = blueprint.load("blueprint.toml", (repo / "blueprint.toml").read_text(), Version("0.1.0"))
+
+    with pytest.raises(Unbuildable, match="^CACHE_BACKEND has no '# @fastro option=cache.backend' marker"):
+        build(repo, catalog, (), tmp_path / "core")

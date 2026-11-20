@@ -232,10 +232,34 @@ def test_everything_else_is_kept_name_and_version_included() -> None:
 
 
 def test_a_byte_order_mark_is_kept() -> None:
-    assert _rewrite(_catalog(), text="﻿" + PYPROJECT).startswith("﻿# the blueprint's own\n")
+    assert _rewrite(_catalog(), text="\ufeff" + PYPROJECT).startswith("\ufeff# the blueprint's own\n")
 
 
 def test_a_file_without_dev_tables_gets_none() -> None:
     text = '[project]\nname = "x"\nversion = "1"\ndependencies = []\n'
 
     assert _rewrite(_catalog(cache='dev_dependencies = ["fakeredis"]'), text=text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [PYPROJECT.replace("\n", "\r\n"), '[project]\r\nname = "x"\r\nversion = "1"\r\n'],
+    ids=["replaced", "added"],
+)
+def test_a_crlf_file_keeps_crlf_on_every_line_fastro_writes(text: str) -> None:
+    catalog = _catalog(core='runtime = ["fastapi", "pydantic"]', cache='dev_dependencies = ["fakeredis"]')
+
+    rewritten = _rewrite(catalog, text=text)
+
+    assert rewritten.count("\n") == rewritten.count("\r\n")
+    assert '\r\ndependencies = [\r\n    "fastapi",\r\n    "pydantic",\r\n]\r\n' in rewritten
+
+
+def test_a_file_whose_first_line_ends_with_lf_gets_lf() -> None:
+    text = '[project]\nname = "x"\r\nversion = "1"\r\n'
+
+    assert _rewrite(_catalog(core='runtime = ["fastapi"]'), text=text).endswith('dependencies = [\n    "fastapi",\n]\n')
+
+
+def test_a_crlf_file_with_no_runtime_dependencies_gets_an_empty_list_with_crlf() -> None:
+    assert _rewrite(_catalog(), text='[project]\r\nname = "x"\r\n') == '[project]\r\nname = "x"\r\ndependencies = []\r\n'

@@ -1031,7 +1031,7 @@ class Reader:
         env = {
             var: text
             for _, var, _ in self.named(path, table, "env", _env_var)
-            if (text := self.text((*path, "env"), table["env"], var, str)) is not None
+            if (text := self.text((*path, "env"), table["env"], var, _env_template)) is not None
         }
         services = {
             choice: self.texts((*path, "services"), table["services"], choice, _service)
@@ -1425,6 +1425,12 @@ def _env_var(text: str) -> str:
         raise SpecError(
             f"{text!r} isn't an environment variable name: use letters, digits and underscores, not starting with a digit."
         )
+    return text
+
+
+def _env_template(text: str) -> str:
+    if "\n" in text or "\r" in text:
+        raise SpecError(f"{text!r} can't contain a line break (\\n or \\r), since a .env reader would split the line there.")
     return text
 
 

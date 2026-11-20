@@ -31,18 +31,20 @@ class PyprojectError(ValueError):
 
 def rewrite(text: str, catalog: Blueprint, selection: Selection) -> str:
     """``text``, a blueprint's ``pyproject.toml`` decoded as UTF-8 with any byte order mark it started with still at its
-    start, with ``[project].dependencies`` the selection's runtime dependencies and each dev table pruned (6.3).
+    start, with ``[project].dependencies`` the selection's runtime dependencies, written with ``\\r\\n`` when the file's
+    first line ends with it, and each dev table pruned (6.3).
 
     Raises:
         PyprojectError: entries for one package have different environment markers, or one is a direct reference and
             they aren't all the same requirement.
     """
     bom = BOM if text.startswith(BOM) else ""
-    document = tomlkit.parse(text.removeprefix(bom))
-    merged = tomlkit.array()
-    merged.extend(runtime(catalog, selection))
-    merged.multiline(True)
-    document["project"]["dependencies"] = merged
+    given = text.removeprefix(bom)
+    newline = "\r\n" if given.partition("\n")[0].endswith("\r") else "\n"
+    document = tomlkit.parse(given)
+    entries = "".join(f"    {tomlkit.string(entry).as_string()},{newline}" for entry in runtime(catalog, selection))
+    array = f"x = [{newline}{entries}]{newline}" if entries else f"x = []{newline}"
+    document["project"]["dependencies"] = tomlkit.parse(array)["x"]
     declared, counted = _dev_names(catalog, selection)
     unwanted = declared - counted
     for table in _dev_tables(document):

@@ -815,7 +815,7 @@ def test_an_option_env_var_with_one_marker_directly_above_it_is_fine(repo: Path,
 def test_an_option_env_var_without_a_marker_directly_above_it_is_fr016_at_the_var(repo: Path, example: str) -> None:
     _env(repo, example)
 
-    (finding,) = _findings()
+    (finding,) = _at_vars()
 
     assert (finding["file"], finding["code"]) == ("blueprint.toml", "FR016")
     assert finding["message"] == (
@@ -861,6 +861,28 @@ def test_without_a_tracked_env_example_every_option_env_var_is_fr016(repo: Path,
         "features.cache.options.backend.env.CACHE_BACKEND: has no '# @fastro option=cache.backend' marker, since "
         "backend/.env.example isn't a tracked file."
     )
+
+
+def _at_vars() -> list[dict[str, object]]:
+    return [finding for finding in _findings() if str(finding["message"]).startswith("features.")]
+
+
+def test_each_marker_line_6_1_refuses_is_fr016_at_blueprint_naming_its_line(repo: Path) -> None:
+    _env(repo, f"{MARKER}CACHE_BACKEND=memory\n# @fastro iff=x\n{MARKER}OTHER=1\n# ===\n# @fastro if=cache\n")
+
+    assert [(finding["line"], finding["code"], finding["message"], finding["fix"]) for finding in _findings()] == [
+        (
+            1,
+            "FR016",
+            f"blueprint: {ENV_EXAMPLE} line {number}: {reason}",
+            f"Fix the marker on line {number} of {ENV_EXAMPLE}, or remove it.",
+        )
+        for number, reason in [
+            (3, "'# @fastro iff=x' isn't a marker fastro knows: use '# @fastro if=' or '# @fastro option='."),
+            (4, "OTHER isn't in the env table of cache.backend."),
+            (7, "'# @fastro if=' sits on its own line directly below a section header, a block of '# ===' lines and a title."),
+        ]
+    ]
 
 
 def test_an_option_without_env_needs_no_marker_and_no_env_example(repo: Path) -> None:
@@ -1001,7 +1023,7 @@ def test_an_env_example_that_isnt_utf_8_makes_every_option_env_var_fr016_saying_
 def test_an_env_example_splits_into_lines_at_newline_only(repo: Path, separator: str) -> None:
     _env(repo, f"# @fastro option=cache.backend{separator}CACHE_BACKEND=memory\n")
 
-    (finding,) = _findings()
+    (finding,) = _at_vars()
 
     assert finding["code"] == "FR016"
     assert finding["message"] == (

@@ -17,7 +17,7 @@ from pathlib import Path
 from fastro import lint as linting
 from fastro import pyproject
 from fastro.apply import ApplyError, Change, apply, breaks_the_rule, changes, file_kind, tracked_files
-from fastro.engine import catalog_check
+from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.plan import plan
 from fastro.engine.problems import CatalogError
@@ -98,11 +98,12 @@ def build(
 ) -> Path:
     """The project ``features`` give, built into ``into`` from the tracked files of the blueprint repo at ``root``
     (``tracked``, or git's list when it's ``None``): what the plan copies, the wiring it renders, its
-    ``{python_root}/pyproject.toml`` rewritten for the selection (6.3), and the lock it starts from as
-    ``{python_root}/uv.lock``.
+    ``{python_root}/pyproject.toml`` and ``{python_root}/.env.example`` rewritten for the selection (6.3, 6.1), and
+    the lock it starts from as ``{python_root}/uv.lock``.
 
     Raises:
-        Unbuildable: the wiring can't be rendered, or the selection's runtime dependencies can't be merged.
+        Unbuildable: the wiring can't be rendered, the selection's runtime dependencies can't be merged, or
+            ``.env.example`` has a problem 6.1 refuses.
         ApplyError: a file the build would copy is one apply refuses.
     """
     files = tracked_files(root) if tracked is None else tracked
@@ -113,14 +114,20 @@ def build(
     except (RenderError, SelectionError) as error:
         raise Unbuildable(str(error)) from None
     found = changes(made, rendered)
-    file = f"{catalog.info.python_root.text.rstrip('/')}/pyproject.toml"
+    python_root = catalog.info.python_root.text.rstrip("/")
+    rewrites: dict[str, Callable[[str, Blueprint, Selection], str]] = {
+        f"{python_root}/pyproject.toml": pyproject.rewrite,
+        f"{python_root}/.env.example": envfile.process,
+    }
     for index, change in enumerate(found):
-        if change.path == file:
-            try:
-                text = pyproject.rewrite((root / file).read_bytes().decode("utf-8"), catalog, selection)
-            except pyproject.PyprojectError as error:
-                raise Unbuildable(str(error)) from None
-            found[index] = Change("write", file, text)
+        rewrite = rewrites.get(change.path)
+        if rewrite is None or breaks_the_rule(root, change.path) is not None:
+            continue
+        try:
+            text = rewrite((root / change.path).read_bytes().decode("utf-8"), catalog, selection)
+        except (pyproject.PyprojectError, envfile.EnvFileError) as error:
+            raise Unbuildable(str(error)) from None
+        found[index] = Change("write", change.path, text)
     lock = starting_lock(catalog, files)
     if lock is not None:
         found.append(Change("copy", _python_root_lock(catalog), source=lock.text))
@@ -135,7 +142,7 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
     Raises:
         Unbuildable: ``pyproject.toml`` isn't tracked, 1.10 rules it out, it isn't UTF-8, it doesn't parse, or it has
             no ``[project].name`` string that's a valid name by section 3's rule; or ``.env.example`` is tracked, 1.10
-            doesn't rule it out, and it isn't UTF-8.
+            doesn't rule it out, and it isn't UTF-8 or has a problem 6.1 refuses.
         OSError: the system won't let fastro resolve or open either file.
     """
     python_root = catalog.info.python_root.text.rstrip("/")
@@ -147,8 +154,13 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
     if (problem := linting.name_problem(file, table)) is not None:
         raise Unbuildable(f"{REFUSED} {problem} {linting.name_fix(file)}")
     example = f"{python_root}/.env.example"
-    if example in names and breaks_the_rule(root, example) is None and linting.env_text(root, example) is None:
+    if example not in names or breaks_the_rule(root, example) is not None:
+        return
+    text = linting.env_text(root, example)
+    if text is None:
         raise Unbuildable(f"{REFUSED} {example} isn't UTF-8 text. Save {example} as UTF-8.")
+    if found := envfile.problems(text, catalog):
+        raise Unbuildable(f"{REFUSED} {example} {found[0]} Run fastro blueprint lint to see every problem.")
 
 
 def _python_root_lock(catalog: Blueprint) -> str:
@@ -189,8 +201,8 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
         RepositoryError: ``root`` isn't a git repository. Nothing has been built.
         MissingToolError: ``git`` isn't on ``PATH``, and nothing has been built; or a check needs ``uv`` and it isn't.
         Unbuildable: ``{python_root}/pyproject.toml`` gives a build no name, or a tracked
-            ``{python_root}/.env.example`` isn't UTF-8, and nothing has been built; or a set's wiring can't be
-            rendered or its runtime dependencies can't be merged (6.3), and the run ends there.
+            ``{python_root}/.env.example`` isn't UTF-8 or has a problem 6.1 refuses, and nothing has been built; or a
+            set's wiring can't be rendered or its runtime dependencies can't be merged (6.3), and the run ends there.
         ApplyError: a set's build is refused. The run ends there.
         OSError: the system won't let a build read or write a file. The run ends there.
     """

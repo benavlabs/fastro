@@ -701,6 +701,16 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
         ),
         (OPTION + "env = { VAR = 1 }", "11: features.a.options.broker.env.VAR: should be a string, not an integer."),
         (
+            OPTION + 'env = { VAR = "a\\nb" }',
+            "11: features.a.options.broker.env.VAR: 'a\\nb' can't contain a line break (\\n or \\r), since a .env "
+            "reader would split the line there.",
+        ),
+        (
+            OPTION + 'env = { VAR = "{value}\\r" }',
+            "11: features.a.options.broker.env.VAR: '{value}\\r' can't contain a line break (\\n or \\r), since a "
+            ".env reader would split the line there.",
+        ),
+        (
             OPTION + 'services = { kafka = ["kafka"] }',
             "11: features.a.options.broker.services.kafka: 'kafka' isn't one of the choices: 'redis'.",
         ),

@@ -547,12 +547,20 @@ def _unmergeable(catalog: Blueprint) -> list[Problem]:
 
 def _unmarked_env(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
     """FR016: each option ``env`` VAR without exactly one ``# @fastro option=`` marker directly above its line in
-    ``{python_root}/.env.example`` (6.1, 2.13)."""
+    ``{python_root}/.env.example``, at the VAR, and each marker line 6.1 refuses, at ``[blueprint]`` (6.1, 2.13)."""
     example = f"{catalog.info.python_root.text.rstrip('/')}/.env.example"
     reason = "isn't a tracked file" if example not in tracked else unreadable(root, example)
     text = _env_text(root, example) if reason is None else None
-    markers = _markers(text) if text is not None else None
-    found = []
+    markers = envfile.marked(text) if text is not None else None
+    found = [
+        catalog.document.problem(
+            ("blueprint",),
+            f"{example} {error}",
+            f"Fix the marker on line {error.number} of {example}, or remove it.",
+            "FR016",
+        )
+        for error in (envfile.refused_lines(text, catalog) if text is not None else [])
+    ]
     for feature in catalog.features:
         for option in feature.options.values():
             key = f"{feature.name}.{option.name}"
@@ -604,15 +612,3 @@ def env_text(root: Path, file: str) -> str | None:
         return (root / file).read_bytes().removeprefix(codecs.BOM_UTF8).decode("utf-8")
     except UnicodeDecodeError:
         return None
-
-
-def _markers(text: str) -> dict[tuple[str, str], list[int]]:
-    """Each ``(feature.option, VAR)`` a marker line in ``text`` names with the line under it, and the markers' line
-    numbers."""
-    lines = envfile.lines(text)
-    found: dict[tuple[str, str], list[int]] = {}
-    for number, (line, below) in enumerate(zip(lines, lines[1:], strict=False), start=1):
-        marker, assigned = envfile.OPTION.fullmatch(line.rstrip()), envfile.ASSIGNED.match(below)
-        if marker is not None and assigned is not None:
-            found.setdefault((marker.group(1), assigned.group(1)), []).append(number)
-    return found
