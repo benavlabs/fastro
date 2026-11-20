@@ -6,7 +6,6 @@ import ast
 import codecs
 import dataclasses
 import os
-import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +16,7 @@ from packaging.version import InvalidVersion, Version
 from fastro import make
 from fastro import sync as syncing
 from fastro.apply import RepositoryError, breaks_the_rule, present, tracked_files, unreadable, unreadable_config
-from fastro.engine import catalog_check, project
+from fastro.engine import catalog_check, envfile, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Problem
@@ -36,8 +35,6 @@ REF_FIX = "Define it there, or point the ref at the module that does."
 REF_MODULE_FIX = "Point the ref at a module the repo has, or add its file to git."
 PARSE_FIX = "Fix the module so it parses, then run fastro blueprint lint again."
 ANY_NAME = None
-MARKER = re.compile(r"# @fastro option=(\S+)")
-ASSIGNED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 SOURCE_FIX = "Add source = true to fastro.toml."
 COMMAND_CLASH_FIX = "Rename one of the commands, so that no command's words begin another's."
 FLAG_CLASH_FIX = "Rename the param, so that its flags are its own."
@@ -540,10 +537,10 @@ def env_text(root: Path, file: str) -> str | None:
 def _markers(text: str) -> dict[tuple[str, str], list[int]]:
     """Each ``(feature.option, VAR)`` a marker line in ``text`` names with the line under it, and the markers' line
     numbers."""
-    lines = text.splitlines()
+    lines = envfile.lines(text)
     found: dict[tuple[str, str], list[int]] = {}
     for number, (line, below) in enumerate(zip(lines, lines[1:], strict=False), start=1):
-        marker, assigned = MARKER.fullmatch(line.rstrip()), ASSIGNED.match(below)
+        marker, assigned = envfile.OPTION.fullmatch(line.rstrip()), envfile.ASSIGNED.match(below)
         if marker is not None and assigned is not None:
             found.setdefault((marker.group(1), assigned.group(1)), []).append(number)
     return found

@@ -997,6 +997,19 @@ def test_an_env_example_that_isnt_utf_8_makes_every_option_env_var_fr016_saying_
     assert finding["fix"] == f"Save {ENV_EXAMPLE} as UTF-8."
 
 
+@pytest.mark.parametrize("separator", ["\r", "\f", "\u2028"])
+def test_an_env_example_splits_into_lines_at_newline_only(repo: Path, separator: str) -> None:
+    _env(repo, f"# @fastro option=cache.backend{separator}CACHE_BACKEND=memory\n")
+
+    (finding,) = _findings()
+
+    assert finding["code"] == "FR016"
+    assert finding["message"] == (
+        "features.cache.options.backend.env.CACHE_BACKEND: has no '# @fastro option=cache.backend' marker in "
+        "backend/.env.example."
+    )
+
+
 def test_an_env_example_is_read_past_a_byte_order_mark(repo: Path) -> None:
     _env(repo, f"\ufeff{MARKER}CACHE_BACKEND=memory\n")
 
