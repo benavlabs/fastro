@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastro.apply import Change, file_kind, present, unreadable, unreadable_config
-from fastro.engine import blueprint, catalog_check, project
+from fastro.engine import blueprint, catalog_check, envfile, project
 from fastro.engine.blueprint import Blueprint, ExtendingCatalogError
 from fastro.engine.plan import plan
 from fastro.engine.project import Project
@@ -16,6 +16,7 @@ from fastro.engine.resolve import select
 from fastro.tools import installed_version
 
 DEV_NULL = "/dev/null"
+NO_NEWLINE = "\\ No newline at end of file"
 NO_CATALOG = (
     "there's no blueprint.toml beside fastro.toml. fastro {command} runs in a blueprint repo, which has both; in a "
     "project it isn't here yet."
@@ -132,9 +133,18 @@ def diff(root: Path, change: Change) -> str:
     current = _current(root, change.path)
     before = f"a/{change.path}" if current is not None else DEV_NULL
     after = DEV_NULL if change.kind == "delete" else f"b/{change.path}"
-    old = (current or "").splitlines(keepends=True)
-    new = [] if change.kind == "delete" else change.text.splitlines(keepends=True)
-    return "".join(difflib.unified_diff(old, new, before, after))
+    old = _lines(current or "")
+    new = [] if change.kind == "delete" else _lines(change.text)
+    return "".join(
+        line if line.endswith("\n") else f"{line}\n{NO_NEWLINE}\n" for line in difflib.unified_diff(old, new, before, after)
+    )
+
+
+def _lines(text: str) -> list[str]:
+    """``text`` split after each ``\\n`` only, as ``patch`` reads it, each line keeping its ending."""
+    lines = [f"{line}\n" for line in envfile.lines(text)]
+    lines[-1] = lines[-1].removesuffix("\n")
+    return lines if lines[-1] else lines[:-1]
 
 
 def _present(file: Path, command: str) -> bool:

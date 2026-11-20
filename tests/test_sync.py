@@ -129,6 +129,35 @@ def test_sync_deletes_the_wiring_files_the_selection_no_longer_renders_and_nothi
     assert _sync("--check") == (0, "", "")
 
 
+def test_a_disk_side_without_a_final_newline_is_marked_so_patch_can_read_the_diff(repo: Path) -> None:
+    rendered = (repo / APP).read_text()
+    last = rendered.splitlines()[-1]
+    (repo / APP).write_text(rendered.removesuffix("\n"))
+
+    code, out, _ = _sync("--check")
+
+    assert code == 1
+    assert out.endswith(f"-{last}\n\\ No newline at end of file\n+{last}\n")
+
+
+def test_a_rendered_side_without_a_final_newline_is_marked_too(repo: Path) -> None:
+    change = Change("write", APP, "a\nb")
+    (repo / APP).write_text("a\nc\n")
+
+    assert syncing.diff(repo, change) == (
+        f"--- a/{APP}\n+++ b/{APP}\n@@ -1,2 +1,2 @@\n a\n-c\n+b\n\\ No newline at end of file\n"
+    )
+
+
+@pytest.mark.parametrize("separator", ["\f", "\r", "\u2028", "\x0b"])
+def test_the_diff_splits_lines_at_newline_only(repo: Path, separator: str) -> None:
+    change = Change("write", APP, "a\nb\n")
+    (repo / APP).write_text(f"a\nb{separator}c\n", newline="")
+
+    assert syncing.diff(repo, change) == f"--- a/{APP}\n+++ b/{APP}\n@@ -1,2 +1,2 @@\n a\n-b{separator}c\n+b\n"
+    assert syncing.diff(repo, Change("write", APP, f"a\nb{separator}c\n")) == ""
+
+
 def test_a_file_that_isnt_utf_8_differs(repo: Path) -> None:
     (repo / APP).write_bytes(b"\xff\xfe")
 
