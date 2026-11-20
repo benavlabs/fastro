@@ -41,6 +41,7 @@ ANY_NAME = None
 SOURCE_FIX = "Add source = true to fastro.toml."
 COMMAND_CLASH_FIX = "Rename one of the commands, so that no command's words begin another's."
 FLAG_CLASH_FIX = "Rename the param, so that its flags are its own."
+OVERLAY_FIX = "Move or rename one of them, so that each path a project gets has one source."
 NAME_RULE = "use letters, digits, '.', '_' and '-', starting and ending with a letter or digit, as PEP 508 says."
 
 
@@ -148,6 +149,7 @@ def lint(root: Path) -> Report:
             raise UsageError(f"{error}. Run fastro blueprint lint in a blueprint repo, which git tracks.") from None
         found.extend(_missing_paths(catalog, tracked))
         found.extend(_missing_modules(catalog, tracked))
+        found.extend(_overlay_collisions(catalog, tracked))
         found.extend(_unresolved_refs(root, catalog, tracked))
         found.extend(_open_verify_sets(catalog))
         found.extend(_name_clashes(catalog))
@@ -220,6 +222,25 @@ def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
             found.append(catalog.document.problem(at, f"{path.text!r} holds no tracked file.", PATH_FIX, "BP002"))
         elif not path.subtree and path.text not in tracked:
             found.append(catalog.document.problem(at, f"{path.text!r} isn't a tracked file in the repo.", PATH_FIX, "BP002"))
+    return found
+
+
+def _overlay_collisions(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """BP003: each tracked overlay file whose project path a tracked file outside ``blueprint_only``, a wiring file or
+    an overlay file before it gives a project too, at ``[blueprint].overlay`` (2.1)."""
+    if catalog.info.overlay is None:
+        return []
+    base = catalog.info.overlay.text.rstrip("/") + "/"
+    given = {path: repr(path) for path in tracked if not any(only.covers(path) for only in catalog.info.all_blueprint_only)}
+    given.update({file.path.text: f"the wiring file {file.path.text!r}" for file in catalog.wiring})
+    found = []
+    for path in sorted(path for path in tracked if path.startswith(base)):
+        target = path.removeprefix(base).removesuffix(".j2")
+        if target in given:
+            message = f"{path!r} gives a project {target!r}, which {given[target]} gives it too."
+            found.append(catalog.document.problem(("blueprint", "overlay"), message, OVERLAY_FIX, "BP003"))
+        else:
+            given[target] = repr(path)
     return found
 
 

@@ -349,6 +349,71 @@ def test_a_generator_s_templates_and_the_overlay_are_directories_that_must_hold_
     assert _findings() == []
 
 
+OVERLAY_KEY = 'requires_fastro = ">=0.1.0.dev0"\n'
+OVERLAY_FIX = "Move or rename one of them, so that each path a project gets has one source."
+
+
+def _overlay(repo: Path, *paths: str) -> list[tuple[object, object, object]]:
+    _edit(repo / "blueprint.toml", OVERLAY_KEY, OVERLAY_KEY + 'overlay = "overlay"\nblueprint_only = ["docs/"]\n')
+    _track(repo, *paths)
+    return [(finding["line"], finding["message"], finding["fix"]) for finding in _findings() if finding["code"] == "BP003"]
+
+
+def test_overlay_files_at_paths_no_project_gets_otherwise_are_fine(repo: Path) -> None:
+    given = ("docs/guide.md", "overlay/README.md.j2", "overlay/docs/guide.md", "overlay/backend/new.py", "overlay/fastro.toml")
+
+    assert _overlay(repo, *given) == []
+
+
+@pytest.mark.parametrize(
+    ("overlay", "other"),
+    [
+        ("overlay/backend/src/app.py.j2", "'backend/src/app.py'"),
+        ("overlay/backend/src/modules/billing/routes.py", "'backend/src/modules/billing/routes.py'"),
+        ("overlay/backend/src/modules/billing/paddle.py.j2", "'backend/src/modules/billing/paddle.py'"),
+        ("overlay/frontend/menu.ts", "the wiring file 'frontend/menu.ts'"),
+        ("overlay/backend/src/wiring/app.py.j2", "the wiring file 'backend/src/wiring/app.py'"),
+    ],
+    ids=["core", "feature", "when", "wiring-file", "wiring-file-rendered"],
+)
+def test_an_overlay_file_whose_project_path_another_source_gives_is_bp003_naming_both(
+    repo: Path, overlay: str, other: str
+) -> None:
+    assert _overlay(repo, overlay) == [
+        (
+            _line_of(repo, 'overlay = "overlay"'),
+            f"blueprint.overlay: {overlay!r} gives a project {other.split()[-1]}, which {other} gives it too.",
+            OVERLAY_FIX,
+        )
+    ]
+
+
+def test_an_overlay_file_at_a_root_file_core_gives_is_bp003(repo: Path) -> None:
+    assert [message for _, message, _ in _overlay(repo, "README.md", "overlay/README.md.j2")] == [
+        "blueprint.overlay: 'overlay/README.md.j2' gives a project 'README.md', which 'README.md' gives it too."
+    ]
+
+
+def test_two_overlay_files_with_one_project_path_are_bp003_naming_both(repo: Path) -> None:
+    assert _overlay(repo, "overlay/README.md", "overlay/README.md.j2") == [
+        (
+            _line_of(repo, 'overlay = "overlay"'),
+            "blueprint.overlay: 'overlay/README.md.j2' gives a project 'README.md', which 'overlay/README.md' gives it too.",
+            OVERLAY_FIX,
+        )
+    ]
+
+
+def test_a_wiring_file_no_selection_renders_and_that_isnt_tracked_still_collides(repo: Path) -> None:
+    _git(repo, "rm", "-q", "--cached", "frontend/menu.ts")
+    (repo / "frontend/menu.ts").unlink()
+
+    assert [message for _, message, _ in _overlay(repo, "overlay/frontend/menu.ts.j2")] == [
+        "blueprint.overlay: 'overlay/frontend/menu.ts.j2' gives a project 'frontend/menu.ts', which the wiring file "
+        "'frontend/menu.ts' gives it too."
+    ]
+
+
 def test_a_wiring_path_that_isnt_in_the_repo_isnt_bp002(repo: Path) -> None:
     _git(repo, "rm", "-q", "--cached", "frontend/menu.ts")
     (repo / "frontend/menu.ts").unlink()
