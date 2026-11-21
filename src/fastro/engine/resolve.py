@@ -177,11 +177,16 @@ def taken(catalog: Blueprint, selection: Selection, app: Contributions | None = 
     return {point: tuple(items) for point, items in found.items()}
 
 
+def _place(catalog: Blueprint, item: Taken) -> str:
+    """How a message names where ``item`` is written: in ``fastro.toml`` for the app's, else in ``blueprint.toml``."""
+    return key_name(item.contribution.at) if item.owner == APP else catalog.document.key(item.contribution.at)
+
+
 def check_one_points(catalog: Blueprint, found: Mapping[str, tuple[Taken, ...]]) -> None:
     """Refuse a ``one`` point that ``found`` gives more than one contribution (spec 2.3)."""
     for point, items in found.items():
         if point in catalog.points and catalog.points[point].cardinality == "one" and len(items) > 1:
-            listed = [f"{item.owner} at {key_name(item.contribution.at)}" for item in items]
+            listed = [f"{item.owner} at {_place(catalog, item)}" for item in items]
             given = f"{', '.join(listed[:-1])} and {listed[-1]}"
             raise TooManyContributions(
                 f"{point!r} is a one point, and this selection gives it {len(items)} contributions: {given}. "
@@ -198,7 +203,7 @@ def check_fallback_slots(catalog: Blueprint, selection: Selection, found: Mappin
         for j, slot in enumerate(file.slots):
             if slot.kind in FALLBACK_KINDS and slot.fallback is None and not found.get(slot.point):
                 raise NoContribution(
-                    f"{slot.name} at {key_name(('wiring', i, 'slots', j))} in {file.path.text} is a {slot.kind} slot "
+                    f"{catalog.document.key(('wiring', i, 'slots', j))} is a {slot.kind} slot "
                     f"with no fallback, and this selection gives its point, {slot.point!r}, no contribution. "
                     "Select a feature that contributes to it, or give the slot a fallback."
                 )

@@ -21,7 +21,7 @@ from packaging.version import Version
 from fastro.engine import conditions, references, spec
 from fastro.engine.conditions import Condition
 from fastro.engine.positions import KeyPath
-from fastro.engine.problems import CatalogError, Document, Problem, key_name, read
+from fastro.engine.problems import CatalogError, Document, Problem, read
 from fastro.engine.spec import Ref, RepoPath, SpecError
 
 T = TypeVar("T")
@@ -443,7 +443,7 @@ class Reader:
                 self.unknown(path, key, keys)
         for key in sorted(required):
             if key not in value:
-                self.fail((*path, key), "is required.", f"Add {key} to [{key_name(path)}].")
+                self.fail((*path, key), "is required.", f"Add {key} to {self.document.table(path)}.")
         return value
 
     def unknown(self, path: KeyPath, key: str, keys: Collection[str], where: str = "") -> None:
@@ -452,7 +452,7 @@ class Reader:
             fix = f"Did you mean '{close[0]}'?" if close else f"The top-level keys are {', '.join(sorted(keys))}."
             self.fail((key,), f"isn't a top-level key of {self.top}.", fix)
             return
-        where = where or f"[{key_name(path)}]"
+        where = where or self.document.table(path)
         fix = f"Did you mean '{close[0]}'?" if close else f"The keys of {where} are {', '.join(sorted(keys))}."
         self.fail((*path, key), f"isn't a key of {where}." if path else "isn't a top-level table.", fix)
 
@@ -611,7 +611,7 @@ class Reader:
         first: dict[str, KeyPath] = {}
         for at, value in entries:
             if value in first:
-                self.fail(at if key is None else (*at, key), f"{value!r} " + message.format(key_name(first[value])))
+                self.fail(at if key is None else (*at, key), f"{value!r} " + message.format(self.document.key(first[value])))
             else:
                 first[value] = at
 
@@ -619,7 +619,7 @@ class Reader:
         """Report each wiring path that sits under, or has under it, an earlier one (spec 2.6)."""
         for index, (at, value) in enumerate(entries):
             for earlier, other in entries[:index]:
-                where = key_name(earlier)
+                where = self.document.key(earlier)
                 if value.startswith(other + "/"):
                     relation = f"sits under {where}'s path"
                 elif other.startswith(value + "/"):
@@ -653,8 +653,8 @@ class Reader:
                 first = formats[0].format
                 self.fail(
                     (*slot.at, "format"),
-                    f"is {slot.format!r}, and {key_name(formats[0].at)} is {first!r}: a data file's slots all share one "
-                    "format.",
+                    f"is {slot.format!r}, and {self.document.key(formats[0].at)} is {first!r}: a data file's slots all "
+                    "share one format.",
                     f"Give it format = {first!r}, or move it to a data file of its own.",
                 )
         python = bool(family) and not family[0][1]
@@ -674,7 +674,7 @@ class Reader:
         reexports = [slot for slot in slots if slot.kind == "reexport"]
         if not reexports:
             return
-        first = key_name(reexports[0].at)
+        first = self.document.key(reexports[0].at)
         for slot in reexports[1:]:
             self.fail(
                 slot.at,
@@ -717,7 +717,7 @@ class Reader:
 
     def slot(self, path: KeyPath, table: dict[str, Any]) -> Slot | None:
         if "kind" not in table:
-            self.fail((*path, "kind"), "is required.", f"Add kind to [{key_name(path)}].")
+            self.fail((*path, "kind"), "is required.", f"Add kind to {self.document.table(path)}.")
             return None
         kind = self.text(path, table, "kind", _kind_of_slot)
         if kind is None:
@@ -729,7 +729,7 @@ class Reader:
         table = {key: value for key, value in table.items() if key in keys}
         for key in SLOT_REQUIRED[kind]:
             if key not in table:
-                self.fail((*path, key), f"is required for a {kind} slot.", f"Add {key} to [{key_name(path)}].")
+                self.fail((*path, key), f"is required for a {kind} slot.", f"Add {key} to {self.document.table(path)}.")
         fallback_parser: Callable[[str], str | Ref] = _expression if kind == "value" else Ref.parse
         defaults = self.subtable(path, table, "defaults")
         for key, item in defaults.items():
@@ -799,7 +799,7 @@ class Reader:
             if kind is not None and key in table and kind != only:
                 self.fail((*path, key), f"is only for a {only} param.")
         if kind == "choice" and "choices" not in table:
-            self.fail((*path, "choices"), "is required for a choice param.", f"Add choices to [{key_name(path)}].")
+            self.fail((*path, "choices"), "is required for a choice param.", f"Add choices to {self.document.table(path)}.")
         choices = self.choices(path, table) if kind == "choice" and "choices" in table else ()
         private_only = self.flag(path, table, "private_only") is True if kind == "cidr" else False
         max_prefix = (

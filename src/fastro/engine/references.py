@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from fastro.engine import conditions
 from fastro.engine.conditions import Condition
 from fastro.engine.positions import KeyPath
-from fastro.engine.problems import Problem, key_name
+from fastro.engine.problems import Problem
 from fastro.engine.spec import Ref, RepoPath, SpecError
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ class _Checker:
 
     def place(self, at: KeyPath) -> str:
         """How a message names the catalog key at ``at``."""
-        return key_name(at)
+        return self.catalog.document.key(at)
 
     def run(self) -> Iterator[Problem]:
         catalog = self.catalog
@@ -181,7 +181,9 @@ class _Checker:
                 if slot.point not in self.points:
                     yield from self.point(path, slot.point)
                 elif slot.point in seen:
-                    yield self.problem(path, f"{slot.point!r} is collected by {key_name(seen[slot.point])} already.", "")
+                    yield self.problem(
+                        path, f"{slot.point!r} is collected by {self.catalog.document.key(seen[slot.point])} already.", ""
+                    )
                 else:
                     seen[slot.point] = slot.at
                     if slot.kind in ONE_SLOT_KINDS and self.points[slot.point].cardinality != "one":
@@ -229,7 +231,9 @@ class _Checker:
         for _, at, text in sorted((line(at), at, path.text) for at, path in self.declarations()):
             if text in first:
                 fix = "A path belongs to one declaration: drop one of them."
-                yield self.problem(at, f"{text!r} is declared by {key_name(first[text])} already.", fix, OWNED_TWICE)
+                yield self.problem(
+                    at, f"{text!r} is declared by {self.catalog.document.key(first[text])} already.", fix, OWNED_TWICE
+                )
             else:
                 first[text] = at
 
@@ -247,13 +251,13 @@ class _Checker:
                 if taken:
                     target, at = taken[0]
                     message = (
-                        f"{command.module!r} is {target}, which is owned by {key_name(at)}, "
+                        f"{command.module!r} is {target}, which is owned by {self.catalog.document.key(at)}, "
                         "and a feature command's module must be owned by its feature's own paths."
                     )
                     if at[: len(feature.at)] == feature.at:
-                        fix = f"Move it out of {key_name(at)}"
+                        fix = f"Move it out of {self.catalog.document.key(at)}"
                     else:
-                        fix = f"Give [features.{feature.name}] a path that owns it, longer than {key_name(at)}"
+                        fix = f"Give [features.{feature.name}] a path that owns it, longer than {self.catalog.document.key(at)}"
                     yield self.problem(path, message, fix + instead)
                 elif all(at is None for at in owners.values()):
                     file, package = owners
@@ -357,7 +361,7 @@ class _ProjectChecker(_Checker):
         return self.project.document.problem(path, message, fix, code)
 
     def place(self, at: KeyPath) -> str:
-        return f"{PurePath(self.catalog.document.file).name}'s {key_name(at)}"
+        return f"{PurePath(self.catalog.document.file).name}'s {self.catalog.document.key(at)}"
 
     def run(self) -> Iterator[Problem]:
         pin, info, project = self.project.blueprint, self.catalog.info, self.project
@@ -395,4 +399,4 @@ class _ProjectChecker(_Checker):
                 fix = "A path belongs to one declaration: drop one of them."
                 yield self.problem(at, f"{path.text!r} is declared by {first[path.text]} already.", fix, OWNED_TWICE)
             else:
-                first[path.text] = key_name(at)
+                first[path.text] = self.project.document.key(at)

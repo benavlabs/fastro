@@ -77,7 +77,7 @@ def test_every_section_is_either_checked_or_listed_as_not_checked_yet(section: s
     if section in catalog_check.NOT_YET:
         assert blueprint.load("blueprint.toml", text, metadata_version()).info.name == "mini"
     else:
-        probe = f"{section}[0].fastro_probe" if array else f"{section}.fastro_probe"
+        probe = f"{section}[#1].fastro_probe" if array else f"{section}.fastro_probe"
         with pytest.raises(CatalogError, match=re.escape(probe)):
             blueprint.load("blueprint.toml", text, metadata_version())
 

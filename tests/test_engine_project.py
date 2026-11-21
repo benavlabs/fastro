@@ -360,7 +360,7 @@ def test_a_project_whose_names_its_catalog_declares_loads() -> None:
         (
             _for_mini(tables='[app]\ncontributes = { routers = ["src.wiring:r"] }\n'),
             "6: app.contributes.routers[0]: 'src.wiring:r' is a ref to src.wiring, the module blueprint.toml's "
-            "wiring[0].slots[0] is generated into.\n  Point it at the module that defines it.",
+            'wiring["backend/src/wiring.py"].slots["ROUTERS"] is generated into.\n  Point it at the module that defines it.',
         ),
         (
             _for_mini(tables='[app]\npaths = ["backend/src/"]\n'),
@@ -398,7 +398,8 @@ def test_a_catalog_key_in_a_message_about_fastro_toml_names_the_catalog_file() -
 
     assert _checked(text, catalog) == [
         "fastro.toml:6: app.contributes.routers[0]: doesn't give prefix, which the item of blueprint.toml's "
-        "wiring[0].slots[0] uses.\n  Add prefix to this contribution, or a default for it in that slot's defaults."
+        'wiring["backend/src/wiring.py"].slots["ROUTERS"] uses.\n  Add prefix to this contribution, or a default for '
+        "it in that slot's defaults."
     ]
 
 

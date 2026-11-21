@@ -39,15 +39,45 @@ class CatalogError(Exception):
         super().__init__("\n".join(map(str, self.problems)))
 
 
-def key_name(path: KeyPath) -> str:
-    """``path`` written the way TOML would: dotted, quoted where it must be, with array indexes in brackets."""
+def key_name(path: KeyPath, data: object = None) -> str:
+    """``path`` named as spec 1.11 says: dotted, quoted where TOML must quote it, with a position in a list of values
+    in brackets, and an entry of one of 1.11's arrays of tables in ``data``, the parsed file, by what identifies it."""
     name = ""
-    for part in path:
+    value = data
+    for index, part in enumerate(path):
         if isinstance(part, int):
-            name += f"[{part}]"
+            name += _entry(path[:index], value, part)
+            value = value[part] if isinstance(value, list) and 0 <= part < len(value) else None
         else:
             name += ("." if name else "") + (part if BARE_KEY.fullmatch(part) else json.dumps(part, ensure_ascii=False))
+            value = value.get(part) if isinstance(value, dict) else None
     return name
+
+
+def _identifier(within: KeyPath) -> str | None:
+    """The key that identifies an entry of the array at ``within``, when it's one of 1.11's arrays of tables."""
+    if within in (("wiring",), ("modules",), ("plugin",), ("starter",), ("verify", "checks"), ("feature", "when")):
+        return "path" if within == ("wiring",) else "if" if within == ("feature", "when") else "name"
+    if len(within) == 3 and within[0] == "wiring" and isinstance(within[1], int) and within[2] == "slots":
+        return "name"
+    if len(within) == 3 and within[0] == "features" and within[2] == "when":
+        return "if"
+    return None
+
+
+def _entry(within: KeyPath, items: object, index: int) -> str:
+    """How ``items[index]``, the array at ``within``, is named: by its identifying key when it's one of 1.11's arrays
+    of tables and the key is a string no earlier entry has, by its place counting from 1 after ``#`` when it's such
+    an entry otherwise, and by its position in brackets when it's a list of values."""
+    key = _identifier(within)
+    if key is None or not isinstance(items, list) or not 0 <= index < len(items) or not isinstance(items[index], dict):
+        return f"[{index}]"
+    found = items[index].get(key)
+    raw = within[-1] == "slots" and items[index].get("kind") == "raw"
+    earlier = [item.get(key) for item in items[:index] if isinstance(item, dict)]
+    if raw or not isinstance(found, str) or found in earlier:
+        return f"[#{index + 1}]"
+    return f"[{json.dumps(found, ensure_ascii=False)}]"
 
 
 @dataclass(frozen=True)
@@ -65,9 +95,18 @@ class Document:
                 return self.lines[path[:end]]
         return 1
 
+    def key(self, path: KeyPath) -> str:
+        """How a message names the key at ``path`` in this file (spec 1.11)."""
+        return key_name(path, self.data)
+
+    def table(self, path: KeyPath) -> str:
+        """How a message names the table at ``path``: in brackets, as a header, unless it's an entry of an array."""
+        name = self.key(path)
+        return name if path and isinstance(path[-1], int) else f"[{name}]"
+
     def problem(self, path: KeyPath, message: str, fix: str = "", code: str = "") -> Problem:
         """A problem at ``path``; ``code`` is the lint code it's reported under when it isn't BP001 (spec 2.13)."""
-        return Problem(self.file, self.line(path), key_name(path), message, fix, code)
+        return Problem(self.file, self.line(path), self.key(path), message, fix, code)
 
 
 def read(file: str, text: str) -> Document:

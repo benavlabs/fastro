@@ -367,7 +367,7 @@ def test_a_one_point_given_two_contributions_by_the_selection_is_refused() -> No
     assert str(caught.value) == (
         "'sender' is a one point, and this selection gives it 2 contributions: "
         "feature:mail at features.mail.contributes.sender[0] and "
-        "feature:mail at features.mail.when[0].contributes.sender[0]. "
+        'feature:mail at features.mail.when["queue"].contributes.sender[0]. '
         "Drop one of them, or give them conditions that exclude each other."
     )
     assert isinstance(caught.value, SelectionError)
@@ -424,7 +424,7 @@ def test_a_slot_without_a_fallback_whose_point_the_selection_leaves_empty_is_ref
         _check(text, requested)
 
     assert str(caught.value) == (
-        f"SENDER at wiring[0].slots[0] in backend/src/wiring.py is a {kind} slot with no fallback, and this selection "
+        f'wiring["backend/src/wiring.py"].slots["SENDER"] is a {kind} slot with no fallback, and this selection '
         "gives its point, 'sender', no contribution. Select a feature that contributes to it, or give the slot a fallback."
     )
     assert isinstance(caught.value, SelectionError)

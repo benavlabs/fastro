@@ -515,22 +515,26 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
             "7: verify.matrix: isn't a key of [verify].\n  The keys of [verify] are app, checks, include_presets, sets.",
         ),
         ("[verify]\nchecks = {}", "7: verify.checks: should be a list of tables, not a table."),
-        ('[[verify.checks]]\nname = "frontend"', "6: verify.checks[0].run: is required.\n  Add run to [verify.checks[0]]."),
+        (
+            '[[verify.checks]]\nname = "frontend"',
+            '6: verify.checks["frontend"].run: is required.\n  Add run to verify.checks["frontend"].',
+        ),
         (
             '[[verify.checks]]\nname = "x"\nrun = []',
-            '8: verify.checks[0].run: should name the command to run, such as ["npm", "run", "build"].',
+            '8: verify.checks["x"].run: should name the command to run, such as ["npm", "run", "build"].',
         ),
         (
             CHECK + 'cwd = "/srv"',
-            "9: verify.checks[0].cwd: '/srv' isn't a repo path: it's absolute. Write it relative to the repo root, with '/'.",
+            "9: verify.checks[\"x\"].cwd: '/srv' isn't a repo path: it's absolute. Write it relative to the repo root, "
+            "with '/'.",
         ),
         (
             CHECK + 'if = "a and"',
-            "9: verify.checks[0].if: 'a and' isn't a condition: expected a feature name, 'not' or '(' at the end.",
+            "9: verify.checks[\"x\"].if: 'a and' isn't a condition: expected a feature name, 'not' or '(' at the end.",
         ),
         (
             CHECK + "env = {}",
-            "9: verify.checks[0].env: isn't a key of [verify.checks[0]].\n  The keys of [verify.checks[0]] are "
+            '9: verify.checks["x"].env: isn\'t a key of verify.checks["x"].\n  The keys of verify.checks["x"] are '
             "cwd, if, name, run.",
         ),
         ('[points.routers]\ndoc = "x"', "6: points.routers.cardinality: is required.\n  Add cardinality to [points.routers]."),
@@ -739,16 +743,16 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
         (FEATURE + 'when = "x"', "8: features.a.when: should be a list of tables, not a string."),
         (
             FEATURE + "[[features.a.when]]\npaths = []",
-            "8: features.a.when[0].if: is required.\n  Add if to [features.a.when[0]].",
+            "8: features.a.when[#1].if: is required.\n  Add if to features.a.when[#1].",
         ),
         (
             FEATURE + '[[features.a.when]]\nif = "b"\nsummary = "x"',
-            "10: features.a.when[0].summary: isn't a key of [features.a.when[0]].\n  The keys of "
-            "[features.a.when[0]] are contributes, dependencies, dev_dependencies, if, paths, services.",
+            '10: features.a.when["b"].summary: isn\'t a key of features.a.when["b"].\n  The keys of '
+            'features.a.when["b"] are contributes, dependencies, dev_dependencies, if, paths, services.',
         ),
         (
             FEATURE + '[[features.a.when]]\nif = "b"\npaths = ["/x"]',
-            "10: features.a.when[0].paths[0]: '/x' isn't a repo path: it's absolute. Write it relative to the "
+            "10: features.a.when[\"b\"].paths[0]: '/x' isn't a repo path: it's absolute. Write it relative to the "
             "repo root, with '/'.",
         ),
     ],

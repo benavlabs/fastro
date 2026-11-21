@@ -117,31 +117,37 @@ def test_names_that_all_exist_load() -> None:
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "taskq"\n',
-            "20: features.accounts.when[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+            "20: features.accounts.when[\"taskq\"].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "taskiq.brokr=redis"\n',
-            "20: features.accounts.when[0].if: 'taskiq.brokr' isn't an option of taskiq.\n  Did you mean 'broker'?",
+            "20: features.accounts.when[\"taskiq.brokr=redis\"].if: 'taskiq.brokr' isn't an option of taskiq.\n  Did "
+            "you mean 'broker'?",
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "accounts.mode=fast"\n',
-            "20: features.accounts.when[0].if: 'accounts.mode' isn't an option of accounts.\n  accounts has no options.",
+            "20: features.accounts.when[\"accounts.mode=fast\"].if: 'accounts.mode' isn't an option of accounts.\n  "
+            "accounts has no options.",
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "taskiq.broker=kafka"\n',
-            "20: features.accounts.when[0].if: 'kafka' isn't a choice of taskiq.broker.\n  The choices are redis, rabbitmq.",
+            "20: features.accounts.when[\"taskiq.broker=kafka\"].if: 'kafka' isn't a choice of taskiq.broker.\n  The "
+            "choices are redis, rabbitmq.",
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "nope.broker=redis"\n',
-            "20: features.accounts.when[0].if: 'nope' isn't a feature of this catalog.\n  The features are accounts, taskiq.",
+            "20: features.accounts.when[\"nope.broker=redis\"].if: 'nope' isn't a feature of this catalog.\n  The "
+            "features are accounts, taskiq.",
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "nope or nope.broker=redis"\n',
-            "20: features.accounts.when[0].if: 'nope' isn't a feature of this catalog.\n  The features are accounts, taskiq.",
+            "20: features.accounts.when[\"nope or nope.broker=redis\"].if: 'nope' isn't a feature of this catalog.\n  "
+            "The features are accounts, taskiq.",
         ),
         (
             FEATURES + '[[features.accounts.when]]\nif = "taskq and not taskq"\n',
-            "20: features.accounts.when[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+            "20: features.accounts.when[\"taskq and not taskq\"].if: 'taskq' isn't a feature of this catalog.\n  Did "
+            "you mean 'taskiq'?",
         ),
         (
             FEATURES + '[features.accounts.contributes]\nrouters = [{ ref = "m:r", if = "taskq" }]\n',
@@ -151,7 +157,7 @@ def test_names_that_all_exist_load() -> None:
         (
             FEATURES
             + '[[features.accounts.when]]\nif = "taskiq"\ncontributes = { routers = [{ ref = "m:r", if = "taskq" }] }\n',
-            "21: features.accounts.when[0].contributes.routers[0].if: 'taskq' isn't a feature of this catalog.\n"
+            "21: features.accounts.when[\"taskiq\"].contributes.routers[0].if: 'taskq' isn't a feature of this catalog.\n"
             "  Did you mean 'taskiq'?",
         ),
         (
@@ -162,11 +168,11 @@ def test_names_that_all_exist_load() -> None:
             FEATURES
             + '[[wiring]]\npath = "backend/src/w.py"\ndoc = "W."\nif = "taskq"\n'
             + '[[wiring.slots]]\nkind = "raw"\ncode = "X = 1"\n',
-            "22: wiring[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+            "22: wiring[\"backend/src/w.py\"].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),
         (
             FEATURES + '[[verify.checks]]\nname = "q"\nrun = ["true"]\nif = "taskq"\n',
-            "22: verify.checks[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+            "22: verify.checks[\"q\"].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),
         (
             FEATURES
@@ -198,9 +204,10 @@ def test_every_unknown_name_in_one_condition_is_reported() -> None:
     body = FEATURES + '[[features.accounts.when]]\nif = "taskq or acounts"\n' + ROUTERS_SLOT
 
     assert _problems(MINIMAL + body) == [
-        "blueprint.toml:20: features.accounts.when[0].if: 'acounts' isn't a feature of this catalog.\n"
+        "blueprint.toml:20: features.accounts.when[\"taskq or acounts\"].if: 'acounts' isn't a feature of this catalog.\n"
         "  Did you mean 'accounts'?",
-        "blueprint.toml:20: features.accounts.when[0].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+        "blueprint.toml:20: features.accounts.when[\"taskq or acounts\"].if: 'taskq' isn't a feature of this "
+        "catalog.\n  Did you mean 'taskiq'?",
     ]
 
 
@@ -307,7 +314,7 @@ def test_contributions_that_fit_their_slots_load() -> None:
         ),
         (
             WIRED + '[[features.accounts.when]]\nif = "taskiq"\ncontributes = { queue = ["m:q"] }\n',
-            "61: features.accounts.when[0].contributes.queue: 'queue' isn't a declared point.\n"
+            "61: features.accounts.when[\"taskiq\"].contributes.queue: 'queue' isn't a declared point.\n"
             "  The points are routers, cache, labels, menu.",
         ),
         (
@@ -322,7 +329,8 @@ def test_contributions_that_fit_their_slots_load() -> None:
             WIRED.replace('point = "cache"', 'point = "caches"'),
             "9: points.cache: isn't collected by any slot.\n"
             "  Add a slot with point = 'cache' to a [[wiring]] file, or drop the point.\n"
-            "blueprint.toml:39: wiring[0].slots[1].point: 'caches' isn't a declared point.\n  Did you mean 'cache'?",
+            'blueprint.toml:39: wiring["backend/src/w.py"].slots["CACHE"].point: \'caches\' isn\'t a declared '
+            "point.\n  Did you mean 'cache'?",
         ),
         (
             WIRED + '[points.queue]\ncardinality = "many"\n',
@@ -333,11 +341,13 @@ def test_contributions_that_fit_their_slots_load() -> None:
             WIRED.replace('point = "labels"', 'point = "routers"').replace("literal = true", 'item = "{name}"'),
             "12: points.labels: isn't collected by any slot.\n"
             "  Add a slot with point = 'labels' to a [[wiring]] file, or drop the point.\n"
-            "blueprint.toml:46: wiring[0].slots[2].point: 'routers' is collected by wiring[0].slots[0] already.",
+            'blueprint.toml:46: wiring["backend/src/w.py"].slots["LABELS"].point: \'routers\' is collected by '
+            'wiring["backend/src/w.py"].slots["ROUTERS"] already.',
         ),
         (
             WIRED.replace('[points.cache]\ncardinality = "one"', '[points.cache]\ncardinality = "many"'),
-            "39: wiring[0].slots[1].point: 'cache' is a many point, and a value slot collects a one point.\n"
+            '39: wiring["backend/src/w.py"].slots["CACHE"].point: \'cache\' is a many point, and a value slot collects '
+            "a one point.\n"
             '  Set cardinality = "one" in [points.cache], or collect it with a tuple or list slot.',
         ),
         (
@@ -345,7 +355,8 @@ def test_contributions_that_fit_their_slots_load() -> None:
             + '[[wiring]]\npath = "backend/src/x.py"\ndoc = "X."\n'
             + '[[wiring.slots]]\nkind = "reexport"\nname = "Q"\npoint = "queue"\nfallback = "m:q"\n'
             + '[points.queue]\ncardinality = "many"\n',
-            "65: wiring[2].slots[0].point: 'queue' is a many point, and a reexport slot collects a one point.\n"
+            '65: wiring["backend/src/x.py"].slots["Q"].point: \'queue\' is a many point, and a reexport slot collects '
+            "a one point.\n"
             '  Set cardinality = "one" in [points.queue], or collect it with a tuple or list slot.',
         ),
         (
@@ -356,7 +367,8 @@ def test_contributions_that_fit_their_slots_load() -> None:
             WIRED
             + '[core.contributes]\ncache = ["m:a"]\n'
             + '[[features.taskiq.when]]\nif = "accounts"\ncontributes = { cache = ["m:b"] }\n',
-            "63: features.taskiq.when[0].contributes.cache: 'cache' is a one point, and [core] contributes to it already.",
+            "63: features.taskiq.when[\"accounts\"].contributes.cache: 'cache' is a one point, and [core] contributes "
+            "to it already.",
         ),
         (
             WIRED + '[features.accounts.contributes]\nrouters = ["m:r prefix"]\n',
@@ -378,13 +390,15 @@ def test_contributions_that_fit_their_slots_load() -> None:
         ),
         (
             WIRED + '[features.accounts.contributes]\nrouters = ["m:r"]\n',
-            "60: features.accounts.contributes.routers[0]: doesn't give prefix, which the item of wiring[0].slots[0] uses.\n"
+            "60: features.accounts.contributes.routers[0]: doesn't give prefix, which the item of "
+            'wiring["backend/src/w.py"].slots["ROUTERS"] uses.\n'
             "  Add prefix to this contribution, or a default for it in that slot's defaults.",
         ),
         (
             WIRED + '[generators.module]\ntemplates = "t"\n[generators.module.register]\ncontributes = { routers = ["m:r"] }\n',
             "62: generators.module.register.contributes.routers[0]: doesn't give prefix, which the item of "
-            "wiring[0].slots[0] uses.\n  Add prefix to this contribution, or a default for it in that slot's defaults.",
+            'wiring["backend/src/w.py"].slots["ROUTERS"] uses.\n  Add prefix to this contribution, or a default for it '
+            "in that slot's defaults.",
         ),
         (
             WIRED
@@ -476,8 +490,8 @@ ANOTHER = "Give [features.accounts] a path that owns it, longer than features.ti
         (
             SCRIPTS + '[[features.accounts.when]]\nif = "accounts"\npaths = ["backend/scripts/unlock.py"]\n',
             "backend/scripts/unlock.py",
-            "features.accounts.when[0].paths[0]",
-            "Move it out of features.accounts.when[0].paths[0]",
+            'features.accounts.when["accounts"].paths[0]',
+            'Move it out of features.accounts.when["accounts"].paths[0]',
         ),
         (
             SCRIPTS + TIERS + 'paths = ["backend/scripts/unlock.py"]\n',
@@ -501,6 +515,18 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
     ]
 
 
+def test_a_command_whose_module_another_feature_s_when_takes_names_that_when_by_its_if() -> None:
+    body = SCRIPTS + TIERS + '[[features.tiers.when]]\nif = "accounts"\npaths = ["backend/scripts/unlock.py"]\n'
+
+    assert _problems(MINIMAL + body + UNLOCK_SCRIPT) == [
+        "blueprint.toml:15: features.accounts.commands.\"accounts unlock\".module: 'scripts.unlock' is "
+        'backend/scripts/unlock.py, which is owned by features.tiers.when["accounts"].paths[0], and a feature '
+        "command's module must be owned by its feature's own paths.\n"
+        '  Give [features.accounts] a path that owns it, longer than features.tiers.when["accounts"].paths[0], or '
+        "declare the command in [commands] instead."
+    ]
+
+
 @pytest.mark.parametrize(
     ("body", "problem"),
     [
@@ -511,8 +537,8 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
         ),
         (
             OWNED + '[[features.tiers.when]]\nif = "accounts"\npaths = ["backend/src/modules/tier/"]\n',
-            "15: features.tiers.when[0].paths[0]: 'backend/src/modules/tier/' is declared by features.tiers.paths[0] "
-            "already.\n  A path belongs to one declaration: drop one of them.",
+            "15: features.tiers.when[\"accounts\"].paths[0]: 'backend/src/modules/tier/' is declared by "
+            "features.tiers.paths[0] already.\n  A path belongs to one declaration: drop one of them.",
         ),
         (
             OWNED.replace('["backend/src/modules/tier/"]', '["backend/src/modules/tier/", "backend/src/modules/tier/"]'),
@@ -521,7 +547,8 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
         ),
         (
             '[[features.tiers.when]]\nif = "accounts"\npaths = ["backend/src/modules/tier/"]\n' + OWNED,
-            "15: features.tiers.paths[0]: 'backend/src/modules/tier/' is declared by features.tiers.when[0].paths[0] "
+            "15: features.tiers.paths[0]: 'backend/src/modules/tier/' is declared by "
+            'features.tiers.when["accounts"].paths[0] '
             "already.\n  A path belongs to one declaration: drop one of them.",
         ),
         (
@@ -552,9 +579,9 @@ def test_a_command_whose_module_a_longer_path_takes_away_is_refused(body: str, t
             + UNLOCK
             + 'module = "scripts.promote"\n',
             "17: features.accounts.commands.\"accounts unlock\".module: 'scripts.promote' is backend/scripts/promote.py, "
-            "which is owned by features.accounts.when[0].paths[0], and a feature command's module must be owned by "
+            'which is owned by features.accounts.when["tiers"].paths[0], and a feature command\'s module must be owned by '
             "its feature's own paths.\n"
-            "  Move it out of features.accounts.when[0].paths[0], or declare the command in [commands] instead.",
+            '  Move it out of features.accounts.when["tiers"].paths[0], or declare the command in [commands] instead.',
         ),
     ],
 )
@@ -584,31 +611,35 @@ format = "json"
         (
             'blueprint_only = ["frontend/"]\n',
             "frontend/menu.json",
-            "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "
+            "11: wiring[\"frontend/menu.json\"].path: 'frontend/menu.json' sits under 'frontend/', which is "
+            "blueprint_only, and the tool "
             "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
         ),
         (
             "",
             ".fastro/menu.json",
-            "10: wiring[0].path: '.fastro/menu.json' sits under '.fastro/', which is blueprint_only, and the tool "
+            "10: wiring[\".fastro/menu.json\"].path: '.fastro/menu.json' sits under '.fastro/', which is "
+            "blueprint_only, and the tool "
             "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
         ),
         (
             "",
             "fastro.toml",
-            "10: wiring[0].path: 'fastro.toml' is blueprint_only, and the tool generates this wiring file in projects.\n"
-            "  Give the wiring file a path outside blueprint_only.",
+            "10: wiring[\"fastro.toml\"].path: 'fastro.toml' is blueprint_only, and the tool generates this wiring "
+            "file in projects.\n  Give the wiring file a path outside blueprint_only.",
         ),
         (
             'overlay = "frontend"\n',
             "frontend/menu.json",
-            "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "
+            "11: wiring[\"frontend/menu.json\"].path: 'frontend/menu.json' sits under 'frontend/', which is "
+            "blueprint_only, and the tool "
             "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
         ),
         (
             'blueprint_only = ["frontend/", "frontend/menu.json"]\n',
             "frontend/menu.json",
-            "11: wiring[0].path: 'frontend/menu.json' sits under 'frontend/', which is blueprint_only, and the tool "
+            "11: wiring[\"frontend/menu.json\"].path: 'frontend/menu.json' sits under 'frontend/', which is "
+            "blueprint_only, and the tool "
             "generates this wiring file in projects.\n  Give the wiring file a path outside blueprint_only.",
         ),
     ],
@@ -667,7 +698,7 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
 
     assert _problems(MINIMAL + body) == [
         "blueprint.toml:40: features.accounts.contributes.routers[0]: 'src.wiring:router' is a ref to src.wiring, the module "
-        "wiring[0].slots[0] is generated into.\n" + OWN_FIX
+        'wiring["backend/src/wiring/__init__.py"].slots["ROUTERS"] is generated into.\n' + OWN_FIX
     ]
 
 
@@ -677,7 +708,7 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
         (
             OWN + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
             "40: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
-            "wiring[0].slots[0] is generated into.\n" + OWN_FIX,
+            'wiring["backend/src/wiring/app.py"].slots["ROUTERS"] is generated into.\n' + OWN_FIX,
         ),
         (
             OWN.replace(
@@ -686,26 +717,29 @@ def test_a_package_wiring_file_is_its_package_s_module() -> None:
             )
             + '[features.accounts.contributes]\nrouters = ["src.wiring.app:router"]\n',
             "41: features.accounts.contributes.routers[0]: 'src.wiring.app:router' is a ref to src.wiring.app, the module "
-            "wiring[0].slots[0] is generated into.\n" + OWN_FIX,
+            'wiring["backend/src/wiring/app.py"].slots["ROUTERS"] is generated into.\n' + OWN_FIX,
         ),
         (
             OWN + '[features.accounts.contributes]\nrouters = [{ ref = "src.wiring.app:router as r" }]\n',
             "40: features.accounts.contributes.routers[0]: 'src.wiring.app:router as r' is a ref to src.wiring.app, the "
-            "module wiring[0].slots[0] is generated into.\n" + OWN_FIX,
+            'module wiring["backend/src/wiring/app.py"].slots["ROUTERS"] is generated into.\n' + OWN_FIX,
         ),
         (
             OWN.replace('point = "settings"\n', 'point = "settings"\nfallback = "src.wiring.app:Base"\n'),
-            "32: wiring[0].slots[1].fallback: 'src.wiring.app:Base' is a ref to src.wiring.app, the module this slot is "
+            '32: wiring["backend/src/wiring/app.py"].slots["Settings"].fallback: \'src.wiring.app:Base\' is a ref to '
+            "src.wiring.app, the module this slot is "
             "generated into.\n" + OWN_FIX,
         ),
         (
             OWN.replace('point = "settings"\n', 'point = "settings"\nappend = ["src.base:A", "src.wiring.app:B"]\n'),
-            "32: wiring[0].slots[1].append[1]: 'src.wiring.app:B' is a ref to src.wiring.app, the module this slot is "
+            '32: wiring["backend/src/wiring/app.py"].slots["Settings"].append[1]: \'src.wiring.app:B\' is a ref to '
+            "src.wiring.app, the module this slot is "
             "generated into.\n" + OWN_FIX,
         ),
         (
             OWN.replace('fallback = "src.admin:site"', 'fallback = "src.wiring.app:site"'),
-            "38: wiring[0].slots[2].fallback: 'src.wiring.app:site' is a ref to src.wiring.app, the module this slot is "
+            '38: wiring["backend/src/wiring/app.py"].slots["SITE"].fallback: \'src.wiring.app:site\' is a ref to '
+            "src.wiring.app, the module this slot is "
             "generated into.\n" + OWN_FIX,
         ),
     ],

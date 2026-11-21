@@ -284,8 +284,8 @@ def test_a_feature_without_commands_has_none() -> None:
         ),
         (
             ACCOUNTS + '[[features.accounts.when]]\nif = "taskiq"\ncommands = {}\n',
-            "10: features.accounts.when[0].commands: isn't a key of [features.accounts.when[0]].\n"
-            "  The keys of [features.accounts.when[0]] are contributes, dependencies, dev_dependencies, if, "
+            '10: features.accounts.when["taskiq"].commands: isn\'t a key of features.accounts.when["taskiq"].\n'
+            '  The keys of features.accounts.when["taskiq"] are contributes, dependencies, dev_dependencies, if, '
             "paths, services.",
         ),
     ],

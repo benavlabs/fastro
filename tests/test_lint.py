@@ -108,7 +108,9 @@ def test_a_wiring_path_under_another_is_a_bp001_finding(repo: Path) -> None:
     (finding,) = _findings()
 
     assert (finding["file"], finding["code"]) == ("blueprint.toml", "BP001")
-    assert "'backend/src/wiring/app.py/tasks.py' sits under wiring[0]'s path" in str(finding["message"])
+    assert "'backend/src/wiring/app.py/tasks.py' sits under wiring[\"backend/src/wiring/app.py\"]'s path" in str(
+        finding["message"]
+    )
 
 
 def test_a_path_owned_twice_is_bp003_not_bp001(repo: Path) -> None:
@@ -328,7 +330,7 @@ def test_a_when_s_paths_are_checked_too(repo: Path) -> None:
     (finding,) = _findings()
 
     assert finding["code"] == "BP002"
-    assert str(finding["message"]).startswith("features.billing.when[0].paths[0]: ")
+    assert str(finding["message"]).startswith('features.billing.when["billing.provider=paddle"].paths[0]: ')
 
 
 def test_a_generator_s_templates_and_the_overlay_are_directories_that_must_hold_a_tracked_file(repo: Path) -> None:
@@ -776,7 +778,7 @@ def test_a_feature_s_and_a_when_s_contributions_are_checked(repo: Path) -> None:
 
     (finding,) = _findings()
 
-    assert str(finding["message"]).startswith("features.accounts.when[0].contributes.email_sender[0]: ")
+    assert str(finding["message"]).startswith('features.accounts.when["tasks"].contributes.email_sender[0]: ')
 
 
 def test_a_reexport_fallback_is_checked(repo: Path) -> None:
@@ -784,7 +786,9 @@ def test_a_reexport_fallback_is_checked(repo: Path) -> None:
 
     (finding,) = _findings()
 
-    assert str(finding["message"]).startswith("wiring[3].slots[0].fallback: 'src.admin_default:nope' names 'nope'")
+    assert str(finding["message"]).startswith(
+        "wiring[\"backend/src/wiring/admin.py\"].slots[\"SITE\"].fallback: 'src.admin_default:nope' names 'nope'"
+    )
 
 
 def test_a_class_s_fallback_and_append_are_checked(repo: Path) -> None:
@@ -796,7 +800,10 @@ def test_a_class_s_fallback_and_append_are_checked(repo: Path) -> None:
 
     found = sorted(str(finding["message"]).split(":")[0] for finding in _findings())
 
-    assert found == ["wiring[0].slots[2].append[0]", "wiring[0].slots[2].fallback"]
+    assert found == [
+        'wiring["backend/src/wiring/app.py"].slots["Settings"].append[0]',
+        'wiring["backend/src/wiring/app.py"].slots["Settings"].fallback',
+    ]
 
 
 def test_a_literal_or_data_slot_s_contributions_arent_refs(repo: Path) -> None:
@@ -1428,8 +1435,8 @@ def test_a_dev_dependency_no_dev_table_lists_is_fr002_at_its_entry(repo: Path) -
         ),
         (
             _line_of(repo, 'dev_dependencies = ["ruff"]'),
-            f"features.cache.when[0].dev_dependencies[0]: 'ruff' isn't listed in a dev table of {PYPROJECT}, so no "
-            "project gets it.",
+            "features.cache.when[\"cache.backend=redis\"].dev_dependencies[0]: 'ruff' isn't listed in a dev table of "
+            f"{PYPROJECT}, so no project gets it.",
             DEV_FIX.format(text="ruff"),
             "blueprint.toml",
         ),
@@ -1515,9 +1522,9 @@ def test_a_direct_reference_that_isnt_the_same_is_fr002_and_a_when_s_if_isnt_con
     _edit(repo / "blueprint.toml", 'services = ["redis"]\n', 'services = ["redis"]\ndependencies = ["pkg>=1"]\n')
 
     assert [message for _, message, _, _ in _fr002()] == [
-        "features.cache.when[0].dependencies[0]: 'pkg>=1' can't be merged with 'pkg @ https://example.com/pkg-1.0.tar.gz' "
-        f"on line {_line_of(repo, 'runtime = ')}, since pkg has a direct reference, and its entries aren't the same "
-        "requirement."
+        "features.cache.when[\"cache.backend=redis\"].dependencies[0]: 'pkg>=1' can't be merged with "
+        f"'pkg @ https://example.com/pkg-1.0.tar.gz' on line {_line_of(repo, 'runtime = ')}, since pkg has a direct "
+        "reference, and its entries aren't the same requirement."
     ]
 
 

@@ -39,23 +39,88 @@ def test_a_key_is_named_as_toml_would_write_it(path: KeyPath, name: str) -> None
 
 
 @pytest.mark.parametrize(
-    ("path", "line"),
+    ("path", "line", "name"),
     [
-        (("schema",), 1),
-        (("features", "taskiq"), 3),
-        (("features", "taskiq", "requires", 0), 4),
-        (("features", "taskiq", "when", 0, "if"), 7),
-        (("features", "taskiq", "when", 0, "paths", 1), 8),
-        (("features", "taskiq", "summary"), 3),
-        (("features", "taskiq", "when", 0, "contributes"), 6),
-        (("options", "taskiq.broker"), 11),
-        (("presets",), 1),
+        (("schema",), 1, "schema"),
+        (("features", "taskiq"), 3, "features.taskiq"),
+        (("features", "taskiq", "requires", 0), 4, "features.taskiq.requires[0]"),
+        (("features", "taskiq", "when", 0, "if"), 7, 'features.taskiq.when["accounts"].if'),
+        (("features", "taskiq", "when", 0, "paths", 1), 8, 'features.taskiq.when["accounts"].paths[1]'),
+        (("features", "taskiq", "summary"), 3, "features.taskiq.summary"),
+        (("features", "taskiq", "when", 0, "contributes"), 6, 'features.taskiq.when["accounts"].contributes'),
+        (("options", "taskiq.broker"), 11, 'options."taskiq.broker"'),
+        (("presets",), 1, "presets"),
     ],
 )
-def test_a_problem_sits_on_its_keys_line_or_else_the_nearest_enclosing_one(path: KeyPath, line: int) -> None:
+def test_a_problem_sits_on_its_keys_line_or_else_the_nearest_enclosing_one(path: KeyPath, line: int, name: str) -> None:
     problem = read("blueprint.toml", BLUEPRINT).problem(path, "is wrong.")
 
-    assert problem == Problem("blueprint.toml", line, key_name(path), "is wrong.")
+    assert problem == Problem("blueprint.toml", line, name, "is wrong.")
+
+
+WIRING = """\
+[[wiring]]
+path = "backend/src/wiring/app.py"
+[[wiring.slots]]
+kind = "raw"
+[[wiring.slots]]
+name = "ROUTERS"
+[[wiring.slots]]
+name = "ROUTERS"
+[[wiring.slots]]
+name = 3
+[[wiring]]
+path = "backend/src/wiring/app.py"
+[[wiring]]
+doc = "no path"
+[features.a]
+contributes = { routers = [{ ref = "x:y" }], when = [{ ref = "x:y", if = "b" }], slots = [{ name = "q" }] }
+[[features.a.when]]
+if = "b"
+[[feature.when]]
+if = "c"
+[[modules]]
+name = "billing"
+[[other]]
+slots = [{ name = "q" }]
+[[verify.checks]]
+name = "smoke \\"q\\""
+"""
+
+
+@pytest.mark.parametrize(
+    ("path", "name"),
+    [
+        (("wiring", 0, "path"), 'wiring["backend/src/wiring/app.py"].path'),
+        (("wiring", 0, "slots", 0, "code"), 'wiring["backend/src/wiring/app.py"].slots[#1].code'),
+        (("wiring", 0, "slots", 1), 'wiring["backend/src/wiring/app.py"].slots["ROUTERS"]'),
+        (("wiring", 0, "slots", 2), 'wiring["backend/src/wiring/app.py"].slots[#3]'),
+        (("wiring", 0, "slots", 3), 'wiring["backend/src/wiring/app.py"].slots[#4]'),
+        (("wiring", 0, "slots", 9), 'wiring["backend/src/wiring/app.py"].slots[9]'),
+        (("wiring", 1, "path"), "wiring[#2].path"),
+        (("wiring", 2), "wiring[#3]"),
+        (("features", "a", "contributes", "routers", 0, "ref"), "features.a.contributes.routers[0].ref"),
+        (("features", "a", "when", 0, "if"), 'features.a.when["b"].if'),
+        (("features", "a", "contributes", "when", 0, "if"), "features.a.contributes.when[0].if"),
+        (("features", "a", "contributes", "slots", 0, "name"), "features.a.contributes.slots[0].name"),
+        (("feature", "when", 0), 'feature.when["c"]'),
+        (("modules", 0, "name"), 'modules["billing"].name'),
+        (("other", 0, "slots", 0), "other[0].slots[0]"),
+        (("verify", "checks", 0, "run"), 'verify.checks["smoke \\"q\\""].run'),
+        (("presets", 0), "presets[0]"),
+    ],
+)
+def test_an_entry_of_an_array_of_tables_is_named_by_what_identifies_it(path: KeyPath, name: str) -> None:
+    assert read("blueprint.toml", WIRING).key(path) == name
+
+
+def test_a_table_is_named_in_brackets_and_an_entry_of_an_array_without() -> None:
+    document = read("blueprint.toml", WIRING)
+
+    assert (document.table(("features", "a")), document.table(("wiring", 0))) == (
+        "[features.a]",
+        'wiring["backend/src/wiring/app.py"]',
+    )
 
 
 def test_read_returns_the_parsed_document() -> None:

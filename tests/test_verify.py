@@ -697,7 +697,7 @@ def test_a_set_whose_wiring_cant_render_exits_1_naming_the_set(
     code, out, err = _verify_cli("queues")
 
     assert code == 1
-    assert "error: verify set 'queues' can't be built: EMAIL_SENDER" in err
+    assert 'error: verify set \'queues\' can\'t be built: wiring["backend/src/wiring/app.py"].slots["EMAIL_SENDER"]' in err
     assert "no contribution" in err
     assert "fastro blueprint lint" not in err
     assert f"scratch copies left in {scratch}" in out

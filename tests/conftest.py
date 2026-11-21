@@ -1,11 +1,18 @@
 """Pytest settings for fastro's own suite, and the fixtures several test files share."""
 
 import faulthandler
+import importlib
 import os
+import pkgutil
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+import fastro
+from fastro.engine import problems
 
 collect_ignore = ["fixtures"]
 
@@ -20,6 +27,41 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 SKIPPED: list[str] = []
+INTERNAL = re.compile(
+    r"(?<![\w.\"])(?:wiring|modules|plugin|starter|feature\.when|verify\.checks)\[\d|\]\.slots\[\d"
+    r"|(?<![\w.\"])features\.(?:[\w-]+|\"[^\"]*\")\.when\[\d"
+)
+NAMED_BY_POSITION: list[str] = []
+
+
+def _watch(cls: type) -> None:
+    """Note each ``cls`` made during the run whose text names an entry of an array of tables by its position."""
+    original = getattr(cls, "__init__")
+
+    def init(self: object, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+        if INTERNAL.search(str(self)):
+            NAMED_BY_POSITION.append(str(self))
+
+    setattr(cls, "__init__", init)
+
+
+for module in pkgutil.walk_packages(fastro.__path__, "fastro."):
+    if not module.name.endswith("__main__"):
+        importlib.import_module(module.name)
+
+
+def _errors(cls: type) -> Iterator[type]:
+    sub: type
+    for sub in cls.__subclasses__():
+        if sub.__module__.startswith("fastro."):
+            yield sub
+        yield from _errors(sub)
+
+
+_watch(problems.Problem)
+for error in dict.fromkeys(_errors(BaseException)):
+    _watch(error)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -35,13 +77,16 @@ def pytest_collectreport(report: pytest.CollectReport) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Fail a run that skipped a test, on every Python version: the suite allows none."""
-    if SKIPPED and exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED):
+    """Fail a run that skipped a test, on every Python version: the suite allows none. Fail one that made an error
+    naming an entry of an array of tables by its position, which spec 1.11 rules out."""
+    if (SKIPPED or NAMED_BY_POSITION) and exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED):
         session.exitstatus = 1
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
-    """Name the skipped tests that failed the run."""
+    """Name the skipped tests, and the errors naming an entry by its position, that failed the run."""
+    for text in dict.fromkeys(NAMED_BY_POSITION):
+        terminalreporter.write_line(f"an error names an entry of an array of tables by its position (1.11): {text}")
     if SKIPPED:
         count = len(SKIPPED)
         names = ", ".join(SKIPPED)
