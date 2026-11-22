@@ -28,6 +28,7 @@ EXTENDS = "blueprint.toml extends {name}, and this fastro can't merge an extendi
 CHECKED_ROOTS = ("scripts", "tests")
 MODULE_FIX = "Point the ref at a module the repo has, or add its file."
 ALIAS_FIX = "Give it an alias nothing else in that file binds."
+CATALOG_ALIAS_FIX = "Give it, or what it clashes with, an alias nothing else in that file binds."
 
 
 class _NotText:
@@ -116,8 +117,8 @@ def wiring_changes(source: Source) -> list[Change]:
     each wiring file on disk that the selection doesn't render, by path.
 
     Raises:
-        CatalogError: an ``[app].contributes`` ref names a module the repo doesn't have, or binds a name its wiring
-            file binds otherwise (3).
+        CatalogError: an ``[app].contributes`` ref names a module the repo doesn't have, or it or a catalog
+            contribution binds a name its wiring file binds otherwise (3).
         Unreadable: the system won't let fastro look at a wiring path or a module file, or open a wiring file (spec 8).
     """
     loaded = source.project
@@ -129,10 +130,9 @@ def wiring_changes(source: Source) -> list[Change]:
         for at, ref in app_refs(source.catalog, loaded.app.contributes)
         if (reason := _missing_module(source.root, source.catalog, ref)) is not None
     ]
-    problems += [
-        loaded.document.problem(at, message, ALIAS_FIX)
-        for at, message in shadows(made, loaded.app.contributes, loaded.document.line)
-    ]
+    shadowed = shadows(made, loaded.app.contributes, loaded.document.line)
+    problems += [loaded.document.problem(at, message, ALIAS_FIX) for at, message in shadowed.app]
+    problems += [source.catalog.document.problem(at, message, CATALOG_ALIAS_FIX) for at, message in shadowed.catalog]
     if problems:
         raise CatalogError(problems)
     found = []

@@ -848,3 +848,21 @@ def test_an_app_ref_under_scripts_or_tests_is_checked_too(repo: Path, module: st
 
     assert code == 1
     assert f"'{module}:x as mine' names a module the repo doesn't have" in err
+
+
+def test_two_catalog_refs_binding_one_name_are_refused_at_the_later_in_blueprint_toml(repo: Path) -> None:
+    toml = repo / "blueprint.toml"
+    toml.write_text(toml.read_text().replace("router as billing_router", "router as accounts_router"))
+    before = _tree(repo)
+
+    code, out, err = _sync("--check")
+
+    line = next(n for n, text in enumerate(toml.read_text().splitlines(), 1) if "billing.routes" in text)
+    assert (code, out) == (1, "")
+    assert err.startswith(
+        f"blueprint.toml:{line}: features.billing.contributes.routers[0]: 'src.modules.billing.routes:router as "
+        "accounts_router' binds 'accounts_router' in backend/src/wiring/app.py, which "
+        "'src.modules.accounts.routes:router as accounts_router' at features.accounts.contributes.routers[0] binds "
+        "too.\n  Give it, or what it clashes with, an alias nothing else in that file binds.\n"
+    )
+    assert _tree(repo) == before

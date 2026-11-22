@@ -17,6 +17,7 @@ from fastro.engine.blueprint import Blueprint, Contributions, Info
 from fastro.engine.plan import Plan, plan
 from fastro.engine.render import (
     RenderError,
+    Shadows,
     feature_indexes,
     import_block,
     ordered,
@@ -1053,7 +1054,7 @@ def _app_shadows(contributes: str, features: tuple[str, ...] = ("accounts",)) ->
         + (contributes if contributes.startswith("[[") else f"[app.contributes]\n{contributes}\n"),
     )
     made = _mini_plan(features)
-    return shadows(made, loaded.app.contributes, loaded.document.line)
+    return shadows(made, loaded.app.contributes, loaded.document.line).app
 
 
 APP_PY = "backend/src/wiring/app.py"
@@ -1145,12 +1146,12 @@ def test_an_app_ref_that_shadows_a_reexport_another_app_ref_fills_shadows_it() -
             'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
             f"[app.contributes]\n{contributes}\n",
         )
-        return shadows(made, loaded.app.contributes, loaded.document.line)
+        return shadows(made, loaded.app.contributes, loaded.document.line).app
 
     assert found('admin_site = ["src.a:Y"]\nextras = ["src.b:SITE"]') == [
         (
             ("app", "contributes", "extras", 0),
-            "'src.b:SITE' binds 'SITE' in backend/src/wiring/admin.py, which that file binds otherwise too.",
+            "'src.b:SITE' binds 'SITE' in backend/src/wiring/admin.py, which the app ref 'src.a:Y' binds too.",
         )
     ]
     assert found('admin_site = ["src.a:SITE"]\nextras = ["src.a:SITE"]') == []
@@ -1170,9 +1171,152 @@ def test_a_plain_import_in_a_wiring_file_is_a_binding_too() -> None:
             'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
             f"[app.contributes]\n{contributes}\n",
         )
-        return shadows(made, loaded.app.contributes, loaded.document.line)
+        return shadows(made, loaded.app.contributes, loaded.document.line).app
 
     assert found('routers = [{ ref = "src.x:y as mine", prefix = "/m" }]') == []
     assert found('routers = [{ ref = "src.x:y as os", prefix = "/m" }]') == [
         (("app", "contributes", "routers", 0), f"'src.x:y as os' binds 'os' in {APP_PY}, which that file binds otherwise too.")
+    ]
+
+
+def _catalog_shadows(text: str, features: tuple[str, ...], contributes: str = "") -> Shadows:
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    loaded = project.load(
+        "fastro.toml",
+        'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n[project]\nname = "a"\n'
+        + (f"[app.contributes]\n{contributes}\n" if contributes else ""),
+    )
+    return shadows(plan(catalog, select(catalog, features), MINI_FILES), loaded.app.contributes, loaded.document.line)
+
+
+ACCOUNTS_ROUTER = '"src.modules.accounts.routes:router as accounts_router"'
+
+
+def test_of_two_catalog_refs_binding_one_name_the_later_in_blueprint_toml_shadows_naming_the_first() -> None:
+    text = MINI.read_text().replace("router as billing_router", "router as accounts_router")
+
+    assert _catalog_shadows(text, ("billing",)) == (
+        [],
+        [
+            (
+                ("features", "billing", "contributes", "routers", 0),
+                f"'src.modules.billing.routes:router as accounts_router' binds 'accounts_router' in {APP_PY}, which "
+                f"{ACCOUNTS_ROUTER[1:-1]!r} at features.accounts.contributes.routers[0] binds too.",
+            )
+        ],
+    )
+
+
+def test_a_catalog_ref_whose_name_its_file_binds_otherwise_shadows_it() -> None:
+    text = MINI.read_text().replace(
+        '"src.modules.cache.settings:CacheSettings"', '"src.modules.cache.settings:CacheSettings as Mount"'
+    )
+
+    assert _catalog_shadows(text, ("cache",)).catalog == [
+        (
+            ("features", "cache", "contributes", "settings", 0),
+            f"'src.modules.cache.settings:CacheSettings as Mount' binds 'Mount' in {APP_PY}, which that file binds "
+            "otherwise too.",
+        )
+    ]
+
+
+def test_the_later_catalog_ref_is_by_line_in_blueprint_toml() -> None:
+    core = '[core.contributes]\nhealth_checks = ["src.health:database"]\n'
+    text = MINI.read_text().replace(core, "") + core + 'settings = ["src.other:CacheSettings"]\n'
+
+    assert _catalog_shadows(text, ("cache",)).catalog == [
+        (
+            ("core", "contributes", "settings", 0),
+            f"'src.other:CacheSettings' binds 'CacheSettings' in {APP_PY}, which 'src.modules.cache.settings:CacheSettings' "
+            "at features.cache.contributes.settings[0] binds too.",
+        )
+    ]
+
+
+def test_an_app_ref_filling_a_reexport_binds_the_slot_s_name_and_gives_way_to_the_catalog() -> None:
+    text = MINI.read_text().replace(
+        'fallback = "src.admin_default:site"\n',
+        'fallback = "src.admin_default:site"\n\n[[wiring.slots]]\nkind = "list"\nname = "EXTRAS"\npoint = "extras"\n'
+        'annotation = "list[object]"\n',
+    )
+    text = text.replace(
+        'health_checks = ["src.health:database"]\n', 'health_checks = ["src.health:database"]\nextras = ["src.b:SITE"]\n'
+    )
+    text += '\n[points.extras]\ncardinality = "many"\ndoc = "Extra things."\n'
+
+    assert _catalog_shadows(text, (), 'admin_site = ["src.a:Y"]') == (
+        [
+            (
+                ("app", "contributes", "admin_site", 0),
+                "'src.a:Y' binds 'SITE' in backend/src/wiring/admin.py, which that file binds otherwise too.",
+            )
+        ],
+        [],
+    )
+
+
+HEALTH_PY = "backend/src/wiring/health.py"
+HEALTH = 'health_checks = ["src.health:database"]'
+
+
+def test_an_identical_app_ref_doesnt_hide_a_catalog_ref_that_shadows_the_file_s_import() -> None:
+    text = MINI.read_text().replace(HEALTH, 'health_checks = ["src.health:database", "src.other:Callable"]')
+
+    found = _catalog_shadows(text, (), 'health_checks = ["collections.abc:Callable"]')
+
+    assert found.catalog == [
+        (
+            ("core", "contributes", "health_checks", 1),
+            f"'src.other:Callable' binds 'Callable' in {HEALTH_PY}, which that file binds otherwise too.",
+        )
+    ]
+
+
+def test_a_catalog_ref_identical_to_the_file_s_import_doesnt_take_the_blame_for_one_that_shadows_it() -> None:
+    text = MINI.read_text().replace(
+        HEALTH, 'health_checks = ["src.health:database", "src.other:Callable", "collections.abc:Callable"]'
+    )
+
+    assert _catalog_shadows(text, ()).catalog == [
+        (
+            ("core", "contributes", "health_checks", 1),
+            f"'src.other:Callable' binds 'Callable' in {HEALTH_PY}, which that file binds otherwise too.",
+        ),
+        (
+            ("core", "contributes", "health_checks", 2),
+            f"'collections.abc:Callable' binds 'Callable' in {HEALTH_PY}, which 'src.other:Callable' at "
+            "core.contributes.health_checks[1] binds too.",
+        ),
+    ]
+
+
+def test_catalog_refs_on_one_line_are_ordered_as_written() -> None:
+    core = '[core.contributes]\nhealth_checks = ["src.health:database"]\n'
+    text = MINI.read_text().replace(core, "") + (
+        '\n[core]\ncontributes = { health_checks = ["src.health:database"], settings = ["src.y:mine"], '
+        'routers = [{ ref = "src.z:mine", prefix = "/z" }] }\n'
+    )
+
+    assert _catalog_shadows(text, ()).catalog == [
+        (
+            ("core", "contributes", "routers", 0),
+            f"'src.z:mine' binds 'mine' in {APP_PY}, which 'src.y:mine' at core.contributes.settings[0] binds too.",
+        )
+    ]
+
+
+def test_a_when_s_contribution_that_clashes_with_an_earlier_catalog_ref_is_the_one_reported() -> None:
+    text = MINI.read_text().replace(
+        'contributes = { email_sender = ["src.modules.accounts.email:send_queued"] }',
+        'contributes = { email_sender = ["src.modules.accounts.email:send_queued"], '
+        'routers = [{ ref = "src.w:accounts_router", prefix = "/w" }] }',
+    )
+
+    assert _catalog_shadows(text, ("accounts", "tasks")).catalog == [
+        (
+            ("features", "accounts", "when", 0, "contributes", "routers", 0),
+            f"'src.w:accounts_router' binds 'accounts_router' in {APP_PY}, which "
+            f"{ACCOUNTS_ROUTER[1:-1]!r} at features.accounts.contributes.routers[0] binds too.",
+        )
     ]

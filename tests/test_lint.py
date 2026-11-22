@@ -75,7 +75,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR002", "FR014", "FR016"],
+        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR001", "FR002", "FR014", "FR016"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -1622,10 +1622,31 @@ def test_an_overlay_file_at_a_path_app_paths_covers_is_bp003_naming_the_entry(re
     ]
 
 
-def test_a_selection_whose_wiring_cant_render_isnt_checked_for_shadowing(repo: Path) -> None:
+def test_a_pinned_selection_sync_cant_render_is_fr001_at_features_with_sync_s_message(repo: Path) -> None:
     _app(repo, '[app.contributes]\nemail_sender = ["src.health:database as accounts_router"]')
+    _, _, sync_err = _sync_cli()
 
-    assert [finding["code"] for finding in _findings()] == []
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["line"], finding["code"]) == ("fastro.toml", _toml_line(repo, "features ="), "FR001")
+    message = str(finding["message"])
+    assert finding["fix"] == ""
+    assert message.startswith("features: 'email_sender' is a one point")
+    assert message.removeprefix("features: ") in sync_err
+
+
+def test_two_catalog_refs_binding_one_name_are_bp001_at_the_later_in_blueprint_toml(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", "router as billing_router", "router as accounts_router")
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["line"], finding["code"]) == ("blueprint.toml", _line_of(repo, "billing.routes"), "BP001")
+    assert finding["message"] == (
+        "features.billing.contributes.routers[0]: 'src.modules.billing.routes:router as accounts_router' binds "
+        "'accounts_router' in backend/src/wiring/app.py, which 'src.modules.accounts.routes:router as accounts_router' "
+        "at features.accounts.contributes.routers[0] binds too."
+    )
+    assert finding["fix"] == "Give it, or what it clashes with, an alias nothing else in that file binds."
 
 
 def test_an_app_data_contribution_isnt_a_ref_to_lint(repo: Path) -> None:
@@ -1647,3 +1668,8 @@ def test_an_app_ref_under_scripts_is_checked_by_fr014(repo: Path) -> None:
     _app(repo, '[app.contributes]\nrouters = [{ ref = "scripts.nowhere:x as mine", prefix = "/n" }]')
 
     assert [(finding["code"], finding["file"]) for finding in _findings()] == [("FR014", "fastro.toml")]
+
+
+def _sync_cli() -> tuple[int, str, str]:
+    result = CliRunner().invoke(app, ["sync", "--check"])
+    return result.exit_code, result.stdout, result.stderr

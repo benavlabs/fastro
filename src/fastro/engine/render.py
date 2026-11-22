@@ -8,6 +8,8 @@ import re
 import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from itertools import count
+from typing import NamedTuple
 
 from fastro.engine import bindings
 from fastro.engine.blueprint import Blueprint, Contribution, Contributions, Info, Slot, Wiring
@@ -17,7 +19,7 @@ from fastro.engine.resolve import APP, Taken, check_fallback_slots, check_one_po
 from fastro.engine.spec import Ref, RepoPath
 
 CORE = "core"
-STAND_IN = "_fastro_app_"
+STAND_IN = "_fastro_stand_in_"
 FUTURE, STDLIB, THIRD_PARTY, FIRST_PARTY, LOCAL = range(5)
 FIRST_PARTY_EXTRA = ("scripts", "tests")
 
@@ -177,56 +179,120 @@ def render(plan: Plan, app: Contributions | None = None) -> dict[str, str]:
     }
 
 
-def shadows(plan: Plan, app: Contributions, line: Callable[[KeyPath], int]) -> list[tuple[KeyPath, str]]:
-    """Each ``app`` ref whose name a Python wiring file it's rendered into binds otherwise, as FR014 reads a binding,
-    with where ``fastro.toml`` writes it and why: of two app refs that bind one name, the later one, by the ``line``
-    of ``fastro.toml`` each is written on and then by declaration order (3).
+class _Bound(NamedTuple):
+    """A contribution a wiring file renders, whose it is, the order it's judged in, where it's written, and what it
+    binds."""
 
-    What a file binds otherwise is what it binds when each app ref is imported from a module of its own, so the
-    slots render as they will. An import the import block merges with the ref's own isn't another binding. A
-    ``reexport`` slot binds its own name, and a ``literal`` or ``data`` slot takes no refs.
+    app: bool
+    order: tuple[int, int]
+    at: KeyPath
+    ref: Ref
+    name: str
+    source: bindings.Source
+
+
+class Shadows(NamedTuple):
+    """The shadowing problems of a selection's wiring (3): the app's, in ``fastro.toml``, and the catalog's, in
+    ``blueprint.toml``, each a key and why."""
+
+    app: list[tuple[KeyPath, str]]
+    catalog: list[tuple[KeyPath, str]]
+
+
+def shadows(plan: Plan, app: Contributions, line: Callable[[KeyPath], int]) -> Shadows:
+    """Each contribution, the catalog's or ``app``'s, whose name a Python wiring file it's rendered into binds otherwise,
+    as FR014 reads a binding, with where it's written and why (3).
+
+    A ref binds its alias or attribute, and one that fills a ``reexport`` slot binds the slot's name; the slot that
+    renders it doesn't count. An import the import block merges with the ref's own isn't another binding. An app ref
+    gives way to the catalog: it's the problem when it clashes with anything. Of two catalog refs that bind one name,
+    the one written later in ``blueprint.toml`` is, and of two app refs, the later by the ``line`` of ``fastro.toml``.
+    What a file binds otherwise is what it binds when each ref, the catalog's and the app's, is imported from a module
+    of its own, so the slots render as they will.
     """
     catalog = plan.catalog
-    kept = {slot.point for file in catalog.wiring for slot in file.slots if slot.literal or slot.kind in ("data", "reexport")}
-    entries = [(point, item) for point, items in app.items() for item in items]
-    order = {id(item): (line(item.at), index) for index, (_, item) in enumerate(entries)}
-    stand_ins: dict[str, list[Contribution]] = {}
-    for index, (point, item) in enumerate(entries):
-        if point not in kept:
-            ref = as_ref(item.target)
-            item = replace(item, target=Ref(f"{STAND_IN}{index}", ref.attr, ref.alias))
-        stand_ins.setdefault(point, []).append(item)
-    rendered = render(plan, {point: tuple(items) for point, items in stand_ins.items()})
+    kept = {slot.point for file in catalog.wiring for slot in file.slots if slot.literal or slot.kind == "data"}
+    numbers = count()
+
+    def stand_in(group: Contributions) -> Contributions:
+        return {
+            point: tuple(item if point in kept else _stand_in(item, next(numbers)) for item in items)
+            for point, items in group.items()
+        }
+
+    features = tuple(
+        replace(
+            feature,
+            contributes=stand_in(feature.contributes),
+            when=tuple(replace(when, contributes=stand_in(when.contributes)) for when in feature.when),
+        )
+        for feature in catalog.features
+    )
+    standing = replace(catalog, core=stand_in(catalog.core), features=features)
+    rendered = render(replace(plan, catalog=standing), stand_in(app))
+    groups = [
+        catalog.core,
+        *(
+            group
+            for feature in catalog.features
+            for group in (feature.contributes, *(when.contributes for when in feature.when))
+        ),
+    ]
+    declared = {
+        id(item): index for index, item in enumerate(item for group in groups for items in group.values() for item in items)
+    }
+    order = {id(item): (line(item.at), index) for index, item in enumerate(item for items in app.values() for item in items)}
     found = taken(catalog, plan.selection, app)
-    problems = []
+    problems = Shadows([], [])
     for file in catalog.wiring:
         if file.path.text not in rendered or file.slots[0].kind == "data":
             continue
-        refs = sorted(
-            (
-                (order[id(item.contribution)], item.contribution.at, as_ref(item.contribution.target))
-                for slot in file.slots
-                if not slot.literal and slot.kind != "reexport"
-                for item in found.get(slot.point, ())
-                if item.owner == APP
-            ),
-            key=lambda entry: entry[0],
-        )
-        otherwise: dict[str, set[bindings.Source]] = {}
+        refs: list[_Bound] = []
+        for slot in file.slots:
+            if slot.literal or slot.kind == "raw":
+                continue
+            for given_item in found.get(slot.point, ()):
+                ref = as_ref(given_item.contribution.target)
+                bound = _reexported(ref, slot) if slot.kind == "reexport" else ref
+                name, source = bindings.bindings(ast.parse(ref_import(bound, file.path, catalog.info)))[0]
+                at = given_item.contribution.at
+                is_app = given_item.owner == APP
+                key = (
+                    order[id(given_item.contribution)]
+                    if is_app
+                    else (catalog.document.line(at), declared[id(given_item.contribution)])
+                )
+                refs.append(_Bound(is_app, key, at, ref, name, source))
+        own: dict[str, set[bindings.Source]] = {}
         for name, source in bindings.bindings(ast.parse(rendered[file.path.text])):
             if not (source and source[0] == "from" and str(source[2]).startswith(STAND_IN)):
-                otherwise.setdefault(name, set()).add(source)
-        first: dict[str, tuple[bindings.Source, Ref]] = {}
-        for _, at, ref in refs:
-            name, source = bindings.bindings(ast.parse(ref_import(ref, file.path, catalog.info)))[0]
-            if otherwise.get(name, {source}) - {source}:
-                problems.append((at, f"{str(ref)!r} binds {name!r} in {file.path.text}, which that file binds otherwise too."))
-            elif name in first and first[name][0] != source:
-                earlier = str(first[name][1])
-                problems.append(
-                    (at, f"{str(ref)!r} binds {name!r} in {file.path.text}, which the app ref {earlier!r} binds too.")
-                )
-            first.setdefault(name, (source, ref))
+                own.setdefault(name, set()).add(source)
+        catalog_given: dict[str, set[bindings.Source]] = {}
+        for entry in refs:
+            if not entry.app:
+                catalog_given.setdefault(entry.name, set()).add(entry.source)
+        path = file.path.text
+        for is_app in (False, True):
+            first: dict[str, tuple[bindings.Source, Ref, KeyPath]] = {}
+            for at, ref, name, source in (
+                (entry.at, entry.ref, entry.name, entry.source)
+                for entry in sorted(refs, key=lambda entry: entry.order)
+                if entry.app == is_app
+            ):
+                otherwise = own.get(name, set()) | (catalog_given.get(name, set()) if is_app else set())
+                earlier = first.setdefault(name, (source, ref, at))
+                if otherwise - {source}:
+                    message = f"{str(ref)!r} binds {name!r} in {path}, which that file binds otherwise too."
+                elif earlier[0] != source:
+                    by = (
+                        f"the app ref {str(earlier[1])!r}"
+                        if is_app
+                        else f"{str(earlier[1])!r} at {catalog.document.key(earlier[2])}"
+                    )
+                    message = f"{str(ref)!r} binds {name!r} in {path}, which {by} binds too."
+                else:
+                    continue
+                (problems.app if is_app else problems.catalog).append((at, message))
     return problems
 
 
@@ -350,8 +416,18 @@ def _reexport(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, 
         ref = as_ref(slot.fallback)
     else:
         raise RenderError(f"{slot.name} has no contribution and no fallback.")
-    bound = Ref(ref.module, ref.attr, None if ref.attr == slot.name else slot.name)
-    return f'__all__ = ["{slot.name}"]\n', [ref_import(bound, file.path, catalog.info)]
+    return f'__all__ = ["{slot.name}"]\n', [ref_import(_reexported(ref, slot), file.path, catalog.info)]
+
+
+def _reexported(ref: Ref, slot: Slot) -> Ref:
+    """``ref`` as a ``reexport`` slot imports it: under the slot's name, with no ``as`` when that's its attribute."""
+    return Ref(ref.module, ref.attr, None if ref.attr == slot.name else slot.name)
+
+
+def _stand_in(item: Contribution, number: int) -> Contribution:
+    """``item`` with its ref imported from a module of its own, so what it binds can be told from the file's own."""
+    ref = as_ref(item.target)
+    return replace(item, target=Ref(f"{STAND_IN}{number}", ref.attr, ref.alias))
 
 
 def _raw(catalog: Blueprint, file: Wiring, slot: Slot, items: tuple[Taken, ...]) -> tuple[str, list[str]]:

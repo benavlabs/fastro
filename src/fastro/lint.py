@@ -30,7 +30,7 @@ from fastro.engine.resolve import SelectionError, select
 from fastro.engine.spec import Ref, RepoPath
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR002", "FR014", "FR016")
+RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR001", "FR002", "FR014", "FR016")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
 APP_FIX = "Point app at a module the repo has, or add its file to git."
@@ -344,14 +344,17 @@ def _unresolved_refs(
 
 
 def _shadowing(catalog: Blueprint, checked: Project) -> list[Problem]:
-    """BP001: each ``[app].contributes`` ref whose name a wiring file its selection renders binds otherwise, at the ref
-    in ``fastro.toml`` (3, 2.13). A selection whose wiring can't be rendered is checked no further."""
+    """BP001: each ``[app].contributes`` ref, at the ref in ``fastro.toml``, and each catalog contribution, at it in
+    ``blueprint.toml``, whose name a wiring file the selection renders binds otherwise (3, 2.13). FR001, at
+    ``features``, with ``sync``'s message, when that selection can't be rendered."""
     try:
         selection = select(catalog, checked.features, checked.app.requires, checked.options)
         found = shadows(plan(catalog, selection, ()), checked.app.contributes, checked.document.line)
-    except (RenderError, SelectionError):
-        return []
-    return [checked.document.problem(at, message, syncing.ALIAS_FIX) for at, message in found]
+    except (RenderError, SelectionError) as error:
+        return [checked.document.problem(("features",), str(error), "", "FR001")]
+    return [checked.document.problem(at, message, syncing.ALIAS_FIX) for at, message in found.app] + [
+        catalog.document.problem(at, message, syncing.CATALOG_ALIAS_FIX) for at, message in found.catalog
+    ]
 
 
 def _module_names(file: Path) -> frozenset[str] | str | None:
