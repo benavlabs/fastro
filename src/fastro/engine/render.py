@@ -203,12 +203,13 @@ def shadows(plan: Plan, app: Contributions, line: Callable[[KeyPath], int]) -> S
     """Each contribution, the catalog's or ``app``'s, whose name a Python wiring file it's rendered into binds otherwise,
     as FR014 reads a binding, with where it's written and why (3).
 
-    A ref binds its alias or attribute, and one that fills a ``reexport`` slot binds the slot's name; the slot that
-    renders it doesn't count. An import the import block merges with the ref's own isn't another binding. An app ref
-    gives way to the catalog: it's the problem when it clashes with anything. Of two catalog refs that bind one name,
-    the one written later in ``blueprint.toml`` is, and of two app refs, the later by the ``line`` of ``fastro.toml``.
-    What a file binds otherwise is what it binds when each ref, the catalog's and the app's, is imported from a module
-    of its own, so the slots render as they will.
+    A ref binds its alias or attribute, and one that fills a ``reexport`` slot binds the slot's name. Only a
+    ``reexport`` slot's own import of the ref doesn't count: the name of a ``value``, ``class``, ``tuple`` or ``list``
+    slot does. An import the import block merges with the ref's own isn't another binding. An app ref gives way to the
+    catalog: it's the problem when it clashes with anything. Of two catalog refs that bind one name, the one written
+    later in ``blueprint.toml`` is, and of two app refs, the later by the ``line`` of ``fastro.toml``. What a file binds
+    otherwise is what it binds when each ref, the catalog's and the app's, is imported from a module of its own, so the
+    slots render as they will.
     """
     catalog = plan.catalog
     kept = {slot.point for file in catalog.wiring for slot in file.slots if slot.literal or slot.kind == "data"}

@@ -1095,6 +1095,30 @@ def test_literal_data_and_reexport_points_are_never_shadowed() -> None:
     assert _app_shadows('admin_site = ["src.x:database"]', ()) == []
 
 
+@pytest.mark.parametrize(
+    ("contributes", "point", "ref", "name", "path"),
+    [
+        ('routers = [{ ref = "src.x:ROUTERS", prefix = "/x" }]', "routers", "src.x:ROUTERS", "ROUTERS", APP_PY),
+        ('email_sender = ["src.x:EMAIL_SENDER"]', "email_sender", "src.x:EMAIL_SENDER", "EMAIL_SENDER", APP_PY),
+        ('settings = ["src.x:Settings"]', "settings", "src.x:Settings", "Settings", APP_PY),
+        (
+            'health_checks = ["src.x:HEALTH_CHECKS"]',
+            "health_checks",
+            "src.x:HEALTH_CHECKS",
+            "HEALTH_CHECKS",
+            "backend/src/wiring/health.py",
+        ),
+    ],
+    ids=["tuple", "value", "class", "list"],
+)
+def test_an_app_ref_binding_the_name_of_the_value_class_tuple_or_list_slot_it_fills_shadows_it(
+    contributes: str, point: str, ref: str, name: str, path: str
+) -> None:
+    assert _app_shadows(contributes, ()) == [
+        (("app", "contributes", point, 0), f"'{ref}' binds '{name}' in {path}, which that file binds otherwise too.")
+    ]
+
+
 def test_the_later_of_two_app_refs_is_by_line_in_fastro_toml_not_by_point_or_slot() -> None:
     contributes = (
         '[[app.contributes.routers]]\nref = "src.x:y as other"\nprefix = "/a"\n'
