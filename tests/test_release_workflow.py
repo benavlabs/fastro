@@ -2,6 +2,7 @@
 ``v*`` tag that matches the package version, with no token in the repo (A13a)."""
 
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -14,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 TAG = "startsWith(github.ref, 'refs/tags/v')"
 CHECK = "Check the tag matches the package version"
+PINS = {
+    "actions/download-artifact": ("9000827ccba6bdab643e8b6fd33ac0654aef8333", "v8.0.2"),
+    "astral-sh/setup-uv": ("07a047e608db84b3d8c06cd9a7c7dcc9c355c18e", "v10.3.2"),
+}
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 
 
@@ -48,8 +53,22 @@ def test_only_a_v_tag_publishes_what_the_build_job_built_through_trusted_publish
 
     assert (job["needs"], job["if"], job["environment"]) == ("build", TAG, "pypi")
     assert job["permissions"] == {"contents": "read", "id-token": "write"}
-    assert job["steps"][0] == {"uses": "actions/download-artifact@v8.0.2", "with": {"name": "dist", "path": "dist/"}}
+    assert job["steps"][0] == {
+        "uses": f"actions/download-artifact@{PINS['actions/download-artifact'][0]}",
+        "with": {"name": "dist", "path": "dist/"},
+    }
     assert _runs("publish") == ["uv publish --trusted-publishing always dist/*"]
+
+
+def test_the_publish_job_pins_each_action_by_commit_with_its_release_tag_beside_it() -> None:
+    steps = _workflow()["jobs"]["publish"]["steps"]
+    text = WORKFLOW.read_text()
+    publish = [line.strip() for line in text[text.index("\n  publish:\n") :].splitlines()]
+
+    assert [step["uses"] for step in steps if "uses" in step] == [f"{action}@{sha}" for action, (sha, _) in PINS.items()]
+    for action, (sha, tag) in PINS.items():
+        pinned = rf"- uses: {re.escape(action)}@{sha}\s+#\s*{re.escape(tag)}"
+        assert any(re.fullmatch(pinned, line) for line in publish)
 
 
 def test_the_workflow_reads_no_secret_and_gets_a_read_only_token_otherwise() -> None:
