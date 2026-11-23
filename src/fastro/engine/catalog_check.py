@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import codecs
-import errno
-import os
-import stat
 import sys
 import tomllib
 from importlib import metadata
@@ -15,6 +12,7 @@ from packaging.version import Version
 
 from fastro.engine import project
 from fastro.engine.blueprint import Blueprint, CrossReferenceError, ExtendingCatalogError, IncompatibleCatalog, load
+from fastro.engine.files import file_kind, present, unreadable_config
 from fastro.engine.problems import CatalogError, Problem
 
 COMMAND = "python -m fastro.engine.blueprint"
@@ -34,13 +32,19 @@ def main(argv: list[str]) -> int:
         return 2
     path = Path(argv[0])
     try:
-        kind = _kind(path)
-        repo = kind == "directory"
-        file = path / "blueprint.toml" if repo else path
-        found = _kind(file) if repo else kind
+        repo = file_kind(path) == "directory"
     except OSError as error:
         return _unreadable(Path(error.filename), error, path)
-    if found != "file":
+    file = path / "blueprint.toml" if repo else path
+    try:
+        there = present(file)
+        reason = unreadable_config(file.parent, file.name)
+    except OSError as error:
+        return _unreadable(file, error, path)
+    if reason is not None:
+        print(f"error: {reason}", file=sys.stderr)
+        return 2
+    if not there:
         why = "has no blueprint.toml" if repo else "doesn't exist"
         print(f"error: {path} {why}. Pass a blueprint repo or its blueprint.toml: {COMMAND} PATH", file=sys.stderr)
         return 2
@@ -51,9 +55,13 @@ def main(argv: list[str]) -> int:
         return 3
     beside = file.parent / "fastro.toml"
     try:
-        project_file = _kind(beside) == "file"
+        project_file = present(beside)
+        reason = unreadable_config(file.parent, beside.name) if project_file else None
     except OSError as error:
         return _unreadable(beside, error, path)
+    if reason is not None:
+        print(f"error: {reason}", file=sys.stderr)
+        return 2
     try:
         loaded = load(str(file), read_text(file), tool)
     except OSError as error:
@@ -100,21 +108,6 @@ def _project(file: Path, catalog: Blueprint, path: Path) -> int:
     pin = loaded.blueprint
     print(f"ok: {file} is {loaded.name}, with {_counted(len(loaded.features), 'feature')}, for {pin.name} {pin.version}.")
     return 0
-
-
-def _kind(path: Path) -> str | None:
-    """What ``path`` leads to: ``"file"``, ``"directory"``, ``"other"``, or ``None`` when nothing is there.
-
-    Raises:
-        OSError: the system won't let this look (spec 8: exit 3), on every Python version.
-    """
-    try:
-        mode = os.stat(path).st_mode
-    except OSError as error:
-        if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
-            return None
-        raise
-    return "file" if stat.S_ISREG(mode) else "directory" if stat.S_ISDIR(mode) else "other"
 
 
 def _sets_source(file: Path) -> bool:

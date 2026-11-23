@@ -6,9 +6,10 @@ import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastro.apply import Change, breaks_the_rule, file_kind, present, unreadable, unreadable_config
+from fastro.apply import Change
 from fastro.engine import blueprint, catalog_check, envfile, project
 from fastro.engine.blueprint import Blueprint, Contributions, ExtendingCatalogError
+from fastro.engine.files import breaks_the_rule, file_kind, present, unreadable, unreadable_config
 from fastro.engine.plan import plan
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError

@@ -16,10 +16,11 @@ from pathlib import Path
 
 from fastro import lint as linting
 from fastro import pyproject
-from fastro.apply import ApplyError, Change, apply, breaks_the_rule, changes, file_kind, tracked_files
+from fastro.apply import ApplyError, Change, apply, changes, tracked_files
 from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.plan import plan
+from fastro.engine.files import breaks_the_rule, file_kind
+from fastro.engine.plan import plan, python_root_lock, starting_lock
 from fastro.engine.problems import CatalogError
 from fastro.engine.render import RenderError, render
 from fastro.engine.resolve import Selection, SelectionError, select
@@ -28,7 +29,6 @@ from fastro.runner import available, declared_command, run_captured
 from fastro.tools import require
 
 EVERYTHING = "everything"
-LOCK = "uv.lock"
 REPORTED_LINES = 40
 REFUSED = "verify can't build a set:"
 BASELINE = ("db", "baseline")
@@ -83,16 +83,6 @@ def verify_sets(catalog: Blueprint) -> dict[str, tuple[str, ...]]:
     return sets
 
 
-def starting_lock(catalog: Blueprint, tracked: Sequence[RepoPath]) -> RepoPath | None:
-    """The lock a build starts from (spec 2.13): ``{python_root}/uv.lock`` when it's tracked, otherwise a tracked
-    ``uv.lock`` at the repo root, otherwise none."""
-    names = {path.text for path in tracked}
-    for candidate in (_python_root_lock(catalog), LOCK):
-        if candidate in names:
-            return RepoPath(candidate)
-    return None
-
-
 def build(
     root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
 ) -> Path:
@@ -130,7 +120,7 @@ def build(
         found[index] = Change("write", change.path, text)
     lock = starting_lock(catalog, files)
     if lock is not None:
-        found.append(Change("copy", _python_root_lock(catalog), source=lock.text))
+        found.append(Change("copy", python_root_lock(catalog), source=lock.text))
     apply(found, root, into)
     return into
 
@@ -161,10 +151,6 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
         raise Unbuildable(f"{REFUSED} {example} isn't UTF-8 text. Save {example} as UTF-8.")
     if found := envfile.problems(text, catalog):
         raise Unbuildable(f"{REFUSED} {example} {found[0]} Run fastro blueprint lint to see every problem.")
-
-
-def _python_root_lock(catalog: Blueprint) -> str:
-    return f"{catalog.info.python_root.text.rstrip('/')}/{LOCK}"
 
 
 def unknown(catalog: Blueprint, names: Sequence[str]) -> None:

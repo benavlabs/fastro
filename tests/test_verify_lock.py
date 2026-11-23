@@ -14,9 +14,10 @@ from packaging.version import Version
 
 from fastro.apply import ApplyError, tracked_files
 from fastro.engine import blueprint
+from fastro.engine.plan import starting_lock
 from fastro.engine.resolve import select
 from fastro.engine.spec import RepoPath
-from fastro.verify import build, checks_for, starting_lock, verify
+from fastro.verify import build, checks_for, verify
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 TEXT = (MINI / "blueprint.toml").read_text()

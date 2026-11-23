@@ -10,9 +10,9 @@ from typing import Any
 
 from jinja2 import Environment, StrictUndefined
 
-from fastro.apply import breaks_the_rule, file_kind
 from fastro.engine import conditions
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Generator, Param, param_value
+from fastro.engine.files import breaks_the_rule, file_kind
 from fastro.engine.resolve import Selection
 from fastro.engine.spec import OPERATORS, SpecError
 from fastro.sync import Source

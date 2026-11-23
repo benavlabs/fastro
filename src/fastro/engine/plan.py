@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +12,7 @@ from fastro.engine.resolve import APP, Owner, Ownership, Selection
 from fastro.engine.spec import RepoPath
 
 PLANNED_ORIGINS = ("core", "wiring")
+LOCK = "uv.lock"
 DELETED = "in the previous lock, and not in this plan"
 APP_CODE = "it's the project's own code"
 
@@ -106,3 +107,18 @@ def _copy_or_skip(catalog: Blueprint, selection: Selection, path: RepoPath, owne
     if selection.holds(when.condition):
         return Op("copy", text, owner.origin, f"feature {owner.feature} is selected and {when.condition_text} holds")
     return Op("skip", text, owner.origin, f"{when.condition_text} doesn't hold")
+
+
+def starting_lock(catalog: Blueprint, tracked: Sequence[RepoPath]) -> RepoPath | None:
+    """The lock a build or a new project starts from (spec 2.13, 4): ``{python_root}/uv.lock`` when it's among
+    ``tracked``, otherwise a ``uv.lock`` at the root among them, otherwise none."""
+    names = {path.text for path in tracked}
+    for candidate in (python_root_lock(catalog), LOCK):
+        if candidate in names:
+            return RepoPath(candidate)
+    return None
+
+
+def python_root_lock(catalog: Blueprint) -> str:
+    """Where a project's lock sits: ``{python_root}/uv.lock``."""
+    return f"{catalog.info.python_root.text.rstrip('/')}/{LOCK}"

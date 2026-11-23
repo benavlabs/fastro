@@ -18,9 +18,10 @@ from packaging.version import InvalidVersion, Version
 from fastro import make
 from fastro import pyproject as rewriting
 from fastro import sync as syncing
-from fastro.apply import RepositoryError, breaks_the_rule, present, tracked_files, unreadable, unreadable_config
+from fastro.apply import RepositoryError, tracked_files
 from fastro.engine import bindings, catalog_check, envfile, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
+from fastro.engine.files import breaks_the_rule, present, unreadable, unreadable_config
 from fastro.engine.plan import plan
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, Problem

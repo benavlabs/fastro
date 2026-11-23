@@ -10,8 +10,9 @@ import typer
 
 from .. import make as making
 from .. import sync as syncing
-from ..apply import RepositoryError, file_kind, tracked_files
+from ..apply import RepositoryError, tracked_files
 from ..engine.blueprint import IncompatibleCatalog
+from ..engine.files import file_kind
 from ..engine.problems import CatalogError
 from ..engine.resolve import SelectionError, select
 from ..tools import MissingToolError, NotInstalled, installed_version

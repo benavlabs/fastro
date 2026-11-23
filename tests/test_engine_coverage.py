@@ -27,6 +27,7 @@ FULLY_COVERED = {
     "bindings": ("test_engine_bindings.py",),
     "catalog_check": ("test_engine_blueprint_command.py", "test_engine_references.py"),
     "conditions": ("test_engine_conditions.py",),
+    "files": ("test_apply.py", "test_engine_blueprint_command.py", "test_engine_files.py"),
     "lock": ("test_engine_lock.py",),
     "plan": ("test_engine_plan.py",),
     "plugins": ("test_engine_plugins.py",),

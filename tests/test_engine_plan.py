@@ -9,7 +9,7 @@ from packaging.version import Version
 
 from fastro.engine import blueprint, lock
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.plan import Op, plan
+from fastro.engine.plan import Op, plan, python_root_lock, starting_lock
 from fastro.engine.resolve import select
 from fastro.engine.spec import RepoPath
 
@@ -278,3 +278,24 @@ def test_a_locked_app_file_under_blueprint_only_keeps_the_first_skip_cause(
     assert ops["backend/src/modules/billing/routes.py"] == Op(
         "skip", "backend/src/modules/billing/routes.py", "app", "it's blueprint_only"
     )
+
+
+@pytest.mark.parametrize(
+    ("listed", "found"),
+    [
+        (("backend/uv.lock", "uv.lock", "README.md"), "backend/uv.lock"),
+        (("uv.lock", "README.md"), "uv.lock"),
+        (("README.md", "backend/sub/uv.lock"), None),
+    ],
+)
+def test_the_starting_lock_is_the_python_root_s_then_the_root_s_then_none(
+    mini: Blueprint, listed: tuple[str, ...], found: str | None
+) -> None:
+    assert starting_lock(mini, tuple(map(RepoPath, listed))) == (RepoPath(found) if found else None)
+
+
+@pytest.mark.parametrize("written", ["backend", "backend/"])
+def test_a_project_s_lock_sits_in_its_python_root_however_the_root_is_written(written: str) -> None:
+    text = (MINI / "blueprint.toml").read_text().replace("[blueprint]\n", f'[blueprint]\npython_root = "{written}"\n', 1)
+
+    assert python_root_lock(blueprint.load("blueprint.toml", text, Version("0.1.0"))) == "backend/uv.lock"

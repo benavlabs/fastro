@@ -10,9 +10,10 @@ import typer
 from .. import lint as linting
 from .. import sync as syncing
 from .. import verify as verifying
-from ..apply import ApplyError, RepositoryError, present, unreadable_config
+from ..apply import ApplyError, RepositoryError
 from ..engine import catalog_check
 from ..engine.blueprint import IncompatibleCatalog
+from ..engine.files import present, unreadable_config
 from ..engine.problems import CatalogError
 from ..tools import MissingToolError, NotInstalled, installed_version, require
 

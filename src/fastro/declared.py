@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastro import sync as syncing
-from fastro.apply import present, unreadable_config
 from fastro.engine import project
 from fastro.engine.blueprint import Command
 from fastro.engine.catalog_check import read_text
+from fastro.engine.files import present, unreadable_config
 from fastro.engine.problems import CatalogError
 from fastro.engine.resolve import SelectionError, select
 from fastro.engine.spec import RepoPath

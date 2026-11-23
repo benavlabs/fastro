@@ -3,6 +3,7 @@
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 
@@ -51,6 +52,7 @@ def metadata_version() -> Version:
 
 
 def _repo(tmp_path: Path, text: str | bytes) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     file = tmp_path / "blueprint.toml"
     if isinstance(text, bytes):
         file.write_bytes(text)
@@ -539,4 +541,82 @@ def test_a_repo_it_can_see_but_not_search_exits_3_naming_blueprint_toml(
     assert capsys.readouterr().err == (
         f"error: can't read {repo / 'blueprint.toml'}: Permission denied. Check its permissions, then run "
         f"python -m fastro.engine.blueprint {repo} again.\n"
+    )
+
+
+NOT_READ = ["outside", "fifo", "dangling", "directory"]
+
+
+@pytest.mark.usefixtures("hang_guard")
+@pytest.mark.parametrize("make", NOT_READ)
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_it_may_not_read_is_a_usage_error_saying_why(
+    name: str, make: str, tmp_path: Path, replace: Callable[[Path, str, str], str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path / "repo", PROJECT)
+    reason = replace(repo, name, make)
+
+    assert catalog_check.main([str(repo)]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"error: {repo / name} {reason}. fastro reads {name} only as a regular file inside the repo.\n",
+    )
+
+
+@pytest.mark.parametrize("name", ["blueprint.toml", "fastro.toml"])
+def test_a_config_file_whose_symlink_leaves_the_repo_and_comes_back_is_read(
+    name: str, tmp_path: Path, replace: Callable[[Path, str, str], str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_project(tmp_path / "repo", PROJECT)
+    replace(repo, name, "back")
+
+    assert catalog_check.main([str(repo)]) == 0
+    assert capsys.readouterr().out.count("ok: ") == 2
+
+
+def test_a_catalog_named_by_a_path_that_leads_outside_its_directory_is_a_usage_error(
+    tmp_path: Path, replace: Callable[[Path, str, str], str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path / "repo", GOOD)
+    replace(repo, "blueprint.toml", "outside")
+    file = repo / "blueprint.toml"
+
+    assert catalog_check.main([str(file)]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"error: {file} leads outside the repo. fastro reads blueprint.toml only as a regular file inside the repo.\n",
+    )
+
+
+def test_a_catalog_whose_symlink_leads_into_a_directory_it_cant_search_exits_3_naming_the_catalog(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path / "repo", GOOD)
+    locked = repo / "locked"
+    locked.mkdir()
+    (repo / "blueprint.toml").rename(locked / "blueprint.toml")
+    (repo / "blueprint.toml").symlink_to(locked / "blueprint.toml")
+    locked.chmod(0)
+    try:
+        code = catalog_check.main([str(repo)])
+    finally:
+        locked.chmod(0o755)
+
+    assert code == 3
+    assert capsys.readouterr().err == (
+        f"error: can't read {repo / 'blueprint.toml'}: Permission denied. Check its permissions, then run "
+        f"python -m fastro.engine.blueprint {repo} again.\n"
+    )
+
+
+def test_a_catalog_that_is_a_symlink_loop_is_a_usage_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "blueprint.toml").symlink_to(repo / "loop")
+    (repo / "loop").symlink_to(repo / "blueprint.toml")
+
+    assert catalog_check.main([str(repo)]) == 2
+    assert capsys.readouterr().err == (
+        f"error: {repo / 'blueprint.toml'} has symlinks that can't be followed. fastro reads blueprint.toml only as "
+        "a regular file inside the repo.\n"
     )

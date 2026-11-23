@@ -17,12 +17,10 @@ from fastro.apply import (
     apply,
     changes,
     check,
-    file_kind,
     tracked_files,
-    unreadable,
-    unreadable_config,
 )
 from fastro.engine import blueprint, lock
+from fastro.engine.files import file_kind, unreadable, unreadable_config
 from fastro.engine.plan import plan
 from fastro.engine.render import render
 from fastro.engine.resolve import select
