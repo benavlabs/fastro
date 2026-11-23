@@ -1,5 +1,5 @@
-"""Resolving a ``gh:`` source (spec 1.7): a given ref to its commit, or the newest release whose catalog accepts this
-fastro, through GitHub's API, with ``GITHUB_TOKEN`` sent as a header and never anywhere else."""
+"""Resolving a ``gh:`` source (spec 1.7): a given ref to its commit, or the release with the highest version whose
+catalog accepts this fastro, through GitHub's API, with ``GITHUB_TOKEN`` sent as a header and never anywhere else."""
 
 import json
 import threading
@@ -69,7 +69,7 @@ def test_a_ref_is_quoted_in_the_url() -> None:
     assert resolve_gh(parse("gh:acme/bp@feature/x"), TOOL, fake, {}).commit == SHA
 
 
-def test_with_no_ref_the_newest_release_whose_catalog_accepts_this_fastro_is_taken() -> None:
+def test_with_no_ref_the_highest_release_whose_catalog_accepts_this_fastro_is_taken() -> None:
     fake = Fake(
         dict(
             [
@@ -81,14 +81,14 @@ def test_with_no_ref_the_newest_release_whose_catalog_accepts_this_fastro_is_tak
                     {"tag_name": ["v1"]},
                     {"tag_name": ""},
                     _release("v0.23.0", draft=True),
-                    _release("v0.22.0rc1", prerelease=True),
-                    _release("v0.22.0"),
-                    _release("v1/x+y&z"),
-                    _release("v0.21.0"),
+                    _release("v0.22.5", prerelease=True),
                     _release("v0.20.0"),
+                    _release("v0.21.0"),
+                    _release("v0.22.0"),
+                    _release("v0.21.1+x.y"),
                 ),
                 (_contents("v0.22.0"), _catalog(">=9")),
-                (_contents("v1%2Fx%2By%26z"), _catalog().replace(b'"bp"', b'"b\xff"')),
+                (_contents("v0.21.1%2Bx.y"), _catalog().replace(b'"bp"', b'"b\xff"')),
                 (_contents("v0.21.0"), _catalog()),
                 (_commit("v0.21.0"), SHA.encode()),
             ]
@@ -100,13 +100,73 @@ def test_with_no_ref_the_newest_release_whose_catalog_accepts_this_fastro_is_tak
     assert asked == [
         f"{API}/releases?per_page=100&page=1",
         _contents("v0.22.0"),
-        _contents("v1%2Fx%2By%26z"),
+        _contents("v0.21.1%2Bx.y"),
         _contents("v0.21.0"),
         _commit("v0.21.0"),
     ]
     listing, contents = fake.requests[0][1], fake.requests[1][1]
     assert (listing["Accept"], listing["X-GitHub-Api-Version"]) == ("application/vnd.github+json", "2022-11-28")
     assert contents["Accept"] == "application/vnd.github.raw+json"
+
+
+def _highest(*tags: str, pages: int = 1) -> tuple[Resolved, list[str]]:
+    """What resolving ``gh:acme/bp`` takes when every release in ``tags`` (listed in that order, newest published
+    first) has a catalog this fastro reads, and the catalogs it asked for, in order."""
+    listed = [_release(tag) for tag in tags]
+    chunks = [listed[i::pages] for i in range(pages)]
+    chunks = [chunk + [_release("not-a-version")] * (100 - len(chunk)) for chunk in chunks[:-1]] + chunks[-1:]
+    answers = dict(_releases(*chunk, page=n) for n, chunk in enumerate(chunks, 1))
+    for tag in tags:
+        answers[_contents(tag)] = _catalog()
+        answers[_commit(tag)] = SHA.encode()
+    fake = Fake(answers)
+    resolved = resolve_gh(parse("gh:acme/bp"), TOOL, fake, {})
+    prefix = f"{API}/contents/blueprint.toml?ref="
+    return resolved, [url.removeprefix(prefix) for url, _ in fake.requests if url.startswith(prefix)]
+
+
+def test_a_backport_published_after_a_newer_release_never_wins() -> None:
+    assert _highest("v0.21.5", "v0.22.0", "v0.21.4") == (Resolved("v0.22.0", SHA), ["v0.22.0"])
+
+
+@pytest.mark.parametrize("tag", ["v0.23.0rc1", "v0.23.0.dev1", "0.23.0-beta.2", "v0.23.0.post1.dev0"])
+def test_a_pre_release_or_development_version_github_doesn_t_mark_is_never_picked(tag: str) -> None:
+    assert _highest(tag, "v0.22.0") == (Resolved("v0.22.0", SHA), ["v0.22.0"])
+
+
+@pytest.mark.parametrize("tag", ["latest", "release-2026", "vv0.23.0", "v 0.23.0", "0.23.0-final-2"])
+def test_a_tag_that_doesn_t_parse_as_a_version_is_skipped(tag: str) -> None:
+    assert _highest(tag, "v0.22.0") == (Resolved("v0.22.0", SHA), ["v0.22.0"])
+
+
+def test_a_post_release_counts_as_a_release() -> None:
+    assert _highest("v0.22.0", "v0.22.0.post1")[0].ref == "v0.22.0.post1"
+
+
+def test_two_tags_with_the_same_version_go_by_name_the_higher_in_code_point_order_first() -> None:
+    assert _highest("1.0", "V1.0", "v1.0", "1.0.0") == (Resolved("v1.0", SHA), ["v1.0"])
+
+
+def test_releases_on_every_page_are_ordered_together_before_any_catalog_is_read() -> None:
+    resolved, asked = _highest("v0.20.0", "v0.22.0", pages=2)
+
+    assert (resolved.ref, asked) == ("v0.22.0", ["v0.22.0"])
+
+
+def test_a_repo_github_doesn_t_show_says_so_and_names_github_token() -> None:
+    with pytest.raises(FetchError, match=r"GitHub shows no repo gh:acme/bp\. If it's private, set GITHUB_TOKEN") as caught:
+        resolve_gh(parse("gh:acme/bp"), TOOL, Fake({}), {})
+
+    assert caught.value.status == 404
+
+
+def test_a_ref_github_doesn_t_show_says_so_and_names_github_token() -> None:
+    with pytest.raises(
+        FetchError, match=r"GitHub shows no ref 'v9' in gh:acme/bp\. If the repo is private, set GITHUB_TOKEN"
+    ) as caught:
+        resolve_gh(parse("gh:acme/bp@v9"), TOOL, Fake({}), {})
+
+    assert caught.value.status == 404
 
 
 def test_a_release_without_a_catalog_or_with_a_newer_schema_is_skipped_and_later_pages_are_read() -> None:

@@ -3,25 +3,32 @@ the files a ``PATH`` source contributes."""
 
 from __future__ import annotations
 
+import gzip
 import http.client
+import io
 import json
 import os
+import posixpath
 import re
+import shutil
+import stat
+import tarfile
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from itertools import count
+import zlib
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from tempfile import mkdtemp, mkstemp
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 from fastro.apply import RepositoryError, head_commit, tracked_files
 from fastro.engine import spec
 from fastro.engine.blueprint import readable
-from fastro.engine.files import present, unreadable_config
+from fastro.engine.files import file_kind, present, unreadable_config
 from fastro.engine.spec import RepoPath, SpecError
 
 NAMED = {"fastapi-boilerplate": "gh:benavlabs/FastAPI-boilerplate"}
@@ -30,6 +37,7 @@ DEFAULT = "fastapi-boilerplate"
 DEFAULT_VARIABLE = "FASTRO_BLUEPRINT"
 CACHE_VARIABLE = "FASTRO_CACHE_DIR"
 CATALOG = "blueprint.toml"
+INDEX = "refs.json"
 GIT_PREFIXES = ("git+ssh://", "git+https://")
 API = "https://api.github.com"
 API_VERSION = "2022-11-28"
@@ -210,6 +218,208 @@ def _every_file(root: Path) -> tuple[RepoPath, ...]:
     return tuple(RepoPath(name) for name in sorted(found))
 
 
+def open_gh(
+    source: Source,
+    tool: Version,
+    cache: Path,
+    offline: bool = False,
+    fetch: Fetch = lambda url, headers: http_get(url, headers),
+    environ: Mapping[str, str] = os.environ,
+) -> Tree:
+    """The ``gh:`` ``source`` opened from the tree of its commit in ``cache``: resolved through GitHub (``resolve_gh``)
+    and its tarball fetched when the cache doesn't hold that commit yet, or with ``offline``, only from the cache, where
+    no ref takes the highest release that a run with no ref picked and cached, and whose catalog lets ``tool`` read it
+    (spec 1.7). Its root is the directory that holds ``blueprint.toml``, and it contributes every file there.
+
+    Raises:
+        FetchError: GitHub can't be reached or answers with an error, the tarball isn't a whole gzipped tar of that
+            commit, a member doesn't stay a plain file, directory or symlink inside the tree (1.10), the tree has no
+            ``blueprint.toml`` fastro may read where the source says, or ``offline`` finds nothing in the cache.
+        OSError: the system won't let fastro write the cache or look in it (spec 8: exit 3).
+    """
+    entries = cache / "gh" / source.location
+    if offline:
+        resolved = _cached(source, tool, entries)
+    else:
+        resolved = resolve_gh(source, tool, fetch, environ)
+        if not _kept(entries, resolved.commit):
+            body = fetch(f"{API}/repos/{source.location}/tarball/{resolved.commit}", _headers(environ, JSON))
+            _keep(body, f"gh:{source.location}@{resolved.commit}", resolved.commit, entries)
+        _remember(entries, resolved, release=source.ref is None)
+    return _opened(source, resolved, entries / resolved.commit / "tree")
+
+
+def _cached(source: Source, tool: Version, entries: Path) -> Resolved:
+    index = _index(entries)
+    catalog = f"{source.subdir}/{CATALOG}" if source.subdir else CATALOG
+    if source.ref is not None:
+        if source.ref not in index:
+            raise FetchError(
+                f"gh:{source.location}@{source.ref} isn't in the cache, and --offline fetches nothing. Run it once "
+                "without --offline."
+            )
+        return Resolved(source.ref, index[source.ref].commit)
+    for tag in newest_first(ref for ref, entry in index.items() if entry.release):
+        resolved = Resolved(tag, index[tag].commit)
+        try:
+            root = _root(source, resolved, entries / resolved.commit / "tree")
+        except FetchError:
+            continue
+        if _readable((root / CATALOG).read_bytes(), tool):
+            return resolved
+    raise FetchError(
+        f"the cache holds no release of gh:{source.location} whose {catalog} accepts this fastro, {tool}, and --offline "
+        "fetches nothing. Run it once without --offline."
+    )
+
+
+@dataclass(frozen=True)
+class _Entry:
+    commit: str
+    release: bool
+
+
+def _index(entries: Path) -> dict[str, _Entry]:
+    """The refs ``entries`` records, each with the commit it resolved to last and whether a run with no REF picked
+    it as a release, leaving out one whose commit isn't in the cache. An index that doesn't read records nothing."""
+    try:
+        data = json.loads((entries / INDEX).read_bytes())
+    except (FileNotFoundError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    index = {}
+    for ref, entry in data.items():
+        commit = entry.get("commit") if isinstance(entry, dict) else None
+        if isinstance(commit, str) and COMMIT.fullmatch(commit) and _kept(entries, commit):
+            index[ref] = _Entry(commit, entry.get("release") is True)
+    return index
+
+
+def _kept(entries: Path, commit: str) -> bool:
+    return (entries / commit / "tree").is_dir()
+
+
+def _remember(entries: Path, resolved: Resolved, release: bool) -> None:
+    index = _index(entries)
+    before = index.get(resolved.ref)
+    index[resolved.ref] = _Entry(resolved.commit, release or before == _Entry(resolved.commit, True))
+    handle, name = mkstemp(prefix=".index-", dir=entries)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            json.dump({ref: asdict(entry) for ref, entry in index.items()}, out, ensure_ascii=False, indent=2)
+        os.replace(name, entries / INDEX)
+    except BaseException:
+        os.unlink(name)
+        raise
+
+
+def _opened(source: Source, resolved: Resolved, tree: Path) -> Tree:
+    root = _root(source, resolved, tree)
+    return Tree(root, _every_file(root), resolved.commit)
+
+
+def _root(source: Source, resolved: Resolved, tree: Path) -> Path:
+    """The directory in ``tree`` that holds the source's ``blueprint.toml``, which fastro may read (1.10)."""
+    label = f"gh:{source.location}@{resolved.ref}" + (f"#{source.subdir}" if source.subdir else "")
+    tree = tree.resolve()
+    root = (tree / source.subdir).resolve() if source.subdir else tree
+    if file_kind(root) != "directory":
+        raise FetchError(f"{label} isn't a directory in the tree of {resolved.commit}. Name one that is.")
+    if not present(root / CATALOG):
+        raise FetchError(f"{label} has no {CATALOG} at {root}. Name a ref or #SUBDIR that holds one.")
+    if (reason := unreadable_config(root, CATALOG)) is not None:
+        raise FetchError(reason)
+    return root
+
+
+def _keep(body: bytes, label: str, commit: str, entries: Path) -> None:
+    """Extract the tarball ``body`` into ``entries / commit / "tree"``, which appears whole or not at all."""
+    entries.mkdir(parents=True, exist_ok=True)
+    work = Path(mkdtemp(prefix=".fetch-", dir=entries))
+    try:
+        try:
+            raw = gzip.decompress(body)
+        except (OSError, EOFError, zlib.error):
+            raise FetchError(f"{label}'s tarball isn't a whole gzipped tar.") from None
+        try:
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+                members = archive.getmembers()
+                if archive.pax_headers.get("comment") != commit:
+                    raise FetchError(f"{label}'s tarball isn't of that commit.")
+                _extract(archive, members, work / "tree", label)
+        except tarfile.TarError:
+            raise FetchError(f"{label}'s tarball isn't a whole gzipped tar.") from None
+        try:
+            work.rename(entries / commit)
+        except OSError:
+            if not _kept(entries, commit):
+                raise
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _extract(archive: tarfile.TarFile, members: list[tarfile.TarInfo], tree: Path, label: str) -> None:
+    """Write ``members`` under ``tree``, past the tarball's one top directory, never through a symlink, refusing
+    whatever spec 1.10 rules out for a fetch."""
+
+    def refuse(member: tarfile.TarInfo, reason: str) -> FetchError:
+        return FetchError(f"{label}'s tarball has {member.name!r}, which {reason}, so fastro keeps none of it (1.10).")
+
+    tree.mkdir()
+    top = members[0].name.split("/")[0]
+    seen: set[Path] = set()
+    for member in members:
+        parts = member.name.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise refuse(member, "leads outside the tree")
+        if parts[0] != top or (len(parts) == 1 and not member.isdir()):
+            raise refuse(member, "isn't under the tarball's one top directory")
+        if len(parts) == 1:
+            continue
+        here = tree
+        for part in parts[1:-1]:
+            here = here / part
+            kind = file_kind(here, follow=False)
+            if kind is None:
+                here.mkdir()
+            elif kind != "directory":
+                raise refuse(member, "is under a symlink or a file")
+        path = here / parts[-1]
+        if member.isdir():
+            kind = file_kind(path, follow=False)
+            if kind is None:
+                path.mkdir()
+            elif kind != "directory" or path in seen:
+                raise refuse(member, "is there twice")
+            seen.add(path)
+        elif member.issym():
+            if not member.linkname or posixpath.isabs(member.linkname):
+                raise refuse(member, "is a symlink that leads outside the tree")
+            try:
+                os.symlink(member.linkname, path)
+            except FileExistsError:
+                raise refuse(member, "is there twice") from None
+        elif member.isfile():
+            source = archive.extractfile(member)
+            assert source is not None
+            mode = 0o777 if member.mode & stat.S_IXUSR else 0o666
+            try:
+                handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            except FileExistsError:
+                raise refuse(member, "is there twice") from None
+            with os.fdopen(handle, "wb") as out:
+                shutil.copyfileobj(source, out)
+        else:
+            raise refuse(member, "is a hard link" if member.islnk() else "is a FIFO" if member.isfifo() else "is a device")
+    inside = os.path.realpath(tree)
+    for member in members:
+        if member.issym():
+            path = tree.joinpath(*member.name.split("/")[1:])
+            if os.path.commonpath([inside, os.path.realpath(path)]) != inside:
+                raise refuse(member, "is a symlink that leads outside the tree")
+
+
 def resolve_gh(
     source: Source,
     tool: Version,
@@ -217,8 +427,8 @@ def resolve_gh(
     environ: Mapping[str, str] = os.environ,
 ) -> Resolved:
     """The ``gh:`` ``source`` pinned through GitHub's API (spec 1.7): its ref's full commit, or with no ref, the
-    newest release, drafts and prereleases left out, whose ``blueprint.toml`` (under ``#SUBDIR``) lets ``tool`` read
-    it. A release without one is skipped. ``GITHUB_TOKEN`` goes in a header when it's set.
+    release with the highest version (``newest_first``) whose ``blueprint.toml`` (under ``#SUBDIR``) lets ``tool``
+    read it. A release without one is skipped. ``GITHUB_TOKEN`` goes in a header when it's set.
 
     Raises:
         FetchError: GitHub can't be reached, answers with an error or something that isn't what was asked for, or
@@ -226,26 +436,56 @@ def resolve_gh(
     """
     repo = f"{API}/repos/{source.location}"
     if source.ref is not None:
-        return Resolved(source.ref, _commit(repo, source.ref, fetch, environ))
+        return Resolved(source.ref, _commit(source, source.ref, fetch, environ))
     catalog = f"{source.subdir}/{CATALOG}" if source.subdir else CATALOG
-    for page in count(1):
-        releases = _json(fetch(f"{repo}/releases?per_page={PAGE}&page={page}", _headers(environ, JSON)), repo)
-        for release in releases:
-            tag = release.get("tag_name") if isinstance(release, dict) else None
-            if not tag or not isinstance(tag, str) or release.get("draft") or release.get("prerelease"):
-                continue
-            try:
-                text = fetch(f"{repo}/contents/{catalog}?ref={quote(tag, safe='')}", _headers(environ, RAW))
-            except NotFound:
-                continue
-            if _readable(text, tool):
-                return Resolved(tag, _commit(repo, tag, fetch, environ))
-        if len(releases) < PAGE:
-            break
+    for tag in newest_first(_release_tags(source, fetch, environ)):
+        try:
+            text = fetch(f"{repo}/contents/{catalog}?ref={quote(tag, safe='')}", _headers(environ, RAW))
+        except NotFound:
+            continue
+        if _readable(text, tool):
+            return Resolved(tag, _commit(source, tag, fetch, environ))
     raise FetchError(
         f"gh:{source.location} has no release whose {catalog} accepts this fastro, {tool}. Name a ref with @, or "
         "install a fastro its releases accept."
     )
+
+
+def newest_first(tags: Iterable[str]) -> list[str]:
+    """The release ``tags`` by version, highest first, leaving out one whose name doesn't read as a PEP 440 version
+    or whose version is a pre-release or a development release; two with the same version go by name, the higher in
+    code point order first (spec 1.7)."""
+    versions: dict[str, Version] = {}
+    for tag in tags:
+        try:
+            version = Version(tag)
+        except InvalidVersion:
+            continue
+        if not version.is_prerelease:
+            versions[tag] = version
+    return sorted(versions, key=lambda tag: (versions[tag], tag), reverse=True)
+
+
+def _release_tags(source: Source, fetch: Fetch, environ: Mapping[str, str]) -> list[str]:
+    """Every tag of a release of ``source`` that isn't marked draft or pre-release, from every page of the list."""
+    tags, page = [], 1
+    while True:
+        url = f"{API}/repos/{source.location}/releases?per_page={PAGE}&page={page}"
+        try:
+            releases = _json(fetch(url, _headers(environ, JSON)), source)
+        except NotFound:
+            raise FetchError(
+                f"GitHub shows no repo gh:{source.location}. If it's private, set GITHUB_TOKEN to a token that can read it.",
+                404,
+            ) from None
+        for release in releases:
+            if isinstance(release, dict) and not release.get("draft") and not release.get("prerelease"):
+                tag = release.get("tag_name")
+                if isinstance(tag, str):
+                    tags.append(tag)
+        if len(releases) < PAGE:
+            return tags
+        page += 1
 
 
 def _readable(data: bytes, tool: Version) -> bool:
@@ -287,20 +527,28 @@ class _SameHostAuthorization(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
-def _commit(repo: str, ref: str, fetch: Fetch, environ: Mapping[str, str]) -> str:
-    answer = fetch(f"{repo}/commits/{quote(ref, safe='')}", _headers(environ, SHA)).decode("utf-8", "replace").strip()
+def _commit(source: Source, ref: str, fetch: Fetch, environ: Mapping[str, str]) -> str:
+    url = f"{API}/repos/{source.location}/commits/{quote(ref, safe='')}"
+    try:
+        answer = fetch(url, _headers(environ, SHA)).decode("utf-8", "replace").strip()
+    except NotFound:
+        raise FetchError(
+            f"GitHub shows no ref {ref!r} in gh:{source.location}. If the repo is private, set GITHUB_TOKEN to a token "
+            "that can read it.",
+            404,
+        ) from None
     if not COMMIT.fullmatch(answer):
-        raise FetchError(f"{repo} didn't answer with a full commit for {ref!r}.")
+        raise FetchError(f"gh:{source.location} didn't answer with a full commit for {ref!r}.")
     return answer
 
 
-def _json(body: bytes, repo: str) -> list[Any]:
+def _json(body: bytes, source: Source) -> list[Any]:
     try:
         data = json.loads(body)
     except ValueError:
         data = None
     if not isinstance(data, list):
-        raise FetchError(f"{repo} didn't answer with a list of releases.")
+        raise FetchError(f"gh:{source.location} didn't answer with a list of releases.")
     return data
 
 
