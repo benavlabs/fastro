@@ -7,15 +7,21 @@ import pytest
 
 from fastro.engine.files import breaks_the_rule
 
+LOOPS = [
+    RuntimeError("Symlink loop from 'blueprint.toml'"),
+    OSError(errno.ELOOP, "Too many levels of symbolic links", "blueprint.toml"),
+]
 
-def test_a_symlink_loop_reported_as_eloop_breaks_the_rule_as_one_reported_as_a_runtime_error_does(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+
+@pytest.mark.parametrize("loop", LOOPS, ids=["python-3.11-and-3.12", "python-3.13-on"])
+def test_a_symlink_loop_breaks_the_rule_however_this_python_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, loop: Exception
 ) -> None:
     resolve = Path.resolve
 
     def looping(self: Path, strict: bool = False) -> Path:
         if self.name == "blueprint.toml":
-            raise OSError(errno.ELOOP, "Too many levels of symbolic links", str(self))
+            raise loop
         return resolve(self, strict=strict)
 
     monkeypatch.setattr(Path, "resolve", looping)
