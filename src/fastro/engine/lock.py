@@ -1,7 +1,8 @@
-"""Loading a project's ``.fastro/lock.toml`` (spec 4), key by key."""
+"""A project's ``.fastro/lock.toml`` (spec 4): loading it key by key, and writing it."""
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 ORIGINS = ("core", "wiring", "overlay", "deps", "env")
 NAMED_ORIGINS = {"feature": spec.feature_name, "plugin": spec.feature_name, "make": spec.generator_name}
 GIT_SOURCES = ("gh:", "git+")
+LOCK_FILE = ".fastro/lock.toml"
 PATH_SOURCES = ("/", ".")
 
 
@@ -61,7 +63,7 @@ class LockedFile:
 
 @dataclass(frozen=True)
 class Lock:
-    """A loaded ``lock.toml``, with the document it came from for placing later problems."""
+    """A ``lock.toml``, loaded with the document it came from for placing later problems, or made in memory."""
 
     schema: int
     fastro: Version
@@ -71,7 +73,7 @@ class Lock:
     starter: Provenance | None = None
     plugins: Mapping[str, LockedPlugin] = field(default_factory=dict)
     files: Mapping[RepoPath, LockedFile] = field(default_factory=dict)
-    document: Document = field(compare=False, repr=False, kw_only=True)
+    document: Document = field(default_factory=lambda: read(LOCK_FILE, ""), compare=False, repr=False, kw_only=True)
 
 
 def load(file: str, text: str, project: Project | None = None) -> Lock:
@@ -92,6 +94,54 @@ def load(file: str, text: str, project: Project | None = None) -> Lock:
     if project is not None and (found := _against(lock, project)):
         raise CrossReferenceError(found)
     return lock
+
+
+def dump(lock: Lock) -> str:
+    """``lock`` as ``lock.toml`` text, laid out as spec 4 shows it: ``[lock]``, then each ``[plugins.<name>]``, then
+    ``[files]`` sorted by path, leaving out each optional key that's empty. Features, options and plugins are written
+    in the order ``lock`` gives them."""
+    lines = [
+        "[lock]",
+        f"schema = {lock.schema}",
+        f"fastro = {_string(str(lock.fastro))}",
+        f"blueprint = {_provenance(lock.blueprint)}",
+        f"features = [{', '.join(map(_string, lock.features))}]",
+    ]
+    if lock.options:
+        pairs = (f"{_string(f'{feature}.{option}')} = {_string(value)}" for (feature, option), value in lock.options.items())
+        lines.append(f"options = {{ {', '.join(pairs)} }}")
+    if lock.starter is not None:
+        lines += ["", f"starter = {_provenance(lock.starter)}"]
+    for name, plugin in lock.plugins.items():
+        lines += [
+            "",
+            f"[plugins.{name}]",
+            f"source = {_string(plugin.source)}",
+            f"version = {_string(str(plugin.version))}",
+        ]
+        if plugin.commit is not None:
+            lines.append(f"commit = {_string(plugin.commit)}")
+    if lock.files:
+        lines += ["", "[files]"]
+        for path in sorted(lock.files, key=lambda path: path.text):
+            entry = lock.files[path]
+            linked = ", linked = true" if entry.linked else ""
+            lines.append(
+                f"{_string(path.text)} = {{ sha256 = {_string(entry.sha256)}, origin = {_string(entry.origin)}{linked} }}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _provenance(provenance: Provenance) -> str:
+    pairs = [("name", provenance.name), ("version", str(provenance.version)), ("source", provenance.source)]
+    if provenance.commit is not None:
+        pairs.append(("commit", provenance.commit))
+    return f"{{ {', '.join(f'{key} = {_string(value)}' for key, value in pairs)} }}"
+
+
+def _string(text: str) -> str:
+    """``text`` as a TOML basic string: JSON's escapes are all TOML escapes too, and TOML also escapes DEL."""
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def _against(lock: Lock, project: Project) -> list[Problem]:

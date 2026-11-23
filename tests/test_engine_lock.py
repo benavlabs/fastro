@@ -5,7 +5,7 @@ from packaging.version import Version
 
 from fastro.engine import project
 from fastro.engine.blueprint import CrossReferenceError, IncompatibleCatalog
-from fastro.engine.lock import Lock, LockedFile, LockedPlugin, Provenance, load
+from fastro.engine.lock import Lock, LockedFile, LockedPlugin, Provenance, dump, load
 from fastro.engine.problems import CatalogError
 from fastro.engine.spec import RepoPath
 
@@ -18,8 +18,9 @@ FULL = f"""\
 schema = 1
 fastro = "0.1.0"
 blueprint = {{ name = "fastapi-boilerplate", version = "0.21.0", source = "{RELEASE}", commit = "{SHA1}" }}
-features = ["accounts", "admin", "cache"]
+features = ["cache", "accounts", "admin"]
 options = {{ "cache.backend" = "redis" }}
+
 starter = {{ name = "b2b-api", version = "0.1.0", source = "gh:benavlabs/fastro-starters@v0.1.0#b2b-api", commit = "{SHA1}" }}
 
 [plugins.stripe]
@@ -56,7 +57,7 @@ def test_every_key_is_read_and_files_need_not_be_sorted() -> None:
         schema=1,
         fastro=Version("0.1.0"),
         blueprint=Provenance("fastapi-boilerplate", Version("0.21.0"), RELEASE, SHA1),
-        features=("accounts", "admin", "cache"),
+        features=("cache", "accounts", "admin"),
         options={("cache", "backend"): "redis"},
         starter=Provenance("b2b-api", Version("0.1.0"), "gh:benavlabs/fastro-starters@v0.1.0#b2b-api", SHA1),
         plugins={"stripe": LockedPlugin("stripe", "gh:acme/fastro-stripe@v1.2.0", Version("1.2.0"), SHA256)},
@@ -328,3 +329,62 @@ def test_the_lock_is_checked_against_fastro_toml_only_once_its_keys_read_cleanly
 
     assert not isinstance(refused, CrossReferenceError)
     assert [str(found) for found in refused.problems] == ["lock.toml:2: lock.schema: should be 1, not 0."]
+
+
+DUMPED = f"""\
+[lock]
+schema = 1
+fastro = "0.1.0"
+blueprint = {{ name = "fastapi-boilerplate", version = "0.21.0", source = "{RELEASE}", commit = "{SHA1}" }}
+features = ["cache", "accounts", "admin"]
+options = {{ "cache.backend" = "redis" }}
+
+starter = {{ name = "b2b-api", version = "0.1.0", source = "gh:benavlabs/fastro-starters@v0.1.0#b2b-api", commit = "{SHA1}" }}
+
+[plugins.stripe]
+source = "gh:acme/fastro-stripe@v1.2.0"
+version = "1.2.0"
+commit = "{SHA256}"
+
+[files]
+"README.md" = {{ sha256 = "{SHA256}", origin = "overlay" }}
+"backend/src/modules/tier/models.py" = {{ sha256 = "{SHA256}", origin = "feature:tiers" }}
+"backend/src/plugins/stripe/routes.py" = {{ sha256 = "{SHA256}", origin = "plugin:stripe", linked = true }}
+"backend/src/wiring/app.py" = {{ sha256 = "{SHA256}", origin = "wiring" }}
+"""
+
+
+def test_a_lock_is_written_as_spec_4_lays_it_out_with_its_files_sorted_by_path() -> None:
+    assert dump(load("lock.toml", FULL)) == DUMPED
+
+
+def test_a_written_lock_loads_back_to_the_same_lock() -> None:
+    lock = load("lock.toml", FULL)
+
+    assert load("lock.toml", dump(lock)) == lock
+
+
+def test_a_lock_with_only_the_required_keys_is_written_without_the_optional_ones() -> None:
+    text = _text()
+
+    assert dump(load("lock.toml", text)) == text
+
+
+def test_a_lock_made_in_memory_needs_no_document_and_writes_its_strings_escaped() -> None:
+    source = '../odd "dir"\\ñ\tx\x7f'
+    lock = Lock(
+        schema=1,
+        fastro=Version("0.1.0"),
+        blueprint=Provenance("fastapi-boilerplate", Version("0.21.0"), source),
+        features=(),
+        files={RepoPath('a "b" ñ.py'): LockedFile(SHA256, "core")},
+    )
+
+    assert load("lock.toml", dump(lock)) == lock
+    assert 'source = "../odd \\"dir\\"\\\\ñ\\tx\\u007f"' in dump(lock)
+
+
+def test_a_plugin_from_a_path_source_is_written_without_a_commit() -> None:
+    text = _text(tables='\n[plugins.stripe]\nsource = "../stripe"\nversion = "1.2.0"\n')
+
+    assert dump(load("lock.toml", text)) == text

@@ -35,6 +35,20 @@ class Plan:
     selection: Selection
     ops: tuple[Op, ...]
 
+    def origins(self) -> dict[str, str]:
+        """The ``origin`` the lock records for each file this plan copies or renders (spec 4): its op's, except
+        ``deps`` for ``{python_root}/pyproject.toml`` and ``env`` for ``{python_root}/.env.example``, which are
+        rewritten whoever owns them. ``{python_root}/uv.lock`` is the project's, and gets none."""
+        rewritten = {
+            in_python_root(self.catalog, "pyproject.toml"): "deps",
+            in_python_root(self.catalog, ".env.example"): "env",
+        }
+        return {
+            op.path: rewritten.get(op.path, op.origin)
+            for op in self.ops
+            if op.op in ("copy", "render") and op.path != python_root_lock(self.catalog)
+        }
+
     def document(self) -> dict[str, Any]:
         """The plan as spec 7's JSON document, with the parts nothing fills yet present and empty."""
         info = self.catalog.info
@@ -121,4 +135,9 @@ def starting_lock(catalog: Blueprint, tracked: Sequence[RepoPath]) -> RepoPath |
 
 def python_root_lock(catalog: Blueprint) -> str:
     """Where a project's lock sits: ``{python_root}/uv.lock``."""
-    return f"{catalog.info.python_root.text.rstrip('/')}/{LOCK}"
+    return in_python_root(catalog, LOCK)
+
+
+def in_python_root(catalog: Blueprint, name: str) -> str:
+    """The path of ``name`` in ``catalog``'s ``python_root``, however the root is written."""
+    return f"{catalog.info.python_root.text.rstrip('/')}/{name}"

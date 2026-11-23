@@ -299,3 +299,18 @@ def test_a_project_s_lock_sits_in_its_python_root_however_the_root_is_written(wr
     text = (MINI / "blueprint.toml").read_text().replace("[blueprint]\n", f'[blueprint]\npython_root = "{written}"\n', 1)
 
     assert python_root_lock(blueprint.load("blueprint.toml", text, Version("0.1.0"))) == "backend/uv.lock"
+
+
+def test_the_origins_a_lock_records_are_each_copied_or_rendered_file_s_with_the_rewritten_ones_named_for_their_rewrite(
+    mini: Blueprint, files: tuple[RepoPath, ...]
+) -> None:
+    listed = (*files, RepoPath("backend/.env.example"), RepoPath("backend/uv.lock"))
+    made = plan(mini, select(mini, mini.presets["minimal"]), listed)
+    origins = made.origins()
+
+    assert origins["backend/src/modules/accounts/routes.py"] == "feature:accounts"
+    assert origins["backend/src/app.py"] == "core"
+    assert origins["backend/src/wiring/app.py"] == "wiring"
+    assert (origins["backend/pyproject.toml"], origins["backend/.env.example"]) == ("deps", "env")
+    assert made.ops[[op.path for op in made.ops].index("backend/uv.lock")].op == "copy"
+    assert set(origins) == {op.path for op in made.ops if op.op in ("copy", "render")} - {"backend/uv.lock"}
