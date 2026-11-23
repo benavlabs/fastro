@@ -1,5 +1,5 @@
-"""The installed ``fastro`` and ``bp`` commands refuse a current directory they can't use, before anything else runs
-(spec 1.37)."""
+"""The installed ``fastro`` and ``bp`` commands exit 2 on native Windows (spec 8), and otherwise refuse a current
+directory they can't use, before anything else runs (spec 1.37)."""
 
 import shutil
 import subprocess
@@ -100,3 +100,30 @@ def test_fastro_refuses_before_its_cli_is_even_imported() -> None:
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
 
     assert done.stdout == "3 False\n"
+
+
+WINDOWS = "error: fastro doesn't support native Windows yet. Run it in WSL2: https://learn.microsoft.com/windows/wsl/install\n"
+
+
+@pytest.mark.parametrize("command", [*COMMANDS, ["--version"], []])
+@pytest.mark.parametrize("entry", ["fastro.start:main", "fastro.compat:bp_main"])
+def test_native_windows_exits_2_before_reading_anything_or_loading_the_cli(
+    tmp_path: Path, entry: str, command: list[str]
+) -> None:
+    module, function = entry.split(":")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    script = (
+        "import os, sys\n"
+        f"os.rmdir({str(gone)!r})\n"
+        "sys.platform = 'win32'\n"
+        f"from {module} import {function}\n"
+        "try:\n"
+        f"    {function}()\n"
+        "except SystemExit as stop:\n"
+        "    print(stop.code, 'fastro.cli' in sys.modules)\n"
+    )
+
+    done = subprocess.run([sys.executable, "-c", script, *command], cwd=gone, capture_output=True, text=True, timeout=60)
+
+    assert (done.returncode, done.stdout, done.stderr) == (0, "2 False\n", WINDOWS)

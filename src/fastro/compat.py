@@ -7,8 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from .cli import for_directory
-from .start import check_cwd
+from .start import check_cwd, check_platform
 
 RENAMED: dict[tuple[str, str], tuple[str, str]] = {
     ("deploy", "generate"): ("make", "deploy"),
@@ -25,9 +24,12 @@ def translate(argv: Sequence[str]) -> list[str]:
 
 
 def bp_main() -> None:
-    """Check the current directory as ``fastro`` does, say that ``bp`` is now ``fastro``, then run ``fastro`` with the
-    same arguments."""
+    """Check the platform and the current directory as ``fastro`` does, say that ``bp`` is now ``fastro``, then run
+    ``fastro`` with the same arguments."""
+    check_platform()
     check_cwd()
+    from .cli import for_directory  # noqa: PLC0415
+
     argv = translate(sys.argv[1:])
     print(f"bp is now fastro. Next time, run: {shlex.join(['fastro', *argv])}", file=sys.stderr)
     for_directory(Path.cwd(), argv)(args=argv, prog_name="fastro")
