@@ -39,24 +39,29 @@ class Change:
     source: str = ""
 
 
-def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
-    """The files git tracks in ``repo``, sorted by path as git lists them, leaving out one deleted from the working tree
-    and one ``export-ignore`` marks, as ``git archive`` does (spec 1.7, 2.13).
+def tracked_files(repo: Path, untracked: bool = False) -> tuple[RepoPath, ...]:
+    """The files git tracks in ``repo``, sorted by path in code point order, leaving out one deleted from the working
+    tree and one ``export-ignore`` marks, as ``git archive`` does (spec 1.7, 2.13). With ``untracked``, the files git
+    doesn't track or ignore are listed too, as ``--include-untracked`` asks (1.7). ``repo`` may be a directory inside a
+    work tree: the paths are relative to it, and the work tree's own ``.gitattributes`` decide.
 
     One fastro can't check, in a directory it isn't allowed to search, is kept, so whoever reads it says why it can't.
 
     Raises:
         MissingToolError: ``git`` isn't on ``PATH``.
-        RepositoryError: ``repo`` isn't a git repository.
+        RepositoryError: ``repo`` isn't a git repository, or isn't in its work tree.
     """
     git = require("git")
-    listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z"], capture_output=True, text=True, check=False)
+    others = ["--others", "--exclude-standard"] if untracked else []
+    listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z", "--cached", *others], capture_output=True, text=True)
     if listed.returncode != 0:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
-    names = [name for name in listed.stdout.split("\0") if name and _in_working_tree(repo / name)]
-    directories = sorted({directory for name in names for directory in _above(name)})
-    ignored = _set(repo, [*names, *directories], EXPORT_IGNORE)
-    return tuple(RepoPath(name) for name in names if ignored.isdisjoint([name, *_above(name)]))
+    top, prefix = _place(repo)
+    listed_names = {name.rstrip("/") for name in listed.stdout.split("\0") if name}
+    names = sorted(name for name in listed_names if _in_working_tree(repo / name))
+    directories = sorted({directory for name in names for directory in _above(prefix + name)})
+    ignored = _set(Path(top), [*(prefix + name for name in names), *directories], EXPORT_IGNORE)
+    return tuple(RepoPath(name) for name in names if ignored.isdisjoint([prefix + name, *_above(prefix + name)]))
 
 
 def _above(name: str) -> list[str]:
@@ -66,16 +71,47 @@ def _above(name: str) -> list[str]:
     return [f"{'/'.join(parts[: count + 1])}/" for count in range(len(parts))]
 
 
-def export_subst(repo: Path, files: Iterable[RepoPath]) -> tuple[RepoPath, ...]:
-    """Each of ``files`` that git's ``export-subst`` attribute is set on itself, by ``repo``'s own ``.gitattributes``
-    files (spec 1.7), in the order given.
+def _place(repo: Path) -> tuple[Path, str]:
+    """The top of the work tree ``repo`` sits in, and ``repo``'s path inside it as git writes a prefix (``a/b/``).
+
+    Raises:
+        RepositoryError: git says ``repo`` isn't in a work tree, quoting it.
+    """
+    git = require("git")
+    where = subprocess.run(
+        [git, "-C", str(repo), "rev-parse", "--show-toplevel", "--show-prefix"], capture_output=True, text=True
+    )
+    if where.returncode != 0:
+        raise RepositoryError(f"{repo} isn't in a git work tree: {where.stderr.strip()}")
+    top, prefix = where.stdout.split("\n")[:2]
+    return Path(top), prefix
+
+
+def head_commit(repo: Path) -> str | None:
+    """The full commit ``HEAD`` names in the work tree ``repo`` sits in, or ``None`` before its first commit.
 
     Raises:
         MissingToolError: ``git`` isn't on ``PATH``.
+        RepositoryError: git says ``repo`` isn't in a work tree.
+    """
+    _place(repo)
+    git = require("git")
+    head = subprocess.run([git, "-C", str(repo), "rev-parse", "--verify", "-q", "HEAD"], capture_output=True, text=True)
+    return head.stdout.strip() if head.returncode == 0 else None
+
+
+def export_subst(repo: Path, files: Iterable[RepoPath]) -> tuple[RepoPath, ...]:
+    """Each of ``files`` that git's ``export-subst`` attribute is set on itself, by the ``.gitattributes`` files of
+    the work tree ``repo`` sits in (spec 1.7), in the order given.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+        RepositoryError: git says ``repo`` isn't in a work tree.
     """
     given = [path.text for path in files]
-    marked = _set(repo, given, EXPORT_SUBST)
-    return tuple(RepoPath(name) for name in given if name in marked)
+    top, prefix = _place(repo)
+    marked = _set(top, [prefix + name for name in given], EXPORT_SUBST)
+    return tuple(RepoPath(name) for name in given if prefix + name in marked)
 
 
 def _set(repo: Path, names: Sequence[str], attribute: str) -> set[str]:

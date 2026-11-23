@@ -20,6 +20,7 @@ from fastro.apply import (
     changes,
     check,
     export_subst,
+    head_commit,
     tracked_files,
 )
 from fastro.engine import blueprint, lock
@@ -157,6 +158,78 @@ def test_export_ignore_patterns_match_case_sensitively_as_a_tarball_built_on_lin
     repo = _repo(tmp_path / "repo", {".gitattributes": "A.txt export-ignore\nDocs/ export-ignore\n", "a.txt": "", "docs/x": ""})
 
     assert tracked_files(repo) == (RepoPath(".gitattributes"), RepoPath("a.txt"), RepoPath("docs/x"))
+
+
+def test_a_repo_s_root_gitattributes_decide_for_a_directory_inside_it(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {".gitattributes": "sub/x export-ignore\n", "sub/x": "", "sub/y": ""})
+
+    assert tracked_files(repo / "sub") == (RepoPath("y"),)
+
+
+def test_untracked_files_git_doesn_t_ignore_are_added_on_request_with_export_ignore_applied(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {".gitattributes": "notes/ export-ignore\n", ".gitignore": "*.log\n", "a": ""})
+    for name in ("b", "c.log", "notes/n.md"):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text("")
+
+    assert tracked_files(repo) == (RepoPath(".gitattributes"), RepoPath(".gitignore"), RepoPath("a"))
+    assert tracked_files(repo, untracked=True) == (
+        RepoPath(".gitattributes"),
+        RepoPath(".gitignore"),
+        RepoPath("a"),
+        RepoPath("b"),
+    )
+
+
+def test_git_index_file_decides_what_s_tracked_as_it_does_for_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path / "repo", {"a": "", "b": ""})
+    index = tmp_path / "other-index"
+    subprocess.run(["git", "-C", str(repo), "add", "a"], env={**os.environ, "GIT_INDEX_FILE": str(index)}, check=True)
+    monkeypatch.setenv("GIT_INDEX_FILE", str(index))
+
+    assert tracked_files(repo) == (RepoPath("a"),)
+
+
+def test_export_subst_reads_a_repo_s_root_gitattributes_for_a_directory_inside_it(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {".gitattributes": "bp/a export-subst\n", "bp/a": "", "bp/b": ""})
+
+    assert export_subst(repo / "bp", (RepoPath("a"), RepoPath("b"))) == (RepoPath("a"),)
+
+
+def test_an_untracked_nested_repo_is_listed_as_the_path_it_sits_at(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"a": ""})
+    _repo(repo / "nested", {"n": ""})
+
+    assert tracked_files(repo, untracked=True) == (RepoPath("a"), RepoPath("nested"))
+
+
+def test_a_path_with_a_merge_conflict_is_listed_once(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"a": "x\n"})
+    blob = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "a"], capture_output=True, text=True).stdout.strip()
+    entries = "".join(f"100644 {blob} {stage}\ta\n" for stage in (1, 2, 3))
+    subprocess.run(["git", "-C", str(repo), "update-index", "--index-info"], input=f"0 {'0' * 40}\ta\n{entries}", text=True)
+
+    assert tracked_files(repo) == (RepoPath("a"),)
+
+
+def test_a_directory_inside_a_git_dir_isn_t_a_work_tree(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"a": ""})
+
+    with pytest.raises(RepositoryError, match="isn't in a git work tree"):
+        tracked_files(repo / ".git")
+    with pytest.raises(RepositoryError, match="isn't in a git work tree"):
+        head_commit(repo / ".git")
+
+
+def test_a_work_tree_before_its_first_commit_has_no_head(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"a": ""})
+
+    assert head_commit(repo) is None
+    _git(repo, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x")
+    assert (
+        head_commit(repo)
+        == subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    )
 
 
 def test_export_subst_names_each_file_it_s_set_on_itself_among_those_given(tmp_path: Path) -> None:
