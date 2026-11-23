@@ -3,30 +3,73 @@ the files a ``PATH`` source contributes."""
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
-from collections.abc import Mapping
+import re
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urlsplit
+
+from packaging.version import Version
 
 from fastro.apply import RepositoryError, head_commit, tracked_files
 from fastro.engine import spec
+from fastro.engine.blueprint import readable
 from fastro.engine.files import present, unreadable_config
 from fastro.engine.spec import RepoPath, SpecError
 
-NAMED = {
-    "fastapi-boilerplate": "gh:benavlabs/FastAPI-boilerplate",
-    "fastroai": "git+ssh://git@github.com/benavlabs/fastroai-template",
-}
+NAMED = {"fastapi-boilerplate": "gh:benavlabs/FastAPI-boilerplate"}
+UNCONFIRMED = ("fastroai",)
 DEFAULT = "fastapi-boilerplate"
 DEFAULT_VARIABLE = "FASTRO_BLUEPRINT"
 CACHE_VARIABLE = "FASTRO_CACHE_DIR"
 CATALOG = "blueprint.toml"
 GIT_PREFIXES = ("git+ssh://", "git+https://")
+API = "https://api.github.com"
+API_VERSION = "2022-11-28"
+TOKEN_VARIABLE = "GITHUB_TOKEN"
+TIMEOUT = 30
+COMMIT = re.compile(r"[0-9a-f]{40}")
+JSON = "application/vnd.github+json"
+RAW = "application/vnd.github.raw+json"
+SHA = "application/vnd.github.sha"
+PAGE = 100
+RATE_LIMITED = (403, 429)
 
 
 class SourceError(Exception):
     """A source that doesn't read, or a ``PATH`` source that isn't a blueprint directory fastro may read: a usage
     error (spec 8)."""
+
+
+class FetchError(Exception):
+    """A source that can't be fetched, or has no release this fastro can read: an environment failure (spec 8).
+    ``status`` is the HTTP status the server answered with, if it answered."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class NotFound(FetchError):
+    """A URL the server answered 404 for."""
+
+
+Fetch = Callable[[str, Mapping[str, str]], bytes]
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """A ``gh:`` source pinned: the ref it resolved to, and that ref's full commit."""
+
+    ref: str
+    commit: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +107,8 @@ def parse(text: str) -> Source:
         SourceError: ``text`` names no named blueprint and doesn't read as a source.
     """
     name, hash_, subdir_given = text.partition("#")
+    if name in UNCONFIRMED:
+        raise SourceError(f"{name!r} is a named blueprint whose repo isn't confirmed yet (1.7). Pass its source with --from.")
     written = f"{NAMED[name]}{hash_}{subdir_given}" if name in NAMED else text
     try:
         spec.source(written)
@@ -72,6 +117,8 @@ def parse(text: str) -> Source:
     where, _, subdir = written.partition("#")
     if where.startswith("gh:"):
         location, _, ref = where.removeprefix("gh:").partition("@")
+        if any(part in (".", "..") for part in location.split("/")):
+            raise SourceError(f"{text!r} isn't a source: a gh: source names OWNER/REPO, and neither is . or ..")
         kind = "gh"
     elif where.startswith(GIT_PREFIXES):
         scheme, _, rest = where.partition("://")
@@ -161,3 +208,104 @@ def _every_file(root: Path) -> tuple[RepoPath, ...]:
         links = [name for name in subdirectories if (Path(directory) / name).is_symlink()]
         found += [(base / name).as_posix() for name in (*files, *links)]
     return tuple(RepoPath(name) for name in sorted(found))
+
+
+def resolve_gh(
+    source: Source,
+    tool: Version,
+    fetch: Fetch = lambda url, headers: http_get(url, headers),
+    environ: Mapping[str, str] = os.environ,
+) -> Resolved:
+    """The ``gh:`` ``source`` pinned through GitHub's API (spec 1.7): its ref's full commit, or with no ref, the
+    newest release, drafts and prereleases left out, whose ``blueprint.toml`` (under ``#SUBDIR``) lets ``tool`` read
+    it. A release without one is skipped. ``GITHUB_TOKEN`` goes in a header when it's set.
+
+    Raises:
+        FetchError: GitHub can't be reached, answers with an error or something that isn't what was asked for, or
+            has no release this fastro can read.
+    """
+    repo = f"{API}/repos/{source.location}"
+    if source.ref is not None:
+        return Resolved(source.ref, _commit(repo, source.ref, fetch, environ))
+    catalog = f"{source.subdir}/{CATALOG}" if source.subdir else CATALOG
+    for page in count(1):
+        releases = _json(fetch(f"{repo}/releases?per_page={PAGE}&page={page}", _headers(environ, JSON)), repo)
+        for release in releases:
+            tag = release.get("tag_name") if isinstance(release, dict) else None
+            if not tag or not isinstance(tag, str) or release.get("draft") or release.get("prerelease"):
+                continue
+            try:
+                text = fetch(f"{repo}/contents/{catalog}?ref={quote(tag, safe='')}", _headers(environ, RAW))
+            except NotFound:
+                continue
+            if _readable(text, tool):
+                return Resolved(tag, _commit(repo, tag, fetch, environ))
+        if len(releases) < PAGE:
+            break
+    raise FetchError(
+        f"gh:{source.location} has no release whose {catalog} accepts this fastro, {tool}. Name a ref with @, or "
+        "install a fastro its releases accept."
+    )
+
+
+def _readable(data: bytes, tool: Version) -> bool:
+    try:
+        return readable(data.decode("utf-8"), tool)
+    except UnicodeDecodeError:
+        return False
+
+
+def http_get(url: str, headers: Mapping[str, str]) -> bytes:
+    """The body ``url`` answers with, sending ``headers``. A redirect to another host drops ``Authorization``, so a
+    token reaches only the host it was meant for.
+
+    Raises:
+        NotFound: the server answered 404.
+        FetchError: the server answered another error, or can't be reached.
+    """
+    opener = urllib.request.build_opener(_SameHostAuthorization)
+    try:
+        with opener.open(urllib.request.Request(url, headers=dict(headers)), timeout=TIMEOUT) as response:
+            body: bytes = response.read()
+    except urllib.error.HTTPError as error:
+        kind = NotFound if error.code == 404 else FetchError
+        hint = " If that's GitHub's rate limit, set GITHUB_TOKEN, or wait." if error.code in RATE_LIMITED else ""
+        raise kind(f"{url} answered {error.code} {error.reason}.{hint}", error.code) from None
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        reason = getattr(error, "reason", None) or type(error).__name__
+        raise FetchError(f"fastro can't reach {url}: {reason}. Check the network.") from None
+    return body
+
+
+class _SameHostAuthorization(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> urllib.request.Request | None:
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and urlsplit(newurl)[:2] != urlsplit(req.full_url)[:2]:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def _commit(repo: str, ref: str, fetch: Fetch, environ: Mapping[str, str]) -> str:
+    answer = fetch(f"{repo}/commits/{quote(ref, safe='')}", _headers(environ, SHA)).decode("utf-8", "replace").strip()
+    if not COMMIT.fullmatch(answer):
+        raise FetchError(f"{repo} didn't answer with a full commit for {ref!r}.")
+    return answer
+
+
+def _json(body: bytes, repo: str) -> list[Any]:
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        raise FetchError(f"{repo} didn't answer with a list of releases.")
+    return data
+
+
+def _headers(environ: Mapping[str, str], accept: str) -> dict[str, str]:
+    headers = {"Accept": accept, "User-Agent": "fastro", "X-GitHub-Api-Version": API_VERSION}
+    if token := environ.get(TOKEN_VARIABLE):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers

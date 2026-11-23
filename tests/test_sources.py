@@ -50,11 +50,14 @@ def test_the_default_source_is_fastro_blueprint_then_fastapi_boilerplate_and_the
     assert default_source(environ, blueprint, given) == found
 
 
-def test_the_named_blueprints_are_fastapi_boilerplate_and_fastroai() -> None:
-    assert NAMED == {
-        "fastapi-boilerplate": "gh:benavlabs/FastAPI-boilerplate",
-        "fastroai": "git+ssh://git@github.com/benavlabs/fastroai-template",
-    }
+def test_the_named_blueprint_with_a_source_is_fastapi_boilerplate() -> None:
+    assert NAMED == {"fastapi-boilerplate": "gh:benavlabs/FastAPI-boilerplate"}
+
+
+@pytest.mark.parametrize("text", ["fastroai", "fastroai#sub"])
+def test_fastroai_is_named_but_refused_until_its_repo_is_confirmed(text: str) -> None:
+    with pytest.raises(SourceError, match=re.escape("'fastroai' is a named blueprint whose repo isn't confirmed yet")):
+        parse(text)
 
 
 @pytest.mark.parametrize(
@@ -69,7 +72,7 @@ def test_the_named_blueprints_are_fastapi_boilerplate_and_fastroai() -> None:
         ("./here", Source("path", "./here", None, None)),
         ("../there#sub/dir", Source("path", "../there", None, "sub/dir")),
         ("/abs/path", Source("path", "/abs/path", None, None)),
-        ("fastroai#sub", Source("git", "git+ssh://git@github.com/benavlabs/fastroai-template", None, "sub")),
+        ("fastapi-boilerplate#sub", Source("gh", "benavlabs/FastAPI-boilerplate", None, "sub")),
         ("git+ssh://git@host:22/a@b/c@v1", Source("git", "git+ssh://git@host:22/a@b/c", "v1", None)),
     ],
 )
@@ -77,7 +80,9 @@ def test_a_source_reads_as_its_kind_location_ref_and_subdirectory(text: str, sou
     assert parse(text) == source
 
 
-@pytest.mark.parametrize("text", ["nope", "gh:acme", "./x#../up", "git+ssh://h/a/b@", "gh:acme/bp@", "fastapi-boilerplate#"])
+@pytest.mark.parametrize(
+    "text", ["nope", "gh:acme", "./x#../up", "git+ssh://h/a/b@", "gh:acme/bp@", "fastapi-boilerplate#", "gh:../..", "gh:a/."]
+)
 def test_a_name_that_isnt_a_named_blueprint_or_a_source_that_doesnt_read_is_a_usage_error(text: str) -> None:
     with pytest.raises(SourceError, match=re.escape(repr(text))):
         parse(text)

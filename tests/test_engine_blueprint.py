@@ -15,6 +15,7 @@ from fastro.engine.blueprint import (
     Point,
     When,
     load,
+    readable,
 )
 from fastro.engine.conditions import parse
 from fastro.engine.problems import CatalogError
@@ -816,3 +817,24 @@ def test_a_verify_app_under_a_custom_import_root_loads() -> None:
     text = MINIMAL + 'import_root = "app_src"\n[verify]\napp = "app_src.main"\n'
 
     assert _load(text).verify.app == "app_src.main"
+
+
+def _readable_catalog(requires: str = ">=0.1.0.dev0", schema: int = 1) -> str:
+    return f'[blueprint]\nname = "bp"\nversion = "0.21.0"\nschema = {schema}\nrequires_fastro = "{requires}"\n'
+
+
+@pytest.mark.parametrize(
+    ("text", "readable_"),
+    [
+        (_readable_catalog(), True),
+        (_readable_catalog(">=9"), False),
+        (_readable_catalog(schema=2), False),
+        ("not toml [", False),
+        ("[other]\nx = 1\n", False),
+        ('[blueprint]\nschema = 1\nrequires_fastro = "not a specifier"\n', False),
+        ('[blueprint]\nschema = 1\nrequires_fastro = ""\n', False),
+        ('[blueprint]\nschema = 1\nrequires_fastro = "===0.1.0.dev1"\n', False),
+    ],
+)
+def test_a_catalog_is_readable_when_its_schema_and_requires_fastro_let_this_fastro_read_it(text: str, readable_: bool) -> None:
+    assert readable(text, Version("0.1.0.dev1")) is readable_

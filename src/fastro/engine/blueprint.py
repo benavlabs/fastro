@@ -390,6 +390,22 @@ def load(file: str, text: str, tool: Version) -> Blueprint:
     return blueprint
 
 
+def readable(text: str, tool: Version) -> bool:
+    """Whether ``text`` reads as a ``blueprint.toml`` whose ``schema`` and ``requires_fastro`` let ``tool`` read it,
+    without checking anything else (spec 1.7: how a source with no ref picks its release)."""
+    try:
+        document = read("blueprint.toml", text)
+    except CatalogError:
+        return False
+    table = document.data.get("blueprint")
+    requires = table.get("requires_fastro") if isinstance(table, dict) else None
+    try:
+        allowed = _requires(requires) if isinstance(requires, str) else None
+    except SpecError:
+        return False
+    return allowed is not None and Reader(document).gate(document.data, tool)
+
+
 def _kind(value: object) -> str:
     if isinstance(value, bool):
         return "a boolean"
