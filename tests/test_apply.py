@@ -1,9 +1,11 @@
 """Listing a repo's tracked files, and applying a plan's changes into a directory (A4 item 2)."""
 
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from fastro.apply import (
     apply,
     changes,
     check,
+    export_subst,
     tracked_files,
 )
 from fastro.engine import blueprint, lock
@@ -58,6 +61,108 @@ def test_a_tracked_file_deleted_from_the_working_tree_isnt_listed(tmp_path: Path
     (repo / "gone.py").unlink()
 
     assert tracked_files(repo) == (RepoPath("kept.py"),)
+
+
+ATTRIBUTED = {
+    ".gitattributes": "docs/ export-ignore\nz.toml export-ignore\nvalued.txt export-ignore=yes\nslashless export-ignore\n"
+    "v.txt export-subst\nsubst/ export-subst\nboth.txt export-subst export-ignore\nsubst-valued.txt export-subst=yes\n",
+    "a/.gitattributes": "x export-ignore\n",
+    "docs/i.md": "",
+    "docs/sub/j.md": "",
+    "z.toml": "",
+    "valued.txt": "",
+    "slashless/k.md": "",
+    "a/x": "",
+    "a/y": "",
+    "keep": "",
+    "v.txt": "",
+    "subst/w.txt": "",
+    "both.txt": "",
+    "subst-valued.txt": "",
+}
+
+
+def test_tracked_files_leave_out_what_export_ignore_marks_as_git_archive_does(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", ATTRIBUTED)
+    _git(repo, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x")
+    archived = subprocess.run(
+        ["git", "-C", str(repo), "-c", "core.attributesFile=/dev/null", "archive", "HEAD"], capture_output=True, check=True
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(archived)) as tar:
+        members = sorted(member.name for member in tar.getmembers() if member.isfile())
+
+    listed = [path.text for path in tracked_files(repo)]
+
+    assert listed == sorted(listed)
+    assert sorted(listed) == members
+    assert "valued.txt" in listed and "a/y" in listed
+    assert not {"docs/i.md", "docs/sub/j.md", "z.toml", "slashless/k.md", "a/x", "both.txt"} & set(listed)
+
+
+def test_only_the_repo_s_own_gitattributes_decide_what_export_ignore_marks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path / "repo", {"keep": "", "kept": "", "kept-too": ""})
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("keep export-ignore\n")
+    (tmp_path / "attributes").write_text("kept export-ignore\n")
+    (tmp_path / "gitconfig").write_text(f"[core]\n\tattributesFile = {tmp_path / 'attributes'}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    _git(repo, "config", "core.attributesFile", str(tmp_path / "attributes"))
+
+    assert tracked_files(repo) == (RepoPath("keep"), RepoPath("kept"), RepoPath("kept-too"))
+
+
+def test_a_git_template_s_info_attributes_dont_decide_what_export_ignore_marks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path / "repo", {".gitattributes": "a export-ignore\n", "a": "", "b": ""})
+    (tmp_path / "template" / "info").mkdir(parents=True)
+    (tmp_path / "template" / "info" / "attributes").write_text("b export-ignore\n")
+    (tmp_path / "gitconfig").write_text(f"[init]\n\ttemplateDir = {tmp_path / 'template'}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+
+    assert tracked_files(repo) == (RepoPath(".gitattributes"), RepoPath("b"))
+
+
+def test_git_common_dir_neither_decides_what_export_ignore_marks_nor_gets_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path / "repo", {"a": "", "b": ""})
+    other = _repo(tmp_path / "other", {})
+    (other / ".git" / "info").mkdir(exist_ok=True)
+    (other / ".git" / "info" / "attributes").write_text("b export-ignore\n")
+    config = (other / ".git" / "config").read_text()
+    monkeypatch.setenv("GIT_COMMON_DIR", str(other / ".git"))
+    listed = tracked_files(repo)
+    monkeypatch.delenv("GIT_COMMON_DIR")
+
+    assert RepoPath("b") in listed
+    assert (other / ".git" / "config").read_text() == config
+
+
+@pytest.mark.parametrize(("name", "value"), [("GIT_WORK_TREE", "."), ("GIT_ATTR_SOURCE", "HEAD")])
+def test_a_repo_variable_in_the_environment_doesnt_stop_the_attribute_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    repo = _repo(tmp_path / "repo", {".gitattributes": "a export-ignore\n", "a": "", "b": ""})
+
+    assert export_subst(repo, (RepoPath("b"),)) == ()
+    monkeypatch.setenv(name, str(repo) if value == "." else value)
+
+    assert export_subst(repo, (RepoPath("a"), RepoPath("b"))) == ()
+
+
+def test_export_ignore_patterns_match_case_sensitively_as_a_tarball_built_on_linux_does(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {".gitattributes": "A.txt export-ignore\nDocs/ export-ignore\n", "a.txt": "", "docs/x": ""})
+
+    assert tracked_files(repo) == (RepoPath(".gitattributes"), RepoPath("a.txt"), RepoPath("docs/x"))
+
+
+def test_export_subst_names_each_file_it_s_set_on_itself_among_those_given(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", ATTRIBUTED)
+
+    assert export_subst(repo, tracked_files(repo)) == (RepoPath("v.txt"),)
 
 
 def test_a_directory_that_isnt_a_git_repo_is_refused(tmp_path: Path) -> None:

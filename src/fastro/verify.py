@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import mkdtemp
 
 from fastro import lint as linting
 from fastro import pyproject
-from fastro.apply import ApplyError, Change, apply, changes, tracked_files
+from fastro.apply import ApplyError, Change, apply, changes, export_subst, tracked_files
 from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.files import breaks_the_rule, file_kind
@@ -92,8 +92,9 @@ def build(
     the lock it starts from as ``{python_root}/uv.lock``.
 
     Raises:
-        Unbuildable: the wiring can't be rendered, the selection's runtime dependencies can't be merged, or
-            ``.env.example`` has a problem 6.1 refuses.
+        Unbuildable: the wiring can't be rendered, the selection's runtime dependencies can't be merged,
+            ``.env.example`` has a problem 6.1 refuses, or a file the build would copy, the lock included, has git's
+            ``export-subst`` attribute set (1.7).
         ApplyError: a file the build would copy is one apply refuses.
     """
     files = tracked_files(root) if tracked is None else tracked
@@ -104,6 +105,15 @@ def build(
     except (RenderError, SelectionError) as error:
         raise Unbuildable(str(error)) from None
     found = changes(made, rendered)
+    lock = starting_lock(catalog, files)
+    if lock is not None:
+        found.append(Change("copy", python_root_lock(catalog), source=lock.text))
+    copied = [RepoPath(change.source or change.path) for change in found if change.kind == "copy"]
+    if marked := export_subst(root, copied):
+        raise Unbuildable(
+            f"{marked[0].text} has git's export-subst attribute set, so a tarball of the repo would expand its "
+            f"placeholders and a clone wouldn't. Remove export-subst for {marked[0].text} from .gitattributes."
+        )
     python_root = catalog.info.python_root.text.rstrip("/")
     rewrites: dict[str, Callable[[str, Blueprint, Selection], str]] = {
         f"{python_root}/pyproject.toml": pyproject.rewrite,
@@ -118,9 +128,6 @@ def build(
         except (pyproject.PyprojectError, envfile.EnvFileError) as error:
             raise Unbuildable(str(error)) from None
         found[index] = Change("write", change.path, text)
-    lock = starting_lock(catalog, files)
-    if lock is not None:
-        found.append(Change("copy", python_root_lock(catalog), source=lock.text))
     apply(found, root, into)
     return into
 
@@ -197,7 +204,7 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
     tracked = tracked_files(root)
     _readable(root, catalog, tracked)
     lock = starting_lock(catalog, tracked)
-    scratch = Path(tempfile.mkdtemp(prefix="fastro-verify-"))
+    scratch = Path(mkdtemp(prefix="fastro-verify-"))
     failures = 0
     try:
         for name in names or list(sets):

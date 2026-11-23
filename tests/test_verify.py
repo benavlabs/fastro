@@ -130,7 +130,7 @@ def _scratch_at(monkeypatch: pytest.MonkeyPatch, scratch: Path) -> None:
         scratch.mkdir()
         return str(scratch)
 
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", make)
+    monkeypatch.setattr("fastro.verify.mkdtemp", make)
 
 
 def _checks(failing: set[str]) -> tuple[list[tuple[str, tuple[str, ...]]], object]:
@@ -239,7 +239,7 @@ def test_a_build_that_raises_leaves_its_scratch_copy_behind_and_raises(
 
 
 def test_an_unknown_set_is_refused_before_anything_is_built(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     _, run = _checks(set())
 
     with pytest.raises(UnknownSet, match="'nope' isn't a verify set. The sets are queues, minimal, full, everything."):
@@ -482,7 +482,7 @@ def test_without_uv_the_command_exits_3_before_building(repo: Path, monkeypatch:
     bin_dir.mkdir()
     (bin_dir / "git").symlink_to(git)
     monkeypatch.setenv("PATH", str(bin_dir))
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
 
     code, _, err = _verify_cli("minimal")
 
@@ -533,7 +533,7 @@ def test_an_extending_catalog_is_refused_before_anything_is_built(
     repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     monkeypatch.chdir(repo)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     extends, name = EXTENDS[case]
     text = (repo / "blueprint.toml").read_text()
     (repo / "blueprint.toml").write_text(
@@ -610,7 +610,7 @@ def test_a_blueprint_toml_fastro_may_not_read_exits_2_saying_why_unless_it_comes
     repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch, replace: Replace, make: str
 ) -> None:
     monkeypatch.chdir(repo)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     reason = replace(repo, "blueprint.toml", make)
 
     code, _, err = _verify_cli("nosuchset")
@@ -625,7 +625,7 @@ def test_a_blueprint_toml_fastro_may_not_read_exits_2_saying_why_unless_it_comes
 
 def test_a_blueprint_toml_fastro_isnt_allowed_to_resolve_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(repo)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     locked = repo.parent / "locked"
     locked.mkdir()
     (locked / "blueprint.toml").write_bytes((repo / "blueprint.toml").read_bytes())
@@ -722,7 +722,7 @@ def test_a_directory_git_doesnt_track_exits_2_before_any_scratch_directory_is_ma
 ) -> None:
     monkeypatch.chdir(repo)
     shutil.rmtree(repo / ".git")
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
 
     code, out, err = _verify_cli("minimal")
 
@@ -1016,7 +1016,7 @@ def test_a_pyproject_a_build_cant_take_its_name_from_exits_1_before_anything_is_
         file.write_bytes(text)
     else:
         file.write_text(text)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
 
     code, out, err = _verify_cli("minimal")
 
@@ -1031,7 +1031,7 @@ def test_a_pyproject_fastro_may_not_read_exits_1_saying_why(
 ) -> None:
     monkeypatch.chdir(repo)
     reason = replace(repo, PYPROJECT, "outside")
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
 
     code, _, err = _verify_cli("minimal")
 
@@ -1045,7 +1045,7 @@ def test_a_pyproject_fastro_may_not_read_exits_1_saying_why(
 def test_a_pyproject_the_system_wont_let_verify_open_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(repo)
     (repo / PYPROJECT).chmod(0)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     try:
         code, _, err = _verify_cli("minimal")
     finally:
@@ -1065,7 +1065,7 @@ def test_a_tracked_env_example_that_isnt_utf_8_exits_1_before_anything_is_built(
     monkeypatch.chdir(repo)
     (repo / ENV_EXAMPLE).write_bytes(NOT_UTF_8)
     _git(repo, "add", ENV_EXAMPLE)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
 
     code, out, err = _verify_cli("minimal")
 
@@ -1113,7 +1113,7 @@ def test_an_env_example_the_system_wont_let_verify_open_exits_3(repo: Path, uv: 
     (repo / ENV_EXAMPLE).write_text("A=1\n")
     _git(repo, "add", ENV_EXAMPLE)
     (repo / ENV_EXAMPLE).chmod(0)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     try:
         code, _, err = _verify_cli("minimal")
     finally:
@@ -1130,7 +1130,7 @@ def test_an_env_example_verify_isnt_allowed_to_resolve_exits_3(repo: Path, uv: P
     (locked / "env").write_text("A=1\n")
     (repo / ENV_EXAMPLE).symlink_to(locked / "env")
     _git(repo, "add", ENV_EXAMPLE, "locked/env")
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     locked.chmod(0o600)
     try:
         code, out, err = _verify_cli("minimal")
@@ -1151,7 +1151,7 @@ def test_verify_refuses_a_nameless_pyproject_itself(repo: Path) -> None:
 
 def test_a_pyproject_verify_isnt_allowed_to_resolve_exits_3(repo: Path, uv: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(repo)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
     (repo / "backend").chmod(0o600)
     try:
         code, out, err = _verify_cli("minimal")
@@ -1261,7 +1261,7 @@ def test_an_env_example_6_1_refuses_exits_1_before_anything_is_built_saying_why(
 ) -> None:
     monkeypatch.chdir(repo)
     _env_repo(repo, example)
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: pytest.fail("built"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
 
     code, out, err = _verify_cli("minimal")
 

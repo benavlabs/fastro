@@ -17,7 +17,7 @@ from fastro.engine import blueprint
 from fastro.engine.plan import starting_lock
 from fastro.engine.resolve import select
 from fastro.engine.spec import RepoPath
-from fastro.verify import build, checks_for, verify
+from fastro.verify import Unbuildable, build, checks_for, verify
 
 MINI = Path(__file__).parent / "fixtures" / "blueprints" / "mini"
 TEXT = (MINI / "blueprint.toml").read_text()
@@ -93,6 +93,31 @@ def test_a_python_root_lock_that_is_a_symlink_refuses_the_build_without_trying_t
     assert not (tmp_path / "core").exists()
 
 
+def test_a_build_leaves_out_what_export_ignore_marks(repo: Path, tmp_path: Path) -> None:
+    _track(repo, {".gitattributes": b"backend/tests/ export-ignore\n", "uv.lock": b"version = 1\n"})
+
+    project = build(repo, CATALOG, ("accounts",), tmp_path / "accounts")
+
+    assert (project / "backend/src/modules/accounts").is_dir()
+    assert not (project / "backend/tests").exists()
+
+
+@pytest.mark.parametrize("marked", ["backend/src/modules/accounts/routes.py", "uv.lock"])
+def test_a_build_refuses_a_file_it_would_copy_that_export_subst_is_set_on(repo: Path, tmp_path: Path, marked: str) -> None:
+    _track(repo, {".gitattributes": f"/{marked} export-subst\n".encode(), "uv.lock": b"version = 1\n"})
+
+    with pytest.raises(Unbuildable, match=f"{marked} has git's export-subst attribute set"):
+        build(repo, CATALOG, ("accounts",), tmp_path / "accounts")
+
+    assert not (tmp_path / "accounts").exists()
+
+
+def test_a_build_doesn_t_refuse_a_file_export_subst_marks_that_it_wouldn_t_copy(repo: Path, tmp_path: Path) -> None:
+    _track(repo, {".gitattributes": b"backend/src/modules/cache/settings.py export-subst\n"})
+
+    assert (build(repo, CATALOG, (), tmp_path / "core") / "backend").is_dir()
+
+
 @pytest.mark.usefixtures("hang_guard")
 @pytest.mark.parametrize("make", ["directory", "fifo"])
 @pytest.mark.parametrize(
@@ -116,7 +141,7 @@ def test_verify_prints_the_lock_each_build_started_from_or_none(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], locks: list[str], line: str
 ) -> None:
     _track(repo, {name: b"version = 1\n" for name in locks})
-    monkeypatch.setattr("fastro.verify.tempfile.mkdtemp", lambda prefix: str(tmp_path / "scratch"))
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: str(tmp_path / "scratch"))
 
     code = verify(repo, CATALOG, ["minimal", "queues"], lambda project, selection: [], keep=False)
 

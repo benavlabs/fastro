@@ -18,7 +18,7 @@ from packaging.version import InvalidVersion, Version
 from fastro import make
 from fastro import pyproject as rewriting
 from fastro import sync as syncing
-from fastro.apply import RepositoryError, tracked_files
+from fastro.apply import RepositoryError, export_subst, tracked_files
 from fastro.engine import bindings, catalog_check, envfile, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.files import breaks_the_rule, present, unreadable, unreadable_config
@@ -31,7 +31,7 @@ from fastro.engine.resolve import SelectionError, select
 from fastro.engine.spec import Ref, RepoPath
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR001", "FR002", "FR014", "FR016")
+RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "BP007", "FR001", "FR002", "FR014", "FR016")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
 APP_FIX = "Point app at a module the repo has, or add its file to git."
@@ -156,6 +156,7 @@ def lint(root: Path) -> Report:
         found.extend(_unresolved_refs(root, catalog, tracked, catalog.document, _declared_refs(catalog)))
         found.extend(_open_verify_sets(catalog))
         found.extend(_name_clashes(catalog))
+        found.extend(_substituted(root, catalog, tracked))
         found.extend(_unmatched_pyproject(root, catalog, tracked))
         found.extend(_unmergeable(catalog))
         found.extend(_unmarked_env(root, catalog, tracked))
@@ -419,6 +420,20 @@ class Unread:
 
     reason: str
     fix: str
+
+
+def _substituted(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """BP007: each tracked file git's ``export-subst`` attribute is set on, at ``[blueprint]`` (1.7, 2.13)."""
+    return [
+        catalog.document.problem(
+            ("blueprint",),
+            f"{path.text} has git's export-subst attribute set, so a tarball of the repo would expand its placeholders "
+            "and a clone wouldn't, and every source refuses it.",
+            f"Remove export-subst for {path.text} from .gitattributes.",
+            "BP007",
+        )
+        for path in export_subst(root, map(RepoPath, sorted(tracked)))
+    ]
 
 
 def project_table(root: Path, file: str, tracked: set[str], reader: str, strict: bool = False) -> dict[str, Any] | Unread:

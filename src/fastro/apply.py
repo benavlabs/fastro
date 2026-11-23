@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Collection, Iterable, Mapping
+import tempfile
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from fastro.engine.files import file_kind, present
 from fastro.engine.plan import Plan
 from fastro.engine.spec import RepoPath
 from fastro.tools import require
+
+EXPORT_IGNORE = "export-ignore"
+EXPORT_SUBST = "export-subst"
 
 
 class RepositoryError(Exception):
@@ -36,7 +40,8 @@ class Change:
 
 
 def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
-    """The files git tracks in ``repo``, sorted by path as git lists them, leaving out one deleted from the working tree.
+    """The files git tracks in ``repo``, sorted by path as git lists them, leaving out one deleted from the working tree
+    and one ``export-ignore`` marks, as ``git archive`` does (spec 1.7, 2.13).
 
     One fastro can't check, in a directory it isn't allowed to search, is kept, so whoever reads it says why it can't.
 
@@ -49,7 +54,64 @@ def tracked_files(repo: Path) -> tuple[RepoPath, ...]:
     if listed.returncode != 0:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
     names = [name for name in listed.stdout.split("\0") if name and _in_working_tree(repo / name)]
-    return tuple(RepoPath(name) for name in names)
+    directories = sorted({directory for name in names for directory in _above(name)})
+    ignored = _set(repo, [*names, *directories], EXPORT_IGNORE)
+    return tuple(RepoPath(name) for name in names if ignored.isdisjoint([name, *_above(name)]))
+
+
+def _above(name: str) -> list[str]:
+    """Each directory ``name`` sits in, written as ``dir/``, which is how an ``export-ignore`` directory pattern
+    matches it."""
+    parts = name.split("/")[:-1]
+    return [f"{'/'.join(parts[: count + 1])}/" for count in range(len(parts))]
+
+
+def export_subst(repo: Path, files: Iterable[RepoPath]) -> tuple[RepoPath, ...]:
+    """Each of ``files`` that git's ``export-subst`` attribute is set on itself, by ``repo``'s own ``.gitattributes``
+    files (spec 1.7), in the order given.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+    """
+    given = [path.text for path in files]
+    marked = _set(repo, given, EXPORT_SUBST)
+    return tuple(RepoPath(name) for name in given if name in marked)
+
+
+def _set(repo: Path, names: Sequence[str], attribute: str) -> set[str]:
+    """Which of ``names`` ``attribute`` is set on, by the working tree's ``.gitattributes`` files alone, matched case
+    by case as on Linux: never ``core.attributesFile``, the system's attributes, ``$GIT_DIR/info/attributes``, a git
+    template's, or a repo the environment's git variables name (spec 1.7)."""
+    if not names:
+        return set()
+    git = require("git")
+    local = subprocess.run([git, "rev-parse", "--local-env-vars"], capture_output=True, text=True, check=True)
+    unset = {*local.stdout.split(), "GIT_ATTR_SOURCE"}
+    env = {name: value for name, value in os.environ.items() if name not in unset} | {"GIT_ATTR_NOSYSTEM": "1"}
+    with tempfile.TemporaryDirectory(prefix="fastro-attributes-") as empty:
+        subprocess.run([git, "init", "-q", "--bare", "--template=", empty], capture_output=True, check=True, env=env)
+        checked = subprocess.run(
+            [
+                git,
+                f"--git-dir={empty}",
+                f"--work-tree={repo}",
+                "-c",
+                f"core.attributesFile={os.devnull}",
+                "-c",
+                "core.ignoreCase=false",
+                "check-attr",
+                "-z",
+                "--stdin",
+                attribute,
+            ],
+            input="\0".join(names) + "\0",
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        )
+    fields = checked.stdout.split("\0")
+    return {fields[index] for index in range(0, len(fields) - 2, 3) if fields[index + 2] == "set"}
 
 
 def _in_working_tree(path: Path) -> bool:

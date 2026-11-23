@@ -75,7 +75,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "FR001", "FR002", "FR014", "FR016"],
+        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "BP007", "FR001", "FR002", "FR014", "FR016"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -307,6 +307,33 @@ def test_a_declared_file_path_that_isnt_tracked_is_bp002_at_its_line(repo: Path)
         "features.accounts.paths[1]: 'backend/tests/test_accounts.py' isn't a tracked file in the repo."
     )
     assert finding["fix"] == "Fix the path, or add the file to git."
+
+
+def test_a_declared_file_path_export_ignore_marks_is_bp002_since_no_project_receives_it(repo: Path) -> None:
+    (repo / ".gitattributes").write_text("backend/tests/ export-ignore\n")
+    _git(repo, "add", ".gitattributes")
+
+    found = sorted((finding["code"], finding["message"]) for finding in _findings())
+
+    assert ("BP002", "features.accounts.paths[1]: 'backend/tests/test_accounts.py' isn't a tracked file in the repo.") in found
+    assert {code for code, _ in found} == {"BP002"}
+
+
+def test_a_tracked_file_export_subst_is_set_on_is_bp007_at_blueprint_naming_it(repo: Path) -> None:
+    (repo / ".gitattributes").write_text("README.md export-subst\nnotes/ export-subst\nvalued.md export-subst=yes\n")
+    for name in ("README.md", "notes/n.md", "valued.md"):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text("")
+    _git(repo, "add", ".gitattributes", "README.md", "notes/n.md", "valued.md")
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["line"], finding["code"]) == ("blueprint.toml", 1, "BP007")
+    assert finding["message"] == (
+        "blueprint: README.md has git's export-subst attribute set, so a tarball of the repo would expand its "
+        "placeholders and a clone wouldn't, and every source refuses it."
+    )
+    assert finding["fix"] == "Remove export-subst for README.md from .gitattributes."
 
 
 def test_a_declared_file_path_deleted_from_the_working_tree_is_bp002(repo: Path) -> None:
