@@ -1,6 +1,7 @@
 """The release workflow builds and dry-runs a publish on every push with no credentials, and releases only from a
 manual run on the default branch for the package version, untagged yet: it publishes what it built through trusted
-publishing, then tags that commit and makes a GitHub release of the same files (A13a)."""
+publishing, then tags that commit and makes a GitHub release of the same files, a pre-release for a pre or development
+version so it's never the latest (A13a)."""
 
 import os
 import re
@@ -12,6 +13,7 @@ from typing import Any
 
 import pytest
 import yaml
+from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
@@ -189,7 +191,8 @@ def _check(clone: Path, version: str, ref: str, default: str = "main") -> subpro
     )
 
 
-def test_the_release_step_tags_the_built_commit_and_releases_the_built_files(tmp_path: Path) -> None:
+def _release(tmp_path: Path, version: str) -> list[str]:
+    """The arguments the release step hands ``gh`` for ``version``, from a stub ``gh`` on ``PATH``."""
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     gh = bin_ / "gh"
@@ -202,14 +205,16 @@ def test_the_release_step_tags_the_built_commit_and_releases_the_built_files(tmp
         **os.environ,
         "PATH": f"{bin_}:{os.environ['PATH']}",
         "OUT": str(tmp_path / "argv"),
-        "VERSION": "1.2.3",
+        "VERSION": version,
         "GITHUB_SHA": "c" * 40,
         "GITHUB_REPOSITORY": "acme/fastro",
     }
-
     subprocess.run(["bash", "-e", "-c", _step("release", RELEASE)["run"]], cwd=tmp_path, env=env, check=True)
+    return (tmp_path / "argv").read_text().splitlines()
 
-    assert (tmp_path / "argv").read_text().splitlines() == [
+
+def test_the_release_step_tags_the_built_commit_and_releases_the_built_files(tmp_path: Path) -> None:
+    assert _release(tmp_path, "1.2.3") == [
         "release",
         "create",
         "v1.2.3",
@@ -223,3 +228,37 @@ def test_the_release_step_tags_the_built_commit_and_releases_the_built_files(tmp
         "dist/fastro-1.2.3-py3-none-any.whl",
         "dist/fastro-1.2.3.tar.gz",
     ]
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.2.3",
+        "0.1.0.dev1",
+        "0.1.0a1",
+        "0.1.0b2",
+        "0.1.0rc1",
+        "0.1.0c1",
+        "0.1.0-alpha.1",
+        "0.1.0.beta2",
+        "0.1.0pre1",
+        "0.1.0preview1",
+        "0.1.0RC1",
+        "1.0.post1",
+        "1.0.post1.dev0",
+        "1.0-r1",
+        "1.0rev2",
+        "1!2.0",
+        "1!2.0a1",
+        "1.0+abc.dev",
+        "1.0a1+local",
+        "1.0.DEV3",
+        "v1.0",
+        "V1.0a1",
+    ],
+)
+def test_a_pre_or_development_release_is_marked_a_prerelease(tmp_path: Path, version: str) -> None:
+    argv = _release(tmp_path, version)
+
+    assert ("--prerelease" in argv) is Version(version).is_prerelease
+    assert argv[2] == f"v{version}"
