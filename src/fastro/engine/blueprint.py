@@ -169,12 +169,18 @@ class Check:
 
 @dataclass(frozen=True)
 class Verify:
-    """The ``[verify]`` table (2.2)."""
+    """The ``[verify]`` table (2.2). ``sets`` holds each set's features; ``set_options`` holds, for each set written as
+    a table, the option values its ``options`` names, in the order written."""
 
     include_presets: bool = True
     sets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     checks: tuple[Check, ...] = ()
     app: str | None = None
+    set_options: Mapping[str, Mapping[tuple[str, str], str]] = field(default_factory=dict)
+
+    def features_at(self, name: str) -> KeyPath:
+        """Where set ``name``'s features are written: the set itself, or its table's ``features``."""
+        return ("verify", "sets", name, "features") if name in self.set_options else ("verify", "sets", name)
 
 
 @dataclass(frozen=True)
@@ -976,19 +982,25 @@ class Reader:
         return Extends(name, version) if name is not None and version is not None else None
 
     def verify(self, path: KeyPath, table: dict[str, Any], import_root: str | None) -> Verify:
-        sets = {}
-        for at, name, _ in self.named(path, table, "sets", lambda text: spec.label(text, "verify set")):
+        sets, set_options = {}, {}
+        for at, name, value in self.named(path, table, "sets", lambda text: spec.label(text, "verify set")):
             if name == "everything":
                 self.fail(at, "is always there, as the set of every feature.", "Remove it from [verify.sets].")
-            else:
+            elif isinstance(value, dict):
+                written = self.table(at, value, ("features", "options"), ("features",)) or {}
+                sets[name] = self.texts(at, written, "features", spec.feature_name)
+                set_options[name] = self.options((*at, "options"), self.subtable(at, written, "options"))
+            elif isinstance(value, list):
                 sets[name] = self.texts((*path, "sets"), table["sets"], name, spec.feature_name)
+            else:
+                self.wrong(at, "a list of features or a table with features and options", value)
         checks = [self.check(at, item) for at, item in self.tables(path, table, "checks")]
         include = self.flag(path, table, "include_presets")
         app = self.text(path, table, "app", _module)
         if app is not None and import_root is not None and app.split(".")[0] != import_root:
             message = f"{app!r} doesn't start with {import_root!r}, the import_root, and the app is imported from there."
             self.fail((*path, "app"), message, f"Name the app's module under {import_root}, such as '{import_root}.main'.")
-        return Verify(include is not False, sets, tuple(check for check in checks if check is not None), app)
+        return Verify(include is not False, sets, tuple(check for check in checks if check is not None), app, set_options)
 
     def check(self, path: KeyPath, value: dict[str, Any]) -> Check | None:
         table = self.table(path, value, ("name", "run", "cwd", "if"), ("name", "run")) or {}

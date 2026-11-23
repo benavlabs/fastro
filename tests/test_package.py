@@ -40,8 +40,8 @@ def test_the_wheel_is_fastro_at_the_package_version(wheel: zipfile.ZipFile) -> N
     metadata = Parser().parsestr(_dist_info(wheel, "METADATA"))
 
     assert metadata["Name"] == "fastro"
-    assert metadata["Version"] == "0.1.0.dev0"
-    assert fastro.__version__ == "0.1.0.dev0"
+    assert metadata["Version"] == "0.1.0.dev1"
+    assert fastro.__version__ == "0.1.0.dev1"
 
 
 def test_the_wheel_needs_no_backend(wheel: zipfile.ZipFile) -> None:

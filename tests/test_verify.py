@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -180,6 +180,72 @@ def test_a_set_with_no_features_is_core_only(repo: Path, capsys: pytest.CaptureF
     verify(repo, catalog, ["bare"], run, keep=False)  # type: ignore[arg-type]
 
     assert capsys.readouterr().out.startswith("\n=== bare: core only\n  lock: none\n")
+
+
+OPTIONED = (
+    'queues = { features = ["tasks", "billing", "cache"], '
+    'options = { "cache.backend" = "redis", "billing.provider" = "paddle" } }'
+)
+REDIS_ONLY = (
+    'if = "cache.backend=redis"\nservices = ["redis"]\n',
+    'if = "cache.backend=redis"\nservices = ["redis"]\n\n[features.cache.when.contributes]\n'
+    'settings = ["src.modules.cache.redis:RedisSettings"]\n',
+)
+
+
+def test_a_set_s_options_reach_its_build_its_checks_and_its_report(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    text = (MINI / "blueprint.toml").read_text().replace('queues = ["tasks", "cache"]', OPTIONED).replace(*REDIS_ONLY)
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    seen = []
+
+    def run(project: Path, selection: Selection) -> list[Result]:
+        seen.append((selection.options, "RedisSettings" in (project / "backend/src/wiring/app.py").read_text()))
+        return [Result("app imports", True, "fine", "fine")]
+
+    verify(repo, catalog, ["queues", "full"], run, keep=False)
+
+    assert seen[0] == ({("billing", "provider"): "paddle", ("cache", "backend"): "redis"}, True)
+    assert seen[1] == ({("billing", "provider"): "stripe", ("cache", "backend"): "memory"}, False)
+    out = capsys.readouterr().out
+    assert out.startswith(
+        "\n=== queues: accounts, billing, cache, tasks\n  option: cache.backend=redis\n  option: billing.provider=paddle\n"
+        "  lock: none\n  PASS  app imports  fine\n\n=== full: accounts, admin, billing, cache, tasks\n  lock: none\n"
+    )
+
+
+def test_a_set_written_as_a_table_with_a_preset_s_name_builds_with_its_own_features_and_options(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shadow = '\nminimal = { features = ["cache"], options = { "cache.backend" = "redis" } }'
+    text = (MINI / "blueprint.toml").read_text().replace('queues = ["tasks", "cache"]', 'queues = ["tasks", "cache"]' + shadow)
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    seen = []
+
+    def run(project: Path, selection: Selection) -> list[Result]:
+        seen.append((selection.features, selection.options))
+        return [Result("app imports", True, "fine", "fine")]
+
+    verify(repo, catalog, ["minimal"], run, keep=False)
+
+    assert seen == [(("cache",), {("cache", "backend"): "redis"})]
+    assert capsys.readouterr().out.startswith("\n=== minimal: cache\n  option: cache.backend=redis\n  lock: none\n")
+
+
+def test_a_set_written_as_a_table_without_options_builds_with_the_defaults(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = (
+        (MINI / "blueprint.toml")
+        .read_text()
+        .replace('queues = ["tasks", "cache"]', 'queues = { features = ["tasks", "cache"] }')
+    )
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    seen, run = _checks(set())
+
+    verify(repo, catalog, ["queues"], run, keep=False)  # type: ignore[arg-type]
+
+    assert seen == [("queues", ("cache", "tasks"))]
+    assert capsys.readouterr().out.startswith("\n=== queues: cache, tasks\n  lock: none\n")
 
 
 def test_a_passing_run_removes_its_scratch_copies(repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -755,11 +821,16 @@ def test_a_run_that_cant_finish_exits_3_even_after_a_failed_check(
     built = verify_module.build
 
     def second_fails(
-        root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
+        root: Path,
+        catalog: Blueprint,
+        features: Sequence[str],
+        into: Path,
+        tracked: Sequence[RepoPath] | None = None,
+        options: Mapping[tuple[str, str], str] | None = None,
     ) -> Path:
         if into.name == "full":
             raise PermissionError(13, "Permission denied", str(into))
-        return built(root, catalog, features, into, tracked)
+        return built(root, catalog, features, into, tracked, options)
 
     monkeypatch.setattr("fastro.verify.build", second_fails)
 

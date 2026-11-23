@@ -116,6 +116,43 @@ def test_names_that_all_exist_load() -> None:
             "20: verify.sets.queues[0]: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),
         (
+            FEATURES + '[verify.sets.queues]\nfeatures = ["taskq"]\noptions = { "taskq.broker" = "redis" }\n',
+            "20: verify.sets.queues.features[0]: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+        ),
+        (
+            FEATURES + '[verify.sets]\nqueues = { features = ["taskq"] }\n',
+            "20: verify.sets.queues.features[0]: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
+        ),
+        (
+            FEATURES + '[verify.sets.queues]\nfeatures = ["accounts"]\noptions = { "taskiq.broker" = "rabbitmq" }\n',
+            '21: verify.sets.queues.options."taskiq.broker": names taskiq, which verify.sets.queues.features doesn\'t list.\n'
+            "  Add taskiq to verify.sets.queues.features, or drop the option.",
+        ),
+        (
+            FEATURES.replace(
+                'summary = "Users and login"\n',
+                'summary = "Users and login"\n\n[features.accounts.options.mode]\nchoices = ["a", "b"]\ndefault = "a"\n',
+            )
+            + '[verify.sets.queues]\nfeatures = ["taskiq"]\noptions = { "accounts.mode" = "b" }\n',
+            '25: verify.sets.queues.options."accounts.mode": names accounts, which verify.sets.queues.features doesn\'t '
+            "list.\n  Add accounts to verify.sets.queues.features, or drop the option.",
+        ),
+        (
+            FEATURES + '[verify.sets.queues]\nfeatures = ["taskiq"]\noptions = { "taskiq.brokr" = "rabbitmq" }\n',
+            "21: verify.sets.queues.options.\"taskiq.brokr\": 'taskiq.brokr' isn't an option of taskiq.\n  Did you mean "
+            "'broker'?",
+        ),
+        (
+            FEATURES + '[verify.sets.queues]\nfeatures = ["taskiq"]\noptions = { "taskiq.broker" = "kafka" }\n',
+            "21: verify.sets.queues.options.\"taskiq.broker\": 'kafka' isn't a choice of taskiq.broker.\n  The choices are "
+            "redis, rabbitmq.",
+        ),
+        (
+            FEATURES + '[verify.sets.queues]\nfeatures = ["accounts"]\noptions = { "taskq.broker" = "redis" }\n',
+            '21: verify.sets.queues.options."taskq.broker": names taskq, which verify.sets.queues.features doesn\'t list.\n'
+            "  Add taskq to verify.sets.queues.features, or drop the option.",
+        ),
+        (
             FEATURES + '[[features.accounts.when]]\nif = "taskq"\n',
             "20: features.accounts.when[\"taskq\"].if: 'taskq' isn't a feature of this catalog.\n  Did you mean 'taskiq'?",
         ),

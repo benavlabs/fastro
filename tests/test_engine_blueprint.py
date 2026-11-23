@@ -218,6 +218,28 @@ def test_without_an_overlay_only_the_kept_files_are_added() -> None:
     assert _load(MINIMAL + 'blueprint_only = ["docs/"]\n').info.all_blueprint_only == (RepoPath("docs/"), *KEPT)
 
 
+def test_a_verify_set_may_be_a_table_with_features_and_options() -> None:
+    verify = _load(
+        MINIMAL
+        + '[features.accounts]\nsummary = "a"\n[features.accounts.options.mode]\nchoices = ["x", "y"]\ndefault = "y"\n'
+        + '[features.cache]\nsummary = "c"\n[features.cache.options.backend]\nchoices = ["redis", "memcached"]\n'
+        + 'default = "redis"\n'
+        + "[verify.sets]\n"
+        + 'mem = { features = ["accounts", "cache"], options = { "cache.backend" = "memcached", "accounts.mode" = "x" } }\n'
+        + 'plain = ["accounts"]\n'
+        + "bare = { features = [] }\n"
+    ).verify
+
+    assert verify.sets == {"mem": ("accounts", "cache"), "plain": ("accounts",), "bare": ()}
+    assert verify.set_options == {"mem": {("cache", "backend"): "memcached", ("accounts", "mode"): "x"}, "bare": {}}
+    assert list(verify.set_options["mem"]) == [("cache", "backend"), ("accounts", "mode")]
+    assert [verify.features_at(name) for name in verify.sets] == [
+        ("verify", "sets", "mem", "features"),
+        ("verify", "sets", "plain"),
+        ("verify", "sets", "bare", "features"),
+    ]
+
+
 def test_presets_and_verify_are_read() -> None:
     blueprint = _load(FULL)
 
@@ -505,7 +527,33 @@ CHECK = '[[verify.checks]]\nname = "x"\nrun = ["npm"]\n'
         ('[presets]\nminimal = "accounts"', "7: presets.minimal: should be a list of strings, not a string."),
         ('[presets]\nminimal = ["core"]', "7: presets.minimal[0]: 'core' is reserved for the files no feature owns."),
         ('[verify]\ninclude_presets = "yes"', "7: verify.include_presets: should be true or false, not a string."),
-        ("[verify]\nsets = { all = 1 }", "7: verify.sets.all: should be a list of strings, not an integer."),
+        (
+            "[verify]\nsets = { all = 1 }",
+            "7: verify.sets.all: should be a list of features or a table with features and options, not an integer.",
+        ),
+        (
+            "[verify.sets]\nmem = { options = {} }",
+            "7: verify.sets.mem.features: is required.\n  Add features to [verify.sets.mem].",
+        ),
+        (
+            "[verify.sets]\nmem = { features = [], extra = 1 }",
+            "7: verify.sets.mem.extra: isn't a key of [verify.sets.mem].\n"
+            "  The keys of [verify.sets.mem] are features, options.",
+        ),
+        (
+            '[verify.sets]\nmem = { features = "accounts" }',
+            "7: verify.sets.mem.features: should be a list of strings, not a string.",
+        ),
+        ("[verify.sets]\nmem = { features = [], options = [] }", "7: verify.sets.mem.options: should be a table, not a list."),
+        (
+            '[verify.sets.mem]\nfeatures = []\noptions = { cache.backend = "memcached" }',
+            "8: verify.sets.mem.options.cache: should be a string, not a table.\n  Quote the whole key, such as "
+            '"cache.backend" = "memcached".',
+        ),
+        (
+            '[verify.sets.mem]\nfeatures = []\noptions = { "cache.backend" = 1 }',
+            '8: verify.sets.mem.options."cache.backend": should be a string, not an integer.',
+        ),
         (
             '[verify.sets]\n"Core only" = []',
             "7: verify.sets.\"Core only\": 'Core only' isn't a valid verify set name: use lowercase letters, "

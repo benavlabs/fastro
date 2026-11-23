@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import difflib
 import string
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Mapping
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
@@ -90,7 +90,8 @@ class _Checker:
                 yield from self.feature(("presets", name, index), member)
         for name, members in catalog.verify.sets.items():
             for index, member in enumerate(members):
-                yield from self.feature(("verify", "sets", name, index), member)
+                yield from self.feature((*catalog.verify.features_at(name), index), member)
+            yield from self.set_options(name, members, catalog.verify.set_options.get(name, {}))
         for check in catalog.verify.checks:
             yield from self.condition((*check.at, "if"), check.condition)
         for file in catalog.wiring:
@@ -286,6 +287,17 @@ class _Checker:
                 yield from self.feature(path, name)
             elif isinstance(atom, conditions.Option) and name in self.features:
                 yield from self.option(path, atom)
+
+    def set_options(self, name: str, members: tuple[str, ...], options: Mapping[tuple[str, str], str]) -> Iterator[Problem]:
+        """A verify set's options, each of a feature the set lists, a declared option of it, and one of its choices."""
+        listed = f"verify.sets.{name}.features"
+        for (feature, option), value in options.items():
+            path = ("verify", "sets", name, "options", f"{feature}.{option}")
+            if feature not in members:
+                fix = f"Add {feature} to {listed}, or drop the option."
+                yield self.problem(path, f"names {feature}, which {listed} doesn't list.", fix)
+            elif feature in self.features:
+                yield from self.option(path, conditions.Option(feature, option, value))
 
     def option(self, path: KeyPath, atom: conditions.Option) -> Iterator[Problem]:
         options = self.features[atom.feature].options

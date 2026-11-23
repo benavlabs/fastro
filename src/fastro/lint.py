@@ -387,7 +387,7 @@ def _open_verify_sets(catalog: Blueprint) -> list[Problem]:
             for required in requires.get(feature, ()):
                 if required not in listed:
                     message = f"lists {feature!r}, which requires {required!r}, and the set doesn't list it."
-                    at = ("verify", "sets", name, index)
+                    at = (*catalog.verify.features_at(name), index)
                     found.append(catalog.document.problem(at, message, f"Add {required!r} to the set.", "BP004"))
     return found
 

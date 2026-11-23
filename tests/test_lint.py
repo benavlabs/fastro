@@ -864,6 +864,17 @@ def test_a_verify_set_without_a_feature_a_listed_one_requires_is_bp004_at_that_e
     assert finding["fix"] == "Add 'accounts' to the set."
 
 
+def test_bp004_covers_a_verify_set_written_as_a_table(repo: Path) -> None:
+    _edit(repo / "blueprint.toml", QUEUES, 'queues = { features = ["tasks", "cache", "admin"] }')
+
+    (finding,) = _findings()
+
+    assert (finding["code"], finding["line"]) == ("BP004", 12)
+    assert finding["message"] == (
+        "verify.sets.queues.features[2]: lists 'admin', which requires 'accounts', and the set doesn't list it."
+    )
+
+
 def test_each_listed_feature_s_missing_requirement_is_its_own_finding(repo: Path) -> None:
     _edit(repo / "blueprint.toml", QUEUES, 'queues = ["billing", "admin"]')
 

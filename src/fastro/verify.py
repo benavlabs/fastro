@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import mkdtemp
@@ -84,12 +84,18 @@ def verify_sets(catalog: Blueprint) -> dict[str, tuple[str, ...]]:
 
 
 def build(
-    root: Path, catalog: Blueprint, features: Sequence[str], into: Path, tracked: Sequence[RepoPath] | None = None
+    root: Path,
+    catalog: Blueprint,
+    features: Sequence[str],
+    into: Path,
+    tracked: Sequence[RepoPath] | None = None,
+    options: Mapping[tuple[str, str], str] | None = None,
 ) -> Path:
-    """The project ``features`` give, built into ``into`` from the tracked files of the blueprint repo at ``root``
-    (``tracked``, or git's list when it's ``None``): what the plan copies, the wiring it renders, its
-    ``{python_root}/pyproject.toml`` and ``{python_root}/.env.example`` rewritten for the selection (6.3, 6.1), and
-    the lock it starts from as ``{python_root}/uv.lock``.
+    """The project ``features`` give, with ``options`` at their values and every other option at its default, built
+    into ``into`` from the tracked files of the blueprint repo at ``root`` (``tracked``, or git's list when it's
+    ``None``): what the plan copies, the wiring it renders, its ``{python_root}/pyproject.toml`` and
+    ``{python_root}/.env.example`` rewritten for the selection (6.3, 6.1), and the lock it starts from as
+    ``{python_root}/uv.lock``.
 
     Raises:
         Unbuildable: the wiring can't be rendered, the selection's runtime dependencies can't be merged,
@@ -98,7 +104,7 @@ def build(
         ApplyError: a file the build would copy is one apply refuses.
     """
     files = tracked_files(root) if tracked is None else tracked
-    selection = select(catalog, features)
+    selection = select(catalog, features, options=options)
     made = plan(catalog, selection, files)
     try:
         rendered = render(made)
@@ -208,14 +214,17 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
     failures = 0
     try:
         for name in names or list(sets):
+            options = catalog.verify.set_options.get(name, {})
             try:
-                project = build(root, catalog, sets[name], scratch / name, tracked)
+                project = build(root, catalog, sets[name], scratch / name, tracked, options)
             except Unbuildable as error:
                 raise Unbuildable(f"verify set {name!r} can't be built: {error}") from None
             except ApplyError as error:
                 raise ApplyError(f"verify set {name!r} can't be built: {error}") from None
-            selection = select(catalog, sets[name])
+            selection = select(catalog, sets[name], options=options)
             print(f"\n=== {name}: {', '.join(sorted(selection.features)) or 'core only'}")
+            for (feature, option), value in options.items():
+                print(f"  option: {feature}.{option}={value}")
             print(f"  lock: {lock.text if lock else 'none'}")
             for result in checks(project, selection):
                 print(report(result))
