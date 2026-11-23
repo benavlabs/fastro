@@ -153,7 +153,7 @@ def test_verify_builds_and_checks_each_set_asked_for_in_its_order(repo: Path, ca
     assert code == 0
     assert seen == [("full", ("accounts", "billing", "cache", "tasks", "admin")), ("queues", ("cache", "tasks"))]
     assert capsys.readouterr().out == (
-        "\n=== full: accounts, admin, billing, cache, tasks\n"
+        "\n=== full: accounts, billing, cache, tasks, admin\n"
         "  lock: none\n"
         "  PASS  app imports  fine\n"
         "\n=== queues: cache, tasks\n"
@@ -209,7 +209,7 @@ def test_a_set_s_options_reach_its_build_its_checks_and_its_report(repo: Path, c
     out = capsys.readouterr().out
     assert out.startswith(
         "\n=== queues: accounts, billing, cache, tasks\n  option: cache.backend=redis\n  option: billing.provider=paddle\n"
-        "  lock: none\n  PASS  app imports  fine\n\n=== full: accounts, admin, billing, cache, tasks\n  lock: none\n"
+        "  lock: none\n  PASS  app imports  fine\n\n=== full: accounts, billing, cache, tasks, admin\n  lock: none\n"
     )
 
 

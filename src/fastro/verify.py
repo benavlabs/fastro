@@ -222,7 +222,7 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
             except ApplyError as error:
                 raise ApplyError(f"verify set {name!r} can't be built: {error}") from None
             selection = select(catalog, sets[name], options=options)
-            print(f"\n=== {name}: {', '.join(sorted(selection.features)) or 'core only'}")
+            print(f"\n=== {name}: {', '.join(selection.features) or 'core only'}")
             for (feature, option), value in options.items():
                 print(f"  option: {feature}.{option}={value}")
             print(f"  lock: {lock.text if lock else 'none'}")
