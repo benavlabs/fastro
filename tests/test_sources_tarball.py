@@ -7,16 +7,19 @@ import io
 import json
 import os
 import stat
+import struct
 import subprocess
 import tarfile
+import zlib
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 from packaging.version import Version
 
+from fastro import sources, tarball
 from fastro.engine.spec import RepoPath
-from fastro.sources import FetchError, NotFound, Tree, _keep, open_gh, parse
+from fastro.sources import FetchError, Limits, NotFound, SourceError, Tree, _keep, open_gh, parse
 
 TOOL = Version("0.1.0.dev1")
 API = "https://api.github.com/repos/acme/bp"
@@ -49,13 +52,23 @@ def _archive(tmp_path: Path, requires: str = ">=0.1.0.dev0") -> tuple[bytes, str
 Member = tuple[str, str, str]
 
 
-def _tarball(commit: str, *members: Member, comment: str | None = None) -> bytes:
+def _tarball(commit: str, *members: Member, comment: str | None = None, parents: bool = True) -> bytes:
     """A tarball holding ``members``, each ``(name, kind, data)``: a kind of ``file``, ``dir``, ``symlink`` or
-    ``hardlink`` (data is the target), ``fifo`` or ``chr``; the global header's comment is ``commit``."""
+    ``hardlink`` (data is the target), ``fifo`` or ``chr``; the global header's comment is ``commit``. Each
+    directory a member sits in under the first member is listed before it, as ``git archive`` lists them."""
     out = io.BytesIO()
     headers = {"comment": comment if comment is not None else commit}
+    listed: list[Member] = []
+    for name, kind, data in members:
+        parts = name.split("/")
+        if parents and listed and parts[0] == listed[0][0] and all(part not in ("", ".", "..") for part in parts):
+            for depth in range(2, len(parts)):
+                parent = "/".join(parts[:depth])
+                if all(parent != seen for seen, _, _ in listed):
+                    listed.append((parent, "dir", ""))
+        listed.append((name, kind, data))
     with tarfile.open(fileobj=out, mode="w:gz", format=tarfile.PAX_FORMAT, pax_headers=headers) as archive:
-        for name, kind, data in members:
+        for name, kind, data in listed:
             info = tarfile.TarInfo(name)
             info.type = {
                 "file": tarfile.REGTYPE,
@@ -85,9 +98,11 @@ class Fake:
     def __init__(self, answers: Mapping[str, bytes]) -> None:
         self.answers = dict(answers)
         self.asked: list[tuple[str, dict[str, str]]] = []
+        self.limits: list[int | None] = []
 
-    def __call__(self, url: str, headers: Mapping[str, str]) -> bytes:
+    def __call__(self, url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes:
         self.asked.append((url, dict(headers)))
+        self.limits.append(limit)
         if url not in self.answers:
             raise NotFound(f"{url} answered 404 Not Found", 404)
         return self.answers[url]
@@ -97,8 +112,11 @@ def _pinned(ref: str, commit: str, tarball: bytes) -> Fake:
     return Fake({f"{API}/commits/{ref}": commit.encode(), f"{API}/tarball/{commit}": tarball})
 
 
-def _offline(url: str, headers: Mapping[str, str]) -> bytes:
+def _offline(url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes:
     raise AssertionError(f"--offline asked for {url}")
+
+
+LIMITS = Limits(200 * 10**6, 10**9)
 
 
 def _entries(cache: Path) -> Path:
@@ -193,26 +211,26 @@ def test_a_tree_without_a_readable_catalog_at_its_root_is_a_fetch_failure(
         ([("/etc/x", "file", "")], r"'/etc/x', which leads outside the tree"),
         ([("TOP/../x", "file", "")], r"'TOP/\.\./x', which leads outside the tree"),
         ([("TOP/./x", "file", "")], r"'TOP/\./x', which leads outside the tree"),
-        ([("TOP//x", "file", "")], r"'TOP//x', which leads outside the tree"),
+        ([("TOP//x", "file", "")], r"'TOP//x', which has an empty name in it"),
         ([("other/x", "file", "")], r"'other/x', which isn't under the tarball's one top directory"),
         ([("TOP/h", "hardlink", "TOP/blueprint.toml")], r"'TOP/h', which is a hard link"),
         ([("TOP/f", "fifo", "")], r"'TOP/f', which is a FIFO"),
         ([("TOP/c", "chr", "")], r"'TOP/c', which is a device"),
         ([("TOP/l", "symlink", "/etc/passwd")], r"'TOP/l', which is a symlink that leads outside the tree"),
         ([("TOP/d/l", "symlink", "../../x")], r"'TOP/d/l', which is a symlink that leads outside the tree"),
-        ([("TOP/l", "symlink", "")], r"'TOP/l', which is a symlink that leads outside the tree"),
+        ([("TOP/l", "symlink", "")], r"'TOP/l', which is a symlink with an empty target"),
         (
             [("TOP/d/a", "symlink", ".."), ("TOP/d/x", "symlink", "a/../..")],
             r"'TOP/d/x', which is a symlink that leads outside",
         ),
         (
             [("TOP/l", "symlink", "s"), ("TOP/s", "dir", ""), ("TOP/l/f", "file", "")],
-            r"'TOP/l/f', which is under a symlink or a file",
+            r"'TOP/l/f', which isn't in a directory listed before it",
         ),
         ([("TOP/blueprint.toml", "file", "again")], r"'TOP/blueprint\.toml', which is there twice"),
-        ([("TOP/blueprint.toml", "dir", "")], r"'TOP/blueprint\.toml', which is there twice"),
+        ([("TOP/blueprint.toml", "dir", "")], r"'TOP/blueprint\.toml/', which is there twice"),
         ([("TOP/x", "file", ""), ("TOP/x", "symlink", "blueprint.toml")], r"'TOP/x', which is there twice"),
-        ([("TOP/d", "dir", ""), ("TOP/d", "dir", "")], r"'TOP/d', which is there twice"),
+        ([("TOP/d", "dir", ""), ("TOP/d", "dir", "")], r"'TOP/d/', which is there twice"),
     ],
 )
 def test_a_member_that_doesn_t_stay_a_plain_file_inside_the_tree_fails_the_fetch_and_nothing_is_kept(
@@ -251,7 +269,9 @@ def test_a_tarball_of_another_commit_fails_the_fetch(tmp_path: Path, comment: st
     assert os.listdir(_entries(tmp_path)) == []
 
 
-@pytest.mark.parametrize("damage", ["not gzip", "cut", "corrupt deflate", "not tar", "tar cut mid-member"])
+@pytest.mark.parametrize(
+    "damage", ["not gzip", "cut", "corrupt deflate", "tar cut mid-member", "wrong crc", "bytes after the gzip stream"]
+)
 def test_a_body_that_isn_t_a_whole_gzipped_tarball_fails_the_fetch(tmp_path: Path, damage: str) -> None:
     tarball, commit = _archive(tmp_path)
     deflate = bytearray(tarball)
@@ -261,8 +281,9 @@ def test_a_body_that_isn_t_a_whole_gzipped_tarball_fails_the_fetch(tmp_path: Pat
         "not gzip": b"not a tarball",
         "cut": tarball[: len(tarball) // 2],
         "corrupt deflate": bytes(deflate),
-        "not tar": gzip.compress(b"hello world" * 100),
         "tar cut mid-member": gzip.compress(gzip.decompress(big)[:4096]),
+        "wrong crc": tarball[:-8] + bytes(byte ^ 0xFF for byte in tarball[-8:-4]) + tarball[-4:],
+        "bytes after the gzip stream": tarball + bytes(512),
     }[damage]
 
     with pytest.raises(FetchError, match=f"gh:acme/bp@{commit}'s tarball isn't a whole gzipped tar"):
@@ -345,13 +366,15 @@ def test_offline_with_no_cached_release_this_fastro_reads_is_a_fetch_failure(tmp
         open_gh(parse("gh:acme/bp"), TOOL, tmp_path, offline=True, fetch=_offline, environ={})
 
 
-def test_a_directory_listed_after_what_it_holds_is_kept_once(tmp_path: Path) -> None:
+def test_a_member_listed_before_its_directory_fails_the_fetch_and_nothing_is_kept(tmp_path: Path) -> None:
     commit = "c" * 40
-    tarball = _good(commit, (f"bp-{commit}/d/x", "file", "x"), (f"bp-{commit}/d", "dir", ""))
+    top = f"bp-{commit}"
+    body = _tarball(commit, (top, "dir", ""), (f"{top}/d/x", "file", "x"), parents=False)
+    message = f"gh:acme/bp@{commit}'s tarball has '{top}/d/x', which isn't in a directory listed before it"
 
-    tree = open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=_pinned("v1", commit, tarball), environ={})
-
-    assert tree.files == (RepoPath("blueprint.toml"), RepoPath("d/x"))
+    with pytest.raises(FetchError, match=message):
+        open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=_pinned("v1", commit, body), environ={})
+    assert os.listdir(_entries(tmp_path)) == []
 
 
 def test_a_commit_another_run_kept_first_is_left_as_it_is(tmp_path: Path) -> None:
@@ -359,7 +382,7 @@ def test_a_commit_another_run_kept_first_is_left_as_it_is(tmp_path: Path) -> Non
     (tmp_path / commit / "tree").mkdir(parents=True)
     (tmp_path / commit / "tree" / "theirs").write_text("")
 
-    _keep(_good(commit), "gh:acme/bp@v1", commit, tmp_path)
+    _keep(_good(commit), "gh:acme/bp@v1", commit, tmp_path, LIMITS)
 
     assert sorted(os.listdir(tmp_path)) == [commit]
     assert os.listdir(tmp_path / commit / "tree") == ["theirs"]
@@ -370,7 +393,7 @@ def test_a_cache_entry_fastro_can_t_put_in_place_is_an_os_error_and_nothing_else
     (tmp_path / commit).write_text("")
 
     with pytest.raises(OSError):
-        _keep(_good(commit), "gh:acme/bp@v1", commit, tmp_path)
+        _keep(_good(commit), "gh:acme/bp@v1", commit, tmp_path, LIMITS)
 
     assert os.listdir(tmp_path) == [commit]
 
@@ -492,3 +515,183 @@ def test_offline_with_no_ref_reads_the_catalog_under_the_source_s_subdirectory(
     else:
         with pytest.raises(FetchError, match=r"the cache holds no release of gh:acme/bp whose t/blueprint\.toml accepts"):
             open_gh(parse("gh:acme/bp#t"), TOOL, tmp_path, offline=True, fetch=_offline, environ={})
+
+
+def _sized_body(raw: bytes, size: int) -> bytes:
+    """``raw`` gzipped into exactly ``size`` bytes, the gzip header's file name taking up the room."""
+    compress = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS)
+    deflated = compress.compress(raw) + compress.flush()
+    trailer = struct.pack("<II", zlib.crc32(raw), len(raw))
+    name = b"x" * (size - 10 - len(deflated) - len(trailer) - 1)
+    return b"\x1f\x8b\x08\x08" + bytes(4) + b"\x02\x03" + name + b"\0" + deflated + trailer
+
+
+def _sized(commit: str, *sizes: int) -> bytes:
+    """A tarball of a readable catalog and one file of each of ``sizes`` bytes, with the catalog's own size taken
+    off the first, so the members' sizes add up to ``sum(sizes)``."""
+    top = f"bp-{commit}"
+    catalog = CATALOG.format(requires=">=0")
+    payloads = [sizes[0] - len(catalog), *sizes[1:]]
+    return _good(commit, *[(f"{top}/f{index}", "file", "x" * size) for index, size in enumerate(payloads)])
+
+
+@pytest.fixture
+def small(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The limits scaled down: a megabyte of two bytes, so 200 MB is 400 bytes and 1 GB is 2000, and 4 members."""
+    monkeypatch.setattr(sources, "MB", 2)
+    monkeypatch.setattr(tarball, "MEMBERS", 4)
+
+
+def test_the_tarball_is_asked_for_with_the_download_limit_and_nothing_else_is(tmp_path: Path) -> None:
+    commit = "c" * 40
+    fake = _pinned("v1", commit, _good(commit))
+
+    open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ={})
+
+    assert fake.limits == [None, 200 * 10**6]
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize(
+    ("environ", "size", "kept"),
+    [
+        ({}, 400, True),
+        ({}, 401, False),
+        ({"FASTRO_MAX_SOURCE_MB": "300"}, 600, True),
+        ({"FASTRO_MAX_SOURCE_MB": "300"}, 601, False),
+    ],
+)
+def test_a_tarball_over_the_download_limit_fails_the_fetch_and_nothing_is_kept(
+    tmp_path: Path, environ: dict[str, str], size: int, kept: bool
+) -> None:
+    commit = "c" * 40
+    body = _sized_body(gzip.decompress(_good(commit)), size)
+    assert len(body) == size
+    fake = _pinned("v1", commit, body)
+    limit = environ.get("FASTRO_MAX_SOURCE_MB", "200")
+
+    if kept:
+        assert open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ=environ).commit == commit
+    else:
+        message = (
+            f"gh:acme/bp@{commit}'s tarball is over {limit} MB downloaded, the most fastro fetches \\(1.10\\)\\. "
+            "Set FASTRO_MAX_SOURCE_MB to raise it."
+        )
+        with pytest.raises(FetchError, match=message):
+            open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ=environ)
+        assert not _entries(tmp_path).exists() or os.listdir(_entries(tmp_path)) == []
+    assert fake.limits[-1] == 2 * int(limit)
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize(
+    ("environ", "sizes", "over"),
+    [
+        ({}, (1200, 800), None),
+        ({}, (1200, 801), "1 GB"),
+        ({"FASTRO_MAX_SOURCE_MB": "201"}, (2010,), None),
+        ({"FASTRO_MAX_SOURCE_MB": "201"}, (2011,), "1005 MB"),
+        ({"FASTRO_MAX_SOURCE_MB": "400"}, (2000, 2000), None),
+        ({"FASTRO_MAX_SOURCE_MB": "400"}, (2000, 2001), "2 GB"),
+    ],
+)
+def test_a_tarball_over_the_extracted_limit_fails_the_fetch_and_nothing_is_kept(
+    tmp_path: Path, environ: dict[str, str], sizes: tuple[int, ...], over: str | None
+) -> None:
+    commit = "c" * 40
+    fake = _pinned("v1", commit, _sized(commit, *sizes))
+
+    if over is None:
+        assert open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ=environ).commit == commit
+    else:
+        message = (
+            f"gh:acme/bp@{commit}'s tarball is over {over} extracted, the most fastro keeps \\(1.10\\)\\. "
+            "Set FASTRO_MAX_SOURCE_MB to raise it."
+        )
+        with pytest.raises(FetchError, match=message):
+            open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ=environ)
+        assert os.listdir(_entries(tmp_path)) == []
+
+
+@pytest.mark.usefixtures("small")
+@pytest.mark.parametrize(("files", "environ"), [(2, {}), (3, {}), (3, {"FASTRO_MAX_SOURCE_MB": "1000"})])
+def test_a_tarball_with_more_members_than_the_limit_fails_the_fetch_and_nothing_is_kept(
+    tmp_path: Path, files: int, environ: dict[str, str]
+) -> None:
+    commit = "c" * 40
+    top = f"bp-{commit}"
+    fake = _pinned("v1", commit, _good(commit, *[(f"{top}/f{index}", "file", "") for index in range(files)]))
+
+    if files == 2:
+        assert open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ=environ).commit == commit
+    else:
+        with pytest.raises(FetchError, match=f"gh:acme/bp@{commit}'s tarball has more than 4 members, the most fastro keeps"):
+            open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ=environ)
+        assert os.listdir(_entries(tmp_path)) == []
+
+
+def test_the_member_limit_is_written_with_a_thousands_separator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tarball, "MEMBERS", 50_000)
+    commit = "c" * 40
+    top = f"bp-{commit}"
+    body = _good(commit, *[(f"{top}/d{index}", "dir", "") for index in range(49_999)])
+
+    with pytest.raises(FetchError, match=f"gh:acme/bp@{commit}'s tarball has more than 50,000 members"):
+        open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=_pinned("v1", commit, body), environ={})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "199",
+        "0",
+        "abc",
+        "2e2",
+        " 300",
+        "300 ",
+        "300\n",
+        "-300",
+        "+300",
+        "300.0",
+        "\u0663\u0660\u0660",
+        "300MB",
+        "0" * 5000,
+        "0" * 5000 + "199",
+    ],
+)
+def test_a_max_source_mb_that_isn_t_a_whole_number_of_200_or_more_is_a_usage_error_before_anything_is_asked(
+    tmp_path: Path, value: str
+) -> None:
+    commit = "c" * 40
+    open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=_pinned("v1", commit, _good(commit)), environ={})
+    environ = {"FASTRO_MAX_SOURCE_MB": value}
+    message = f"FASTRO_MAX_SOURCE_MB is {value!r}. Set it to a whole number of MB, 200 or more, or unset it."
+
+    for offline in (False, True):
+        with pytest.raises(SourceError) as caught:
+            open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, offline=offline, fetch=_offline, environ=environ)
+        assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(
+    ("value", "megabytes"),
+    [
+        ("", 200),
+        ("200", 200),
+        ("0200", 200),
+        ("1000", 1000),
+        ("999999999999", 999_999_999_999),
+        ("1000000000000", 10**12),
+        ("9" * 5000, 10**12),
+        ("0" * 5000 + "300", 300),
+    ],
+)
+def test_a_max_source_mb_that_s_empty_or_a_whole_number_of_200_or_more_is_read(
+    tmp_path: Path, value: str, megabytes: int
+) -> None:
+    commit = "c" * 40
+    fake = _pinned("v1", commit, _good(commit))
+
+    open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ={"FASTRO_MAX_SOURCE_MB": value})
+
+    assert fake.limits[-1] == megabytes * 10**6

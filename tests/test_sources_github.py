@@ -2,6 +2,7 @@
 catalog accepts this fastro, through GitHub's API, with ``GITHUB_TOKEN`` sent as a header and never anywhere else."""
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -13,6 +14,7 @@ from typing import Any
 import pytest
 from packaging.version import Version
 
+from fastro import sources
 from fastro.sources import FetchError, NotFound, Resolved, _SameHostAuthorization, http_get, parse, resolve_gh
 
 TOOL = Version("0.1.0.dev1")
@@ -31,9 +33,11 @@ class Fake:
     def __init__(self, answers: Mapping[str, bytes | FetchError]) -> None:
         self.answers = dict(answers)
         self.requests: list[tuple[str, dict[str, str]]] = []
+        self.limits: list[int | None] = []
 
-    def __call__(self, url: str, headers: Mapping[str, str]) -> bytes:
+    def __call__(self, url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes:
         self.requests.append((url, dict(headers)))
+        self.limits.append(limit)
         answer = self.answers.get(url, NotFound(f"{url} answered 404 Not Found", 404))
         if isinstance(answer, FetchError):
             raise answer
@@ -102,6 +106,7 @@ def test_with_no_ref_the_highest_release_whose_catalog_accepts_this_fastro_is_ta
         _contents("v0.22.0"),
         _contents("v0.21.1%2Bx.y"),
         _contents("v0.21.0"),
+        _contents("v0.21.0", ".gitattributes"),
         _commit("v0.21.0"),
     ]
     listing, contents = fake.requests[0][1], fake.requests[1][1]
@@ -151,6 +156,176 @@ def test_releases_on_every_page_are_ordered_together_before_any_catalog_is_read(
     resolved, asked = _highest("v0.20.0", "v0.22.0", pages=2)
 
     assert (resolved.ref, asked) == ("v0.22.0", ["v0.22.0"])
+
+
+def _walk(source: str, attributes: Mapping[str, str]) -> tuple[Resolved, list[str]]:
+    """What resolving ``source`` takes when ``v0.22.0`` and ``v0.21.0`` both have a catalog this fastro reads under
+    its ``#SUBDIR`` and ``v0.22.0`` has the ``.gitattributes`` files in ``attributes``, and the paths it asked for."""
+    catalog = source.partition("#")[2]
+    catalog = f"{catalog}/blueprint.toml" if catalog else "blueprint.toml"
+    answers = dict([_releases(_release("v0.21.0"), _release("v0.22.0"))])
+    for tag in ("v0.22.0", "v0.21.0"):
+        answers[_contents(tag, catalog)] = _catalog()
+        answers[_commit(tag)] = SHA.encode()
+    for path, text in attributes.items():
+        answers[_contents("v0.22.0", path)] = text.encode()
+    fake = Fake(answers)
+    resolved = resolve_gh(parse(source), TOOL, fake, {})
+    prefix = f"{API}/contents/"
+    return resolved, [url.removeprefix(prefix) for url, _ in fake.requests if url.startswith(prefix)]
+
+
+@pytest.mark.parametrize(
+    ("source", "attributes"),
+    [
+        ("gh:acme/bp", {".gitattributes": "blueprint.toml export-ignore\n"}),
+        ("gh:acme/bp", {".gitattributes": "/blueprint.toml export-ignore\n"}),
+        ("gh:acme/bp", {".gitattributes": "*.toml export-ignore\n"}),
+        ("gh:acme/bp", {".gitattributes": "[attr]gone export-ignore\nblueprint.toml gone\n"}),
+        ("gh:acme/bp#t/api", {".gitattributes": "t/ export-ignore\n"}),
+        ("gh:acme/bp#t/api", {".gitattributes": "api/ export-ignore\n"}),
+        ("gh:acme/bp#t/api", {".gitattributes": "t/api/blueprint.toml export-ignore\n"}),
+        ("gh:acme/bp#t/api", {"t/.gitattributes": "api/ export-ignore\n"}),
+        ("gh:acme/bp#t/api", {"t/api/.gitattributes": "blueprint.toml export-ignore\n"}),
+        (
+            "gh:acme/bp#t/api",
+            {".gitattributes": "t/api/blueprint.toml -export-ignore\n", "t/.gitattributes": "api/** export-ignore\n"},
+        ),
+    ],
+)
+def test_with_no_ref_a_tag_whose_catalog_export_ignore_marks_is_skipped(source: str, attributes: Mapping[str, str]) -> None:
+    resolved, _ = _walk(source, attributes)
+
+    assert resolved == Resolved("v0.21.0", SHA)
+
+
+@pytest.mark.parametrize(
+    ("source", "attributes"),
+    [
+        ("gh:acme/bp", {}),
+        ("gh:acme/bp", {".gitattributes": "docs/ export-ignore\nblueprint.toml export-subst\n"}),
+        ("gh:acme/bp", {".gitattributes": "Blueprint.toml export-ignore\n"}),
+        ("gh:acme/bp", {".gitattributes": "blueprint.toml -export-ignore\n"}),
+        ("gh:acme/bp", {"docs/.gitattributes": "* export-ignore\n"}),
+        ("gh:acme/bp#t/api", {".gitattributes": "/api/ export-ignore\n"}),
+        (
+            "gh:acme/bp#t/api",
+            {
+                ".gitattributes": "t/api/blueprint.toml export-ignore\n",
+                "t/api/.gitattributes": "blueprint.toml -export-ignore\n",
+            },
+        ),
+        ("gh:acme/bp#t/api", {"t/api/blueprint.toml/.gitattributes": "* export-ignore\n"}),
+    ],
+)
+def test_with_no_ref_a_tag_whose_catalog_export_ignore_doesn_t_mark_is_picked(
+    source: str, attributes: Mapping[str, str]
+) -> None:
+    resolved, _ = _walk(source, attributes)
+
+    assert resolved == Resolved("v0.22.0", SHA)
+
+
+def test_the_walk_reads_the_attributes_on_the_catalog_s_path_only_for_a_tag_whose_catalog_reads() -> None:
+    answers = dict([_releases(_release("v0.21.0"), _release("v0.22.0"))])
+    answers[_contents("v0.22.0", "t/api/blueprint.toml")] = _catalog(">=9")
+    answers[_contents("v0.21.0", "t/api/blueprint.toml")] = _catalog()
+    answers[_commit("v0.21.0")] = SHA.encode()
+    fake = Fake(answers)
+
+    resolve_gh(parse("gh:acme/bp#t/api"), TOOL, fake, {})
+
+    prefix = f"{API}/contents/"
+    assert [url.removeprefix(prefix) for url, _ in fake.requests if url.startswith(prefix)] == [
+        "t/api/blueprint.toml?ref=v0.22.0",
+        "t/api/blueprint.toml?ref=v0.21.0",
+        ".gitattributes?ref=v0.21.0",
+        "t/.gitattributes?ref=v0.21.0",
+        "t/api/.gitattributes?ref=v0.21.0",
+    ]
+    assert all(headers["Accept"] == "application/vnd.github.raw+json" for _, headers in fake.requests[3:6])
+
+
+def test_a_tag_with_no_gitattributes_on_the_catalog_s_path_is_picked_without_running_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_git(top: object, name: str) -> bool:
+        raise AssertionError(f"git checked {name}")
+
+    monkeypatch.setattr(sources, "export_ignored", no_git)
+
+    assert _walk("gh:acme/bp#t/api", {})[0] == Resolved("v0.22.0", SHA)
+
+
+def test_a_contents_read_asks_for_at_most_1_mb_and_nothing_else_does() -> None:
+    fake = Fake(dict([_releases(_release("v1")), (_contents("v1"), _catalog()), (_commit("v1"), SHA.encode())]))
+    fake.answers[_contents("v1", ".gitattributes")] = b"x"
+
+    resolve_gh(parse("gh:acme/bp"), TOOL, fake, {})
+
+    assert [(url.startswith(f"{API}/contents/"), limit) for (url, _), limit in zip(fake.requests, fake.limits)] == [
+        (False, None),
+        (True, 10**6),
+        (True, 10**6),
+        (False, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "size", "kept"),
+    [
+        ("blueprint.toml", 10**6, True),
+        ("blueprint.toml", 10**6 + 1, False),
+        (".gitattributes", 10**6, True),
+        (".gitattributes", 10**6 + 1, False),
+    ],
+)
+def test_a_file_read_through_the_contents_api_over_1_mb_fails_the_fetch(path: str, size: int, kept: bool) -> None:
+    answers = dict([_releases(_release("v1")), (_contents("v1"), _catalog()), (_commit("v1"), SHA.encode())])
+    answers[_contents("v1", ".gitattributes")] = b"# x\n"
+    answers[_contents("v1", path)] = answers[_contents("v1", path)].ljust(size, b"\n")
+
+    if kept:
+        assert resolve_gh(parse("gh:acme/bp"), TOOL, Fake(answers), {}) == Resolved("v1", SHA)
+    else:
+        message = (
+            rf"^gh:acme/bp's {re.escape(path)} at v1 is over 1 MB, the most fastro reads through GitHub's API \(1\.10\)\.$"
+        )
+        with pytest.raises(FetchError, match=message):
+            resolve_gh(parse("gh:acme/bp"), TOOL, Fake(answers), {})
+
+
+@pytest.mark.parametrize(("subdir", "quoted"), [("a%20b", "a%2520b"), ("\u00e9/t", "%C3%A9/t")])
+def test_a_subdir_is_percent_quoted_in_a_contents_url(subdir: str, quoted: str) -> None:
+    fake = Fake(
+        dict(
+            [
+                _releases(_release("v1")),
+                (_contents("v1", f"{quoted}/blueprint.toml"), _catalog()),
+                (_commit("v1"), SHA.encode()),
+            ]
+        )
+    )
+
+    assert resolve_gh(parse(f"gh:acme/bp#{subdir}"), TOOL, fake, {}) == Resolved("v1", SHA)
+    assert _contents("v1", f"{quoted}/.gitattributes") in [url for url, _ in fake.requests]
+
+
+def test_at_a_given_ref_the_attributes_aren_t_read() -> None:
+    fake = Fake({_commit("v1"): SHA.encode()})
+
+    resolve_gh(parse("gh:acme/bp@v1"), TOOL, fake, {})
+
+    assert [url for url, _ in fake.requests] == [_commit("v1")]
+
+
+def test_when_every_tag_s_catalog_is_export_ignored_the_walk_says_no_release_accepts_this_fastro() -> None:
+    answers = dict([_releases(_release("v0.22.0"))])
+    answers[_contents("v0.22.0")] = _catalog()
+    answers[_contents("v0.22.0", ".gitattributes")] = b"blueprint.toml export-ignore\n"
+
+    with pytest.raises(FetchError, match=r"gh:acme/bp has no release whose blueprint\.toml accepts this fastro"):
+        resolve_gh(parse("gh:acme/bp"), TOOL, Fake(answers), {})
 
 
 def test_a_repo_github_doesn_t_show_says_so_and_names_github_token() -> None:
@@ -240,7 +415,7 @@ def test_github_token_is_sent_as_a_header_on_every_request_and_nowhere_else() ->
     with_token, fake.requests = fake.requests, []
     resolve_gh(parse("gh:acme/bp"), TOOL, fake, {})
 
-    assert len(with_token) == len(fake.requests) == 3
+    assert len(with_token) == len(fake.requests) == 4
     for url, headers in with_token:
         assert (headers["Authorization"], headers["User-Agent"]) == ("Bearer s3cret", "fastro")
         assert "s3cret" not in url
@@ -291,6 +466,11 @@ def test_http_get_returns_the_body_and_sends_the_headers(server: str) -> None:
     assert Handler.seen[0]["X-Test"] == "1"
 
 
+@pytest.mark.parametrize(("limit", "body"), [(2, b"bod"), (3, b"body"), (4, b"body"), (10**15, b"body"), (None, b"body")])
+def test_http_get_reads_at_most_one_byte_past_its_limit(server: str, limit: int | None, body: bytes) -> None:
+    assert http_get(f"{server}/ok", {}, limit) == body
+
+
 def test_a_404_is_not_found_and_another_error_a_fetch_failure(server: str) -> None:
     with pytest.raises(NotFound) as missing:
         http_get(f"{server}/missing", {})
@@ -320,9 +500,14 @@ def test_a_rate_limit_answer_says_to_set_github_token_or_wait(status: int, monke
     assert timeouts == [30]
 
 
-def test_a_body_cut_short_is_a_fetch_failure(server: str) -> None:
-    with pytest.raises(FetchError, match="can't reach"):
-        http_get(f"{server}/short", {})
+@pytest.mark.parametrize("limit", [None, 5, 99, 1000])
+def test_a_body_cut_short_is_a_fetch_failure(server: str, limit: int | None) -> None:
+    with pytest.raises(FetchError, match="can't reach .*IncompleteRead"):
+        http_get(f"{server}/short", {}, limit)
+
+
+def test_a_body_cut_short_past_the_limit_is_the_limit_s_worth(server: str) -> None:
+    assert http_get(f"{server}/short", {}, 3) == b"shor"
 
 
 def test_a_server_it_can_t_reach_is_a_fetch_failure(server: str) -> None:

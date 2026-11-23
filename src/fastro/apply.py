@@ -64,6 +64,16 @@ def tracked_files(repo: Path, untracked: bool = False) -> tuple[RepoPath, ...]:
     return tuple(RepoPath(name) for name in names if ignored.isdisjoint([prefix + name, *_above(prefix + name)]))
 
 
+def export_ignored(top: Path, name: str) -> bool:
+    """Whether ``export-ignore`` marks ``name``, or a directory above it checked as ``dir/``, by the
+    ``.gitattributes`` files under ``top`` alone (spec 1.7), as ``git archive`` would leave it out.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+    """
+    return bool(_set(top, [name, *_above(name)], EXPORT_IGNORE))
+
+
 def _above(name: str) -> list[str]:
     """Each directory ``name`` sits in, written as ``dir/``, which is how an ``export-ignore`` directory pattern
     matches it."""

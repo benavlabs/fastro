@@ -3,29 +3,24 @@ the files a ``PATH`` source contributes."""
 
 from __future__ import annotations
 
-import gzip
 import http.client
-import io
 import json
 import os
-import posixpath
 import re
 import shutil
-import stat
-import tarfile
 import urllib.error
 import urllib.request
-import zlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from tempfile import mkdtemp, mkstemp
-from typing import Any
+from tempfile import TemporaryDirectory, mkdtemp, mkstemp
+from typing import Any, Protocol
 from urllib.parse import quote, urlsplit
 
 from packaging.version import InvalidVersion, Version
 
-from fastro.apply import RepositoryError, head_commit, tracked_files
+from fastro import tarball
+from fastro.apply import RepositoryError, export_ignored, head_commit, tracked_files
 from fastro.engine import spec
 from fastro.engine.blueprint import readable
 from fastro.engine.files import file_kind, present, unreadable_config
@@ -49,6 +44,12 @@ RAW = "application/vnd.github.raw+json"
 SHA = "application/vnd.github.sha"
 PAGE = 100
 RATE_LIMITED = (403, 429)
+SIZE_VARIABLE = "FASTRO_MAX_SOURCE_MB"
+MB = 10**6
+DEFAULT_MB = 200
+MOST_MB_DIGITS = 12
+CONTENTS = 10**6
+CHUNK = 1 << 16
 
 
 class SourceError(Exception):
@@ -69,7 +70,42 @@ class NotFound(FetchError):
     """A URL the server answered 404 for."""
 
 
-Fetch = Callable[[str, Mapping[str, str]], bytes]
+class Fetch(Protocol):
+    """How fastro asks for a URL: the body it answers with, sending ``headers``, read to at most one byte past
+    ``limit`` when there is one."""
+
+    def __call__(self, url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class Limits:
+    """The most a ``gh:`` tarball may be, in bytes: as downloaded, and its members' sizes added up (spec 1.10)."""
+
+    download: int
+    extracted: int
+
+
+def limits(environ: Mapping[str, str]) -> Limits:
+    """200 MB downloaded and 1 GB extracted, or with ``FASTRO_MAX_SOURCE_MB`` set, that many MB and five times it
+    (spec 1.10).
+
+    Raises:
+        SourceError: ``FASTRO_MAX_SOURCE_MB`` is set to anything but empty or a whole number of 200 or more.
+    """
+    value = environ.get(SIZE_VARIABLE, "")
+    whole = re.fullmatch("[0-9]+", value) is not None
+    digits = value.lstrip("0")
+    megabytes = DEFAULT_MB
+    if whole:
+        megabytes = int(digits or "0") if len(digits) <= MOST_MB_DIGITS else 10**MOST_MB_DIGITS
+    if value and (not whole or megabytes < DEFAULT_MB):
+        raise SourceError(f"{SIZE_VARIABLE} is {value!r}. Set it to a whole number of MB, {DEFAULT_MB} or more, or unset it.")
+    return Limits(megabytes * MB, 5 * megabytes * MB)
+
+
+def _size(count: int) -> str:
+    gigabyte = 1000 * MB
+    return f"{count // gigabyte} GB" if count % gigabyte == 0 else f"{count // MB} MB"
 
 
 @dataclass(frozen=True)
@@ -223,7 +259,7 @@ def open_gh(
     tool: Version,
     cache: Path,
     offline: bool = False,
-    fetch: Fetch = lambda url, headers: http_get(url, headers),
+    fetch: Fetch = lambda url, headers, limit=None: http_get(url, headers, limit),
     environ: Mapping[str, str] = os.environ,
 ) -> Tree:
     """The ``gh:`` ``source`` opened from the tree of its commit in ``cache``: resolved through GitHub (``resolve_gh``)
@@ -232,19 +268,30 @@ def open_gh(
     (spec 1.7). Its root is the directory that holds ``blueprint.toml``, and it contributes every file there.
 
     Raises:
+        SourceError: ``FASTRO_MAX_SOURCE_MB`` doesn't read (``limits``), checked first, even with ``offline``.
         FetchError: GitHub can't be reached or answers with an error, the tarball isn't a whole gzipped tar of that
-            commit, a member doesn't stay a plain file, directory or symlink inside the tree (1.10), the tree has no
-            ``blueprint.toml`` fastro may read where the source says, or ``offline`` finds nothing in the cache.
+            commit, is over a limit, or has a member that doesn't stay a plain file, directory or symlink inside the
+            tree (1.10), the tree has no ``blueprint.toml`` fastro may read where the source says, or ``offline``
+            finds nothing in the cache.
+        MissingToolError: ``git`` isn't on ``PATH`` when a release's ``.gitattributes`` needs checking.
         OSError: the system won't let fastro write the cache or look in it (spec 8: exit 3).
     """
+    most = limits(environ)
     entries = cache / "gh" / source.location
     if offline:
         resolved = _cached(source, tool, entries)
     else:
         resolved = resolve_gh(source, tool, fetch, environ)
         if not _kept(entries, resolved.commit):
-            body = fetch(f"{API}/repos/{source.location}/tarball/{resolved.commit}", _headers(environ, JSON))
-            _keep(body, f"gh:{source.location}@{resolved.commit}", resolved.commit, entries)
+            label = f"gh:{source.location}@{resolved.commit}"
+            url = f"{API}/repos/{source.location}/tarball/{resolved.commit}"
+            body = fetch(url, _headers(environ, JSON), most.download)
+            if len(body) > most.download:
+                raise FetchError(
+                    f"{label}'s tarball is over {_size(most.download)} downloaded, the most fastro fetches (1.10). "
+                    f"Set {SIZE_VARIABLE} to raise it."
+                )
+            _keep(body, label, resolved.commit, entries, most)
         _remember(entries, resolved, release=source.ref is None)
     return _opened(source, resolved, entries / resolved.commit / "tree")
 
@@ -333,23 +380,17 @@ def _root(source: Source, resolved: Resolved, tree: Path) -> Path:
     return root
 
 
-def _keep(body: bytes, label: str, commit: str, entries: Path) -> None:
-    """Extract the tarball ``body`` into ``entries / commit / "tree"``, which appears whole or not at all."""
+def _keep(body: bytes, label: str, commit: str, entries: Path, most: Limits) -> None:
+    """Extract the tarball ``body`` into ``entries / commit / "tree"``, which appears whole or not at all, read as
+    ``git archive`` writes it and within ``most`` (``tarball.unpack``, spec 1.10)."""
     entries.mkdir(parents=True, exist_ok=True)
     work = Path(mkdtemp(prefix=".fetch-", dir=entries))
+    over = f"is over {_size(most.extracted)} extracted, the most fastro keeps (1.10). Set {SIZE_VARIABLE} to raise it."
     try:
         try:
-            raw = gzip.decompress(body)
-        except (OSError, EOFError, zlib.error):
-            raise FetchError(f"{label}'s tarball isn't a whole gzipped tar.") from None
-        try:
-            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-                members = archive.getmembers()
-                if archive.pax_headers.get("comment") != commit:
-                    raise FetchError(f"{label}'s tarball isn't of that commit.")
-                _extract(archive, members, work / "tree", label)
-        except tarfile.TarError:
-            raise FetchError(f"{label}'s tarball isn't a whole gzipped tar.") from None
+            tarball.unpack(body, commit, work / "tree", most.extracted, over)
+        except tarball.Refused as refused:
+            raise FetchError(f"{label}'s tarball {refused}") from None
         try:
             work.rename(entries / commit)
         except OSError:
@@ -359,96 +400,70 @@ def _keep(body: bytes, label: str, commit: str, entries: Path) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _extract(archive: tarfile.TarFile, members: list[tarfile.TarInfo], tree: Path, label: str) -> None:
-    """Write ``members`` under ``tree``, past the tarball's one top directory, never through a symlink, refusing
-    whatever spec 1.10 rules out for a fetch."""
-
-    def refuse(member: tarfile.TarInfo, reason: str) -> FetchError:
-        return FetchError(f"{label}'s tarball has {member.name!r}, which {reason}, so fastro keeps none of it (1.10).")
-
-    tree.mkdir()
-    top = members[0].name.split("/")[0]
-    seen: set[Path] = set()
-    for member in members:
-        parts = member.name.split("/")
-        if any(part in ("", ".", "..") for part in parts):
-            raise refuse(member, "leads outside the tree")
-        if parts[0] != top or (len(parts) == 1 and not member.isdir()):
-            raise refuse(member, "isn't under the tarball's one top directory")
-        if len(parts) == 1:
-            continue
-        here = tree
-        for part in parts[1:-1]:
-            here = here / part
-            kind = file_kind(here, follow=False)
-            if kind is None:
-                here.mkdir()
-            elif kind != "directory":
-                raise refuse(member, "is under a symlink or a file")
-        path = here / parts[-1]
-        if member.isdir():
-            kind = file_kind(path, follow=False)
-            if kind is None:
-                path.mkdir()
-            elif kind != "directory" or path in seen:
-                raise refuse(member, "is there twice")
-            seen.add(path)
-        elif member.issym():
-            if not member.linkname or posixpath.isabs(member.linkname):
-                raise refuse(member, "is a symlink that leads outside the tree")
-            try:
-                os.symlink(member.linkname, path)
-            except FileExistsError:
-                raise refuse(member, "is there twice") from None
-        elif member.isfile():
-            source = archive.extractfile(member)
-            assert source is not None
-            mode = 0o777 if member.mode & stat.S_IXUSR else 0o666
-            try:
-                handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-            except FileExistsError:
-                raise refuse(member, "is there twice") from None
-            with os.fdopen(handle, "wb") as out:
-                shutil.copyfileobj(source, out)
-        else:
-            raise refuse(member, "is a hard link" if member.islnk() else "is a FIFO" if member.isfifo() else "is a device")
-    inside = os.path.realpath(tree)
-    for member in members:
-        if member.issym():
-            path = tree.joinpath(*member.name.split("/")[1:])
-            if os.path.commonpath([inside, os.path.realpath(path)]) != inside:
-                raise refuse(member, "is a symlink that leads outside the tree")
-
-
 def resolve_gh(
     source: Source,
     tool: Version,
-    fetch: Fetch = lambda url, headers: http_get(url, headers),
+    fetch: Fetch = lambda url, headers, limit=None: http_get(url, headers, limit),
     environ: Mapping[str, str] = os.environ,
 ) -> Resolved:
     """The ``gh:`` ``source`` pinned through GitHub's API (spec 1.7): its ref's full commit, or with no ref, the
     release with the highest version (``newest_first``) whose ``blueprint.toml`` (under ``#SUBDIR``) lets ``tool``
-    read it. A release without one is skipped. ``GITHUB_TOKEN`` goes in a header when it's set.
+    read it. A release without one is skipped, and so is one whose ``blueprint.toml`` ``export-ignore`` marks there
+    (``_export_ignored``). ``GITHUB_TOKEN`` goes in a header when it's set.
 
     Raises:
         FetchError: GitHub can't be reached, answers with an error or something that isn't what was asked for, or
             has no release this fastro can read.
+        MissingToolError: ``git`` isn't on ``PATH`` when a release's ``.gitattributes`` needs checking.
     """
-    repo = f"{API}/repos/{source.location}"
     if source.ref is not None:
         return Resolved(source.ref, _commit(source, source.ref, fetch, environ))
     catalog = f"{source.subdir}/{CATALOG}" if source.subdir else CATALOG
     for tag in newest_first(_release_tags(source, fetch, environ)):
         try:
-            text = fetch(f"{repo}/contents/{catalog}?ref={quote(tag, safe='')}", _headers(environ, RAW))
+            text = _contents(source, catalog, tag, fetch, environ)
         except NotFound:
             continue
-        if _readable(text, tool):
+        if _readable(text, tool) and not _export_ignored(source, tag, catalog, fetch, environ):
             return Resolved(tag, _commit(source, tag, fetch, environ))
     raise FetchError(
         f"gh:{source.location} has no release whose {catalog} accepts this fastro, {tool}. Name a ref with @, or "
         "install a fastro its releases accept."
     )
+
+
+def _export_ignored(source: Source, tag: str, catalog: str, fetch: Fetch, environ: Mapping[str, str]) -> bool:
+    """Whether ``export-ignore`` marks ``catalog`` at ``tag``, by the ``.gitattributes`` files there in the
+    directories on its path, the only ones that can (spec 1.7)."""
+    parts = catalog.split("/")[:-1]
+    paths = ["/".join([*parts[:count], ".gitattributes"]) for count in range(len(parts) + 1)]
+    with TemporaryDirectory(prefix="fastro-attributes-") as top:
+        found = False
+        for path in paths:
+            try:
+                data = _contents(source, path, tag, fetch, environ)
+            except NotFound:
+                continue
+            Path(top, path).parent.mkdir(parents=True, exist_ok=True)
+            Path(top, path).write_bytes(data)
+            found = True
+        return found and export_ignored(Path(top), catalog)
+
+
+def _contents(source: Source, path: str, tag: str, fetch: Fetch, environ: Mapping[str, str]) -> bytes:
+    """The file at ``path`` in ``tag``, through GitHub's contents API, as long as it's within 1 MB (spec 1.10).
+
+    Raises:
+        NotFound: the tag has no file at ``path``.
+        FetchError: GitHub can't be reached or answers with another error, or the file is over 1 MB.
+    """
+    url = f"{API}/repos/{source.location}/contents/{quote(path)}?ref={quote(tag, safe='')}"
+    body = fetch(url, _headers(environ, RAW), CONTENTS)
+    if len(body) > CONTENTS:
+        raise FetchError(
+            f"gh:{source.location}'s {path} at {tag} is over 1 MB, the most fastro reads through GitHub's API (1.10)."
+        )
+    return body
 
 
 def newest_first(tags: Iterable[str]) -> list[str]:
@@ -495,9 +510,9 @@ def _readable(data: bytes, tool: Version) -> bool:
         return False
 
 
-def http_get(url: str, headers: Mapping[str, str]) -> bytes:
-    """The body ``url`` answers with, sending ``headers``. A redirect to another host drops ``Authorization``, so a
-    token reaches only the host it was meant for.
+def http_get(url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes:
+    """The body ``url`` answers with, sending ``headers``, read to at most one byte past ``limit`` when there is one.
+    A redirect to another host drops ``Authorization``, so a token reaches only the host it was meant for.
 
     Raises:
         NotFound: the server answered 404.
@@ -506,7 +521,7 @@ def http_get(url: str, headers: Mapping[str, str]) -> bytes:
     opener = urllib.request.build_opener(_SameHostAuthorization)
     try:
         with opener.open(urllib.request.Request(url, headers=dict(headers)), timeout=TIMEOUT) as response:
-            body: bytes = response.read()
+            body = response.read() if limit is None else _bounded(response, limit + 1)
     except urllib.error.HTTPError as error:
         kind = NotFound if error.code == 404 else FetchError
         hint = " If that's GitHub's rate limit, set GITHUB_TOKEN, or wait." if error.code in RATE_LIMITED else ""
@@ -515,6 +530,22 @@ def http_get(url: str, headers: Mapping[str, str]) -> bytes:
         reason = getattr(error, "reason", None) or type(error).__name__
         raise FetchError(f"fastro can't reach {url}: {reason}. Check the network.") from None
     return body
+
+
+def _bounded(response: Any, most: int) -> bytes:
+    """``response``'s body, read in pieces up to ``most`` bytes.
+
+    Raises:
+        http.client.IncompleteRead: the body ended before ``most`` bytes and before its ``Content-Length``.
+    """
+    parts: list[bytes] = []
+    count = 0
+    while part := response.read(min(CHUNK, most - count)):
+        parts.append(part)
+        count += len(part)
+    if count < most and response.length:
+        raise http.client.IncompleteRead(b"".join(parts), response.length)
+    return b"".join(parts)
 
 
 class _SameHostAuthorization(urllib.request.HTTPRedirectHandler):
