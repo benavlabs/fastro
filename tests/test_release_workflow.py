@@ -16,8 +16,14 @@ WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 TAG = "startsWith(github.ref, 'refs/tags/v')"
 CHECK = "Check the tag matches the package version"
 PINS = {
+    "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
     "actions/download-artifact": ("9000827ccba6bdab643e8b6fd33ac0654aef8333", "v8.0.2"),
+    "actions/upload-artifact": ("cf430e030ddbb5b0abf93d22962f4752f3646cd9", "v7.0.2"),
     "astral-sh/setup-uv": ("07a047e608db84b3d8c06cd9a7c7dcc9c355c18e", "v10.3.2"),
+}
+ACTIONS = {
+    "build": ["actions/checkout", "astral-sh/setup-uv", "actions/upload-artifact"],
+    "publish": ["actions/download-artifact", "astral-sh/setup-uv"],
 }
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 
@@ -45,7 +51,10 @@ def test_every_push_builds_dry_runs_the_publish_without_credentials_and_keeps_wh
 
     assert "if" not in job
     assert _runs("build")[-2:] == ["uv build", "uv publish --dry-run --trusted-publishing never dist/*"]
-    assert job["steps"][-1] == {"uses": "actions/upload-artifact@v7.0.2", "with": {"name": "dist", "path": "dist/"}}
+    assert job["steps"][-1] == {
+        "uses": f"actions/upload-artifact@{PINS['actions/upload-artifact'][0]}",
+        "with": {"name": "dist", "path": "dist/"},
+    }
 
 
 def test_only_a_v_tag_publishes_what_the_build_job_built_through_trusted_publishing() -> None:
@@ -60,15 +69,19 @@ def test_only_a_v_tag_publishes_what_the_build_job_built_through_trusted_publish
     assert _runs("publish") == ["uv publish --trusted-publishing always dist/*"]
 
 
-def test_the_publish_job_pins_each_action_by_commit_with_its_release_tag_beside_it() -> None:
-    steps = _workflow()["jobs"]["publish"]["steps"]
-    text = WORKFLOW.read_text()
-    publish = [line.strip() for line in text[text.index("\n  publish:\n") :].splitlines()]
+@pytest.mark.parametrize("job", ["build", "publish"])
+def test_each_job_pins_each_action_by_commit_with_its_release_tag_beside_it(job: str) -> None:
+    steps = _workflow()["jobs"][job]["steps"]
+    after = WORKFLOW.read_text().splitlines()
+    after = after[after.index(f"  {job}:") + 1 :]
+    within = next((n for n, line in enumerate(after) if re.match(r"  \S", line)), len(after))
+    lines = [line.strip() for line in after[:within]]
 
-    assert [step["uses"] for step in steps if "uses" in step] == [f"{action}@{sha}" for action, (sha, _) in PINS.items()]
-    for action, (sha, tag) in PINS.items():
-        pinned = rf"- uses: {re.escape(action)}@{sha}\s+#\s*{re.escape(tag)}"
-        assert any(re.fullmatch(pinned, line) for line in publish)
+    assert [step["uses"] for step in steps if "uses" in step] == [f"{name}@{PINS[name][0]}" for name in ACTIONS[job]]
+    for name in ACTIONS[job]:
+        sha, tag = PINS[name]
+        pinned = rf"- uses: {re.escape(name)}@{sha}\s+#\s*{re.escape(tag)}"
+        assert any(re.fullmatch(pinned, line) for line in lines)
 
 
 def test_the_workflow_reads_no_secret_and_gets_a_read_only_token_otherwise() -> None:
