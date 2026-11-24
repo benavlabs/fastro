@@ -8,6 +8,7 @@ import errno
 import os
 import posixpath
 import zlib
+from collections.abc import Iterable
 from pathlib import Path
 
 BLOCK = 512
@@ -28,13 +29,13 @@ WHOLE = "isn't a whole gzipped tar."
 
 
 class Refused(Exception):
-    """A tarball fastro keeps none of. The message completes ``<source>'s tarball ``."""
+    """A tarball fastro keeps none of. The message completes ``<source>'s tarball `` or ``<source>'s archive ``."""
 
 
-def unpack(body: bytes, commit: str, tree: Path, extracted: int, over: str) -> None:
-    """Write the tarball ``body`` of ``commit`` into ``tree``, past its one top directory, refusing it as soon as it
-    holds anything ``git archive`` doesn't write, more than ``MEMBERS`` members, or files whose sizes add up past
-    ``extracted`` (the refusal then says ``over``).
+def unpack(body: bytes | Iterable[bytes], commit: str, tree: Path, extracted: int, over: str) -> None:
+    """Write the tarball ``body`` (its bytes, or its bytes in pieces as they come) of ``commit`` into ``tree``,
+    past its one top directory, refusing it as soon as it holds anything ``git archive`` doesn't write, more than
+    ``MEMBERS`` members, or files whose sizes add up past ``extracted`` (the refusal then says ``over``).
 
     Raises:
         Refused: the tarball isn't one fastro keeps (spec 1.10).
@@ -105,9 +106,10 @@ def _refused(path: str, reason: str) -> Refused:
 class _Stream:
     """The tar archive inside one gzip stream, decompressed only as far as it's read."""
 
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes | Iterable[bytes]) -> None:
         self.inflate = zlib.decompressobj(zlib.MAX_WBITS | 16)
-        self.pending = body
+        self.chunks = iter([body] if isinstance(body, bytes) else body)
+        self.pending = b""
         self.buffer = b""
         self.offset = 0
 
@@ -134,10 +136,16 @@ class _Stream:
     def ended(self) -> bool:
         """Whether the gzip stream ends where the archive does, its checksum and length matching, with nothing
         after it."""
-        return self.inflate.eof and not self.inflate.unused_data
+        return self.inflate.eof and not self.inflate.unused_data and not any(self.chunks)
 
     def _inflate(self, most: int) -> bytes:
-        while not self.inflate.eof and self.pending:
+        while not self.inflate.eof:
+            if not self.pending:
+                piece = next(self.chunks, None)
+                if piece is None:
+                    return b""
+                self.pending = piece
+                continue
             try:
                 chunk = self.inflate.decompress(self.pending, most)
             except zlib.error:

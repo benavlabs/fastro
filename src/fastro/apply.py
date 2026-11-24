@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import os
+import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
-from collections.abc import Collection, Iterable, Mapping, Sequence
+import time
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from fastro.engine.files import file_kind, present
 from fastro.engine.plan import Plan
@@ -17,10 +23,21 @@ from fastro.tools import require
 
 EXPORT_IGNORE = "export-ignore"
 EXPORT_SUBST = "export-subst"
+EXTRAHEADER = "http.https://github.com/.extraheader"
+CHUNK = 1 << 16
+POLL = 0.05
 
 
 class RepositoryError(Exception):
     """A directory whose tracked files were asked for isn't a git repository."""
+
+
+class GitError(Exception):
+    """A git command fastro ran failed. The message is what git said."""
+
+
+class TooBig(Exception):
+    """A fetch whose objects passed the most fastro lets one take on disk."""
 
 
 class ApplyError(Exception):
@@ -131,9 +148,7 @@ def _set(repo: Path, names: Sequence[str], attribute: str) -> set[str]:
     if not names:
         return set()
     git = require("git")
-    local = subprocess.run([git, "rev-parse", "--local-env-vars"], capture_output=True, text=True, check=True)
-    unset = {*local.stdout.split(), "GIT_ATTR_SOURCE"}
-    env = {name: value for name, value in os.environ.items() if name not in unset} | {"GIT_ATTR_NOSYSTEM": "1"}
+    env = _environment()
     with tempfile.TemporaryDirectory(prefix="fastro-attributes-") as empty:
         subprocess.run([git, "init", "-q", "--bare", "--template=", empty], capture_output=True, check=True, env=env)
         checked = subprocess.run(
@@ -158,6 +173,187 @@ def _set(repo: Path, names: Sequence[str], attribute: str) -> set[str]:
         )
     fields = checked.stdout.split("\0")
     return {fields[index] for index in range(0, len(fields) - 2, 3) if fields[index + 2] == "set"}
+
+
+def _environment(remote: bool = False, token: str | None = None, cwd: Path | None = None) -> dict[str, str]:
+    """This process's environment for a git that reads no repo the environment's git variables name and no
+    system attributes (spec 1.7). With ``remote``, git never prompts, through a terminal, an askpass program or
+    SSH, accepts no new host key, traces nothing, whatever its config says, and, given ``token``, sends it to
+    ``https://github.com/`` as a header, set through git's environment config so it's in no argv and no config
+    file. ``cwd`` is where git runs, and no repo is looked for above it, or in it unless it's one.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+    """
+    git = require("git")
+    local = subprocess.run([git, "rev-parse", "--local-env-vars"], capture_output=True, text=True, check=True)
+    unset = {*local.stdout.split(), "GIT_ATTR_SOURCE"}
+    env = {name: value for name, value in os.environ.items() if name not in unset} | {"GIT_ATTR_NOSYSTEM": "1"}
+    if not remote:
+        return env
+    quiet = {"GIT_ASKPASS", "SSH_ASKPASS", "GIT_CURL_VERBOSE", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_CEILING_DIRECTORIES"}
+    env = {name: value for name, value in env.items() if name not in quiet and not name.startswith("GIT_TRACE")}
+    env |= {"GIT_TRACE2": "0", "GIT_TRACE2_EVENT": "0", "GIT_TRACE2_PERF": "0", "GIT_ASKPASS": "", "GIT_TERMINAL_PROMPT": "0"}
+    if cwd is not None:
+        env["GIT_CEILING_DIRECTORIES"] = os.path.realpath(cwd.parent)
+    ssh = os.environ.get("GIT_SSH_COMMAND", "")
+    if not ssh:
+        configured = subprocess.run(
+            [git, "config", "--get", "core.sshCommand"],
+            capture_output=True,
+            text=True,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            cwd=cwd,
+        )
+        ssh = configured.stdout.strip()
+    if not ssh:
+        ssh = shlex.quote(os.environ["GIT_SSH"]) if os.environ.get("GIT_SSH") else "ssh"
+    env["GIT_SSH_COMMAND"] = f"{ssh} -o BatchMode=yes -o StrictHostKeyChecking=yes"
+    if token:
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        env |= {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": EXTRAHEADER, "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}"}
+    return env
+
+
+def _git(arguments: Sequence[str], env: Mapping[str, str], cwd: Path | None = None) -> str:
+    """What git prints on stdout for ``arguments``, run with ``env`` in ``cwd`` and nothing on stdin.
+
+    Raises:
+        GitError: git exits with an error.
+    """
+    git = require("git")
+    done = subprocess.run([git, *arguments], capture_output=True, text=True, env=dict(env), stdin=subprocess.DEVNULL, cwd=cwd)
+    if done.returncode != 0:
+        raise GitError(done.stderr.strip() or f"git exited {done.returncode}")
+    return done.stdout
+
+
+def remote_refs(url: str, token: str | None) -> dict[str, str]:
+    """Each ref the remote at ``url`` lists, by its full name, with the object it names, listed from an empty
+    directory so no repo's own config steers it. An annotated tag's commit is under the tag's name plus ``^{}``,
+    as ``git ls-remote`` writes it.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+        GitError: git can't list the remote's refs.
+    """
+    with tempfile.TemporaryDirectory(prefix="fastro-git-") as empty:
+        listed = _git(["ls-remote", "--", url], _environment(True, token, Path(empty)), Path(empty))
+    return {name: sha for sha, _, name in (line.partition("\t") for line in listed.splitlines()) if name}
+
+
+def fetch(url: str, ref: str, token: str | None, repo: Path, most: int) -> str:
+    """Fetch ``ref`` from ``url`` alone, one commit deep, into a new bare repo at ``repo``, and give its commit.
+    Its objects may take no more than ``most`` bytes on disk, checked while git fetches, stopping it and what it
+    started when they don't, and once it's done.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+        GitError: git can't fetch it.
+        TooBig: its objects take more than ``most`` bytes.
+    """
+    env = _environment(True, token, repo.parent)
+    _git(["init", "-q", "--bare", "--template=", str(repo)], env, repo.parent)
+    git = require("git")
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            [
+                git,
+                f"--git-dir={repo}",
+                "-c",
+                "maintenance.auto=false",
+                "-c",
+                "gc.auto=0",
+                "fetch",
+                "-q",
+                "--depth",
+                "1",
+                "--",
+                url,
+                ref,
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
+            start_new_session=True,
+        )
+        try:
+            while process.poll() is None:
+                if _size(repo / "objects") > most:
+                    raise TooBig
+                time.sleep(POLL)
+        except BaseException:
+            _stop(process)
+            raise
+        if process.returncode != 0:
+            raise GitError(_said(errors, process.returncode))
+    if _size(repo / "objects") > most:
+        raise TooBig
+    return _git([f"--git-dir={repo}", "rev-parse", "--verify", "-q", "FETCH_HEAD^{commit}"], env, repo.parent).strip()
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Kill ``process`` and every process it started in its session, and wait for it."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
+
+
+def _said(errors: IO[bytes], code: int) -> str:
+    errors.seek(0)
+    return errors.read().decode("utf-8", "replace").strip() or f"git exited {code}"
+
+
+def _size(directory: Path) -> int:
+    total = 0
+    for top, _, files in os.walk(directory):
+        for name in files:
+            with contextlib.suppress(FileNotFoundError):
+                total += os.lstat(os.path.join(top, name)).st_size
+    return total
+
+
+@contextlib.contextmanager
+def archive(repo: Path, commit: str) -> Iterator[Iterator[bytes]]:
+    """``git archive --format=tar.gz --prefix=archive/`` of ``commit`` in the bare repo ``repo``, its bytes as git
+    writes them, with attributes from the commit alone and none of the user's or the system's git config, so the
+    tree is what ``git archive`` on GitHub writes (spec 1.7). git and what it started are stopped when the caller
+    raises.
+
+    Raises:
+        GitError: git exits with an error, raised as its last bytes are read, before anything after them.
+    """
+    env = _environment() | {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    git = require("git")
+    attributes = f"core.attributesFile={os.devnull}"
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            [git, f"--git-dir={repo}", "-c", attributes, "archive", "--format=tar.gz", "--prefix=archive/", commit],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+            cwd=repo.parent,
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        output = process.stdout
+
+        def pieces() -> Iterator[bytes]:
+            yield from iter(lambda: output.read(CHUNK), b"")
+            if process.wait() != 0:
+                raise GitError(_said(errors, process.returncode))
+
+        try:
+            yield pieces()
+        except BaseException:
+            _stop(process)
+            raise
+        finally:
+            output.close()
+            process.wait()
 
 
 def _in_working_tree(path: Path) -> bool:

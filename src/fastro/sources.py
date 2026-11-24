@@ -3,14 +3,16 @@ the files a ``PATH`` source contributes."""
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
 import re
 import shutil
+import sys
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp, mkstemp
@@ -19,7 +21,7 @@ from urllib.parse import quote, urlsplit
 
 from packaging.version import InvalidVersion, Version
 
-from fastro import tarball
+from fastro import apply, tarball
 from fastro.apply import RepositoryError, export_ignored, head_commit, tracked_files
 from fastro.engine import spec
 from fastro.engine.blueprint import readable
@@ -49,6 +51,7 @@ MB = 10**6
 DEFAULT_MB = 200
 MOST_MB_DIGITS = 12
 CONTENTS = 10**6
+GITHUB_SSH = re.compile(r"git\+ssh://git@github\.com/([^/]+/[^/]+)")
 CHUNK = 1 << 16
 
 
@@ -79,7 +82,8 @@ class Fetch(Protocol):
 
 @dataclass(frozen=True)
 class Limits:
-    """The most a ``gh:`` tarball may be, in bytes: as downloaded, and its members' sizes added up (spec 1.10)."""
+    """The most a ``gh:`` tarball or a ``git+`` fetch may be, in bytes: as downloaded or fetched, and its files'
+    sizes added up (spec 1.10)."""
 
     download: int
     extracted: int
@@ -110,7 +114,7 @@ def _size(count: int) -> str:
 
 @dataclass(frozen=True)
 class Resolved:
-    """A ``gh:`` source pinned: the ref it resolved to, and that ref's full commit."""
+    """A ``gh:`` or ``git+`` source pinned: the ref it resolved to, and that ref's full commit."""
 
     ref: str
     commit: str
@@ -302,7 +306,7 @@ def _cached(source: Source, tool: Version, entries: Path) -> Resolved:
     if source.ref is not None:
         if source.ref not in index:
             raise FetchError(
-                f"gh:{source.location}@{source.ref} isn't in the cache, and --offline fetches nothing. Run it once "
+                f"{_name(source)}@{source.ref} isn't in the cache, and --offline fetches nothing. Run it once "
                 "without --offline."
             )
         return Resolved(source.ref, index[source.ref].commit)
@@ -315,7 +319,7 @@ def _cached(source: Source, tool: Version, entries: Path) -> Resolved:
         if _readable((root / CATALOG).read_bytes(), tool):
             return resolved
     raise FetchError(
-        f"the cache holds no release of gh:{source.location} whose {catalog} accepts this fastro, {tool}, and --offline "
+        f"the cache holds no release of {_name(source)} whose {catalog} accepts this fastro, {tool}, and --offline "
         "fetches nothing. Run it once without --offline."
     )
 
@@ -368,7 +372,7 @@ def _opened(source: Source, resolved: Resolved, tree: Path) -> Tree:
 
 def _root(source: Source, resolved: Resolved, tree: Path) -> Path:
     """The directory in ``tree`` that holds the source's ``blueprint.toml``, which fastro may read (1.10)."""
-    label = f"gh:{source.location}@{resolved.ref}" + (f"#{source.subdir}" if source.subdir else "")
+    label = f"{_name(source)}@{resolved.ref}" + (f"#{source.subdir}" if source.subdir else "")
     tree = tree.resolve()
     root = (tree / source.subdir).resolve() if source.subdir else tree
     if file_kind(root) != "directory":
@@ -380,7 +384,11 @@ def _root(source: Source, resolved: Resolved, tree: Path) -> Path:
     return root
 
 
-def _keep(body: bytes, label: str, commit: str, entries: Path, most: Limits) -> None:
+def _name(source: Source) -> str:
+    return f"gh:{source.location}" if source.kind == "gh" else source.location
+
+
+def _keep(body: bytes | Iterable[bytes], label: str, commit: str, entries: Path, most: Limits, what: str = "tarball") -> None:
     """Extract the tarball ``body`` into ``entries / commit / "tree"``, which appears whole or not at all, read as
     ``git archive`` writes it and within ``most`` (``tarball.unpack``, spec 1.10)."""
     entries.mkdir(parents=True, exist_ok=True)
@@ -390,7 +398,7 @@ def _keep(body: bytes, label: str, commit: str, entries: Path, most: Limits) -> 
         try:
             tarball.unpack(body, commit, work / "tree", most.extracted, over)
         except tarball.Refused as refused:
-            raise FetchError(f"{label}'s tarball {refused}") from None
+            raise FetchError(f"{label}'s {what} {refused}") from None
         try:
             work.rename(entries / commit)
         except OSError:
@@ -398,6 +406,139 @@ def _keep(body: bytes, label: str, commit: str, entries: Path, most: Limits) -> 
                 raise
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def open_git(
+    source: Source,
+    tool: Version,
+    cache: Path,
+    offline: bool = False,
+    environ: Mapping[str, str] = os.environ,
+    say: Callable[[str], object] = lambda text: print(text, file=sys.stderr),
+) -> Tree:
+    """The ``git+`` ``source`` opened from the tree of its commit in ``cache``: its REF, or with no REF the tag with
+    the highest version whose catalog lets ``tool`` read it, fetched alone and archived (``apply.fetch``,
+    ``apply.archive``) when the cache doesn't hold that commit yet, or with ``offline``, only from the cache (spec
+    1.7). A ``git+ssh://git@github.com/OWNER/REPO`` remote fastro can't list over SSH is fetched over HTTPS with
+    ``GITHUB_TOKEN`` when it's set, and ``say`` reports it.
+
+    Raises:
+        SourceError: ``FASTRO_MAX_SOURCE_MB`` doesn't read (``limits``), checked first, even with ``offline``.
+        FetchError: git can't list the remote or fetch the REF, the remote has no such REF or no tag this fastro can
+            read, the fetch or its archive is over a limit or isn't one fastro keeps (1.10), the tree has no
+            ``blueprint.toml`` fastro may read where the source says, or ``offline`` finds nothing in the cache.
+        MissingToolError: ``git`` isn't on ``PATH``.
+        OSError: the system won't let fastro write the cache or look in it (spec 8: exit 3).
+    """
+    most = limits(environ)
+    entries = cache / "git" / hashlib.sha256(source.location.encode()).hexdigest()
+    if offline:
+        resolved = _cached(source, tool, entries)
+    else:
+        remote = _remote(source, environ.get(TOKEN_VARIABLE) or None, say)
+        resolved = _pinned(source, remote, entries, most) if source.ref else _newest(source, tool, remote, entries, most)
+        _remember(entries, resolved, release=source.ref is None)
+    return _opened(source, resolved, entries / resolved.commit / "tree")
+
+
+@dataclass(frozen=True)
+class _Remote:
+    """A ``git+`` source's remote as fastro reached it: the URL, the token sent with it, the refs it listed, and
+    what SSH answered when fastro fell back to HTTPS."""
+
+    url: str
+    token: str | None
+    refs: Mapping[str, str]
+    ssh: str | None = None
+
+
+def _remote(source: Source, token: str | None, say: Callable[[str], object]) -> _Remote:
+    url = source.location.removeprefix("git+")
+    sent = token if url.startswith("https://") else None
+    try:
+        return _Remote(url, sent, apply.remote_refs(url, sent))
+    except apply.GitError as error:
+        github = GITHUB_SSH.fullmatch(source.location)
+        if github is None or not token:
+            hint = " Set GITHUB_TOKEN to fetch it over HTTPS instead." if github else ""
+            raise FetchError(f"git can't list the refs of {source.location}: {error}{hint}") from None
+        ssh = str(error)
+    https = f"https://github.com/{github.group(1)}"
+    say(f"fastro can't list the refs of {source.location} over SSH, so it's fetching {https} with GITHUB_TOKEN instead.")
+    try:
+        return _Remote(https, token, apply.remote_refs(https, token), ssh)
+    except apply.GitError as error:
+        raise FetchError(
+            f"git can't list the refs of {source.location} over SSH ({ssh}) or of {https} over HTTPS ({error})."
+        ) from None
+
+
+def _pinned(source: Source, remote: _Remote, entries: Path, most: Limits) -> Resolved:
+    """The source's REF and its commit: a tag, else a branch, the remote lists by that name, or else REF itself when
+    it's a full commit (spec 1.7), fetched unless it's kept."""
+    ref = source.ref
+    assert ref is not None
+    name = next((name for name in (f"refs/tags/{ref}", f"refs/heads/{ref}") if name in remote.refs), None)
+    if name is None and not COMMIT.fullmatch(ref):
+        raise FetchError(f"{source.location} has no ref {ref!r}. Name a branch, a tag or a full commit it has.")
+    commit = ref if name is None else remote.refs.get(f"{name}^{{}}", remote.refs[name])
+    if not _kept(entries, commit):
+        commit = _fetched(source, remote, name or ref, ref, entries, most)
+    if name is None and commit != ref:
+        raise FetchError(f"{source.location} answered {ref!r} with commit {commit}, which isn't that commit.")
+    return Resolved(ref, commit)
+
+
+def _newest(source: Source, tool: Version, remote: _Remote, entries: Path, most: Limits) -> Resolved:
+    """The tag with the highest version (``newest_first``) whose tree has a ``blueprint.toml`` (under ``#SUBDIR``)
+    that lets ``tool`` read it, each tag's tree fetched unless it's kept (spec 1.7)."""
+    tags = {
+        name.removeprefix("refs/tags/"): sha
+        for name, sha in remote.refs.items()
+        if name.startswith("refs/tags/") and not name.endswith("^{}")
+    }
+    for tag in newest_first(tags):
+        commit = remote.refs.get(f"refs/tags/{tag}^{{}}", tags[tag])
+        if not _kept(entries, commit):
+            commit = _fetched(source, remote, f"refs/tags/{tag}", tag, entries, most)
+        root = entries / commit / "tree" / (source.subdir or "")
+        if file_kind(root) != "directory" or not present(root / CATALOG):
+            continue
+        if _readable(_root(source, Resolved(tag, commit), entries / commit / "tree").joinpath(CATALOG).read_bytes(), tool):
+            return Resolved(tag, commit)
+    catalog = f"{source.subdir}/{CATALOG}" if source.subdir else CATALOG
+    raise FetchError(
+        f"{source.location} has no tag whose {catalog} accepts this fastro, {tool}. Name a ref with @, or install a "
+        "fastro its tags accept."
+    )
+
+
+def _fetched(source: Source, remote: _Remote, ref: str, shown: str, entries: Path, most: Limits) -> str:
+    """Fetch ``ref`` alone into a temporary repo in ``entries``, keep its commit's archive there, and give the
+    commit; messages name the ref as ``shown``. The temporary repo is removed whatever happens."""
+    entries.mkdir(parents=True, exist_ok=True)
+    work = Path(mkdtemp(prefix=".fetch-", dir=entries))
+    ssh = f" SSH answered: {remote.ssh}" if remote.ssh else ""
+    try:
+        try:
+            commit = apply.fetch(remote.url, ref, remote.token, work / "repo", most.download)
+        except apply.TooBig:
+            raise FetchError(
+                f"{source.location}@{shown}'s fetch takes more than {_size(most.download)} on disk, the most fastro "
+                f"fetches (1.10). Set {SIZE_VARIABLE} to raise it."
+            ) from None
+        except apply.GitError as error:
+            raise FetchError(f"git can't fetch {shown} from {remote.url}: {error}{ssh}") from None
+        if not _kept(entries, commit):
+            label = f"{source.location}@{commit}"
+            try:
+                with apply.archive(work / "repo", commit) as chunks:
+                    _keep(chunks, label, commit, entries, most, "archive")
+            except apply.GitError as error:
+                raise FetchError(f"git can't archive {commit} of {source.location}: {error}") from None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return commit
 
 
 def resolve_gh(

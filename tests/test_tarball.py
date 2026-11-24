@@ -648,3 +648,25 @@ def test_names_past_the_end_of_what_the_archive_lists_add_nothing_to_what_s_kept
     _unpack(_archive(_dir(TOP), *links), tmp_path)
 
     assert nodes == [0]
+
+
+def test_a_body_that_comes_in_pieces_is_read_as_one_and_nothing_may_follow_its_gzip_stream(tmp_path: Path) -> None:
+    good = gzip.compress(_archive(_dir(TOP), _file(f"{TOP}/f", b"data")))
+    pieces = [good[index : index + 7] for index in range(0, len(good), 7)]
+
+    unpack(iter(pieces), COMMIT, tmp_path / "kept", 10**9, OVER)
+
+    assert (tmp_path / "kept" / "f").read_bytes() == b"data"
+    with pytest.raises(Refused, match="^isn't a whole gzipped tar\\.$"):
+        unpack(iter([*pieces, b"x"]), COMMIT, tmp_path / "refused", 10**9, OVER)
+
+
+def test_empty_pieces_of_a_body_are_skipped_wherever_they_come(tmp_path: Path) -> None:
+    good = gzip.compress(_archive(_dir(TOP), _file(f"{TOP}/f", b"data")))
+    pieces = [piece for index in range(0, len(good), 7) for piece in (good[index : index + 7], b"")]
+
+    unpack(iter(pieces), COMMIT, tmp_path / "kept", 10**9, OVER)
+
+    assert (tmp_path / "kept" / "f").read_bytes() == b"data"
+    with pytest.raises(Refused, match="^isn't a whole gzipped tar\\.$"):
+        unpack(iter([good, b"", b"x"]), COMMIT, tmp_path / "refused", 10**9, OVER)
