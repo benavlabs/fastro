@@ -116,8 +116,8 @@ def test_native_windows_exits_2_before_reading_anything_or_loading_the_cli(
     script = (
         "import os, sys\n"
         f"os.rmdir({str(gone)!r})\n"
-        "sys.platform = 'win32'\n"
         f"from {module} import {function}\n"
+        "sys.platform = 'win32'\n"
         "try:\n"
         f"    {function}()\n"
         "except SystemExit as stop:\n"
