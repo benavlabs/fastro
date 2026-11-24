@@ -71,8 +71,13 @@ class Project:
 
     @property
     def slug(self) -> str:
-        """The name normalized as PEP 503 does: lowercase, with each run of ``-``, ``_`` and ``.`` as one ``-``."""
-        return re.sub(r"[-_.]+", "-", self.name).lower()
+        """The name normalized as PEP 503 does (``slug``)."""
+        return slug(self.name)
+
+
+def slug(name: str) -> str:
+    """``name`` normalized as PEP 503 does: lowercase, with each run of ``-``, ``_`` and ``.`` as one ``-`` (3)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def load(file: str, text: str, catalog: Blueprint | None = None) -> Project:

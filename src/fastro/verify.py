@@ -15,7 +15,7 @@ from pathlib import Path
 from tempfile import mkdtemp
 
 from fastro import lint as linting
-from fastro import pyproject
+from fastro import overlay, pyproject, templates
 from fastro.apply import ApplyError, Change, apply, changes, export_subst, tracked_files
 from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
@@ -26,7 +26,7 @@ from fastro.engine.render import RenderError, render
 from fastro.engine.resolve import Selection, SelectionError, select
 from fastro.engine.spec import RepoPath
 from fastro.runner import available, declared_command, run_captured
-from fastro.tools import require
+from fastro.tools import installed_version, require
 
 EVERYTHING = "everything"
 REPORTED_LINES = 40
@@ -93,13 +93,16 @@ def build(
 ) -> Path:
     """The project ``features`` give, with ``options`` at their values and every other option at its default, built
     into ``into`` from the tracked files of the blueprint repo at ``root`` (``tracked``, or git's list when it's
-    ``None``): what the plan copies, the wiring it renders, its ``{python_root}/pyproject.toml`` and
-    ``{python_root}/.env.example`` rewritten for the selection (6.3, 6.1), and the lock it starts from as
-    ``{python_root}/uv.lock``.
+    ``None``): what the plan copies, the wiring it renders, the overlay (``overlay.files``) named from
+    ``{python_root}/pyproject.toml`` (6.2), its ``{python_root}/pyproject.toml`` and ``{python_root}/.env.example``
+    rewritten for the selection (6.3, 6.1), whichever source gives them, and the lock it starts from as
+    ``{python_root}/uv.lock``. Nothing is written until every refusal below has had its chance.
 
     Raises:
-        Unbuildable: the wiring can't be rendered, the selection's runtime dependencies can't be merged,
-            ``.env.example`` has a problem 6.1 refuses, or a file the build would copy, the lock included, has git's
+        Unbuildable: the build has no name it can read (``_name``), the wiring can't be rendered, an overlay file
+            can't be given (``overlay.OverlayError``) or would land where another source does or under or over one,
+            the selection's runtime dependencies can't be merged, ``.env.example`` has a problem 6.1 refuses, or a
+            file the build would copy or render from the repo, the lock and the overlay included, has git's
             ``export-subst`` attribute set (1.7).
         ApplyError: a file the build would copy is one apply refuses.
     """
@@ -114,7 +117,15 @@ def build(
     lock = starting_lock(catalog, files)
     if lock is not None:
         found.append(Change("copy", python_root_lock(catalog), source=lock.text))
+    values = templates.context(catalog, selection, _name(root, catalog, files), str(installed_version()))
+    try:
+        overlaid = overlay.files(root, catalog, files, values)
+        overlay.check(found, overlaid, (op.path for op in made.ops if op.op == "render"))
+    except overlay.OverlayError as error:
+        raise Unbuildable(str(error)) from None
     copied = [RepoPath(change.source or change.path) for change in found if change.kind == "copy"]
+    copied += [RepoPath(source) for source, _ in overlaid]
+    found += [change for _, change in overlaid]
     if marked := export_subst(root, copied):
         raise Unbuildable(
             f"{marked[0].text} has git's export-subst attribute set, so a tarball of the repo would expand its "
@@ -125,14 +136,21 @@ def build(
         f"{python_root}/pyproject.toml": pyproject.rewrite,
         f"{python_root}/.env.example": envfile.process,
     }
+    from_overlay = {change.path: source for source, change in overlaid}
     for index, change in enumerate(found):
         rewrite = rewrites.get(change.path)
-        if rewrite is None or breaks_the_rule(root, change.path) is not None:
+        source = change.source or change.path
+        if rewrite is None or (change.kind == "copy" and breaks_the_rule(root, source) is not None):
             continue
         try:
-            text = rewrite((root / change.path).read_bytes().decode("utf-8"), catalog, selection)
+            given = change.text if change.kind == "write" else (root / source).read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            raise Unbuildable(f"{source} isn't UTF-8 text. Save it as UTF-8.") from None
+        try:
+            text = rewrite(given, catalog, selection)
         except (pyproject.PyprojectError, envfile.EnvFileError) as error:
-            raise Unbuildable(str(error)) from None
+            named = f"{from_overlay[change.path]}: " if change.path in from_overlay else ""
+            raise Unbuildable(f"{named}{error}") from None
         found[index] = Change("write", change.path, text)
     apply(found, root, into)
     return into
@@ -150,12 +168,7 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
     """
     python_root = catalog.info.python_root.text.rstrip("/")
     names = {path.text for path in tracked}
-    file = f"{python_root}/pyproject.toml"
-    table = linting.project_table(root, file, names, "verify", strict=True)
-    if isinstance(table, linting.Unread):
-        raise Unbuildable(f"{REFUSED} {file} {table.reason}. {table.fix}")
-    if (problem := linting.name_problem(file, table)) is not None:
-        raise Unbuildable(f"{REFUSED} {problem} {linting.name_fix(file)}")
+    _name(root, catalog, tracked)
     example = f"{python_root}/.env.example"
     if example not in names or breaks_the_rule(root, example) is not None:
         return
@@ -164,6 +177,24 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
         raise Unbuildable(f"{REFUSED} {example} isn't UTF-8 text. Save {example} as UTF-8.")
     if found := envfile.problems(text, catalog):
         raise Unbuildable(f"{REFUSED} {example} {found[0]} Run fastro blueprint lint to see every problem.")
+
+
+def _name(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> str:
+    """The build's name: ``{python_root}/pyproject.toml``'s ``[project].name`` (2.13, 6.2).
+
+    Raises:
+        Unbuildable: ``pyproject.toml`` isn't tracked, 1.10 rules it out, it isn't UTF-8, it doesn't parse, or it has
+            no ``[project].name`` string that's a valid name by section 3's rule.
+        OSError: the system won't let fastro resolve or open it.
+    """
+    file = f"{catalog.info.python_root.text.rstrip('/')}/pyproject.toml"
+    table = linting.project_table(root, file, {path.text for path in tracked}, "verify", strict=True)
+    if isinstance(table, linting.Unread):
+        raise Unbuildable(f"{REFUSED} {file} {table.reason}. {table.fix}")
+    if (problem := linting.name_problem(file, table)) is not None:
+        raise Unbuildable(f"{REFUSED} {problem} {linting.name_fix(file)}")
+    name: str = table["name"]
+    return name
 
 
 def unknown(catalog: Blueprint, names: Sequence[str]) -> None:
@@ -201,7 +232,8 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
         MissingToolError: ``git`` isn't on ``PATH``, and nothing has been built; or a check needs ``uv`` and it isn't.
         Unbuildable: ``{python_root}/pyproject.toml`` gives a build no name, or a tracked
             ``{python_root}/.env.example`` isn't UTF-8 or has a problem 6.1 refuses, and nothing has been built; or a
-            set's wiring can't be rendered or its runtime dependencies can't be merged (6.3), and the run ends there.
+            set's wiring can't be rendered, its runtime dependencies can't be merged (6.3), or its overlay can't be given
+            (2.1, 7) or holds a file export-subst marks (1.7), and the run ends there.
         ApplyError: a set's build is refused. The run ends there.
         OSError: the system won't let a build read or write a file. The run ends there.
     """

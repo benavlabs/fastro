@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import codecs
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, StrictUndefined
-
-from fastro.engine import conditions
+from fastro import templates
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Generator, Param, param_value
 from fastro.engine.files import breaks_the_rule, file_kind
 from fastro.engine.resolve import Selection
-from fastro.engine.spec import OPERATORS, SpecError
+from fastro.engine.spec import SpecError
 from fastro.sync import Source
 
 OUTPUT = ("-o", "--output-dir")
@@ -220,48 +217,7 @@ def _rows(rows: Iterable[tuple[str, str]]) -> list[str]:
 
 def context(source: Source, selection: Selection, values: Mapping[str, Any], version: str) -> dict[str, Any]:
     """The template context of spec 6.2 for ``source``'s selection and the param ``values``."""
-    services: set[str] = set()
-    for feature in source.catalog.features:
-        if feature.name not in selection.features:
-            continue
-        services.update(feature.services)
-        for option in feature.options.values():
-            services.update(option.services.get(selection.options[(feature.name, option.name)], ()))
-        for when in feature.when:
-            if selection.holds(when.condition):
-                services.update(when.services)
-    return {
-        "project": {"name": source.project.name, "slug": source.project.slug},
-        "blueprint": {"name": source.catalog.info.name, "version": str(source.catalog.info.version)},
-        "fastro": {"version": version},
-        "features": list(selection.features),
-        "options": {f"{feature}.{option}": value for (feature, option), value in selection.options.items()},
-        "services": sorted(services),
-        "params": dict(values),
-        "has": _has(source.catalog, selection),
-    }
-
-
-def _has(catalog: Blueprint, selection: Selection) -> Callable[[object], bool]:
-    features = {feature.name: feature for feature in catalog.features}
-
-    def has(text: object) -> bool:
-        match = conditions.ATOM.fullmatch(text) if isinstance(text, str) else None
-        if match is None or match[1] in OPERATORS:
-            raise SpecError(f"has({text!r}): has takes one feature name or 'feature.option=value'.")
-        name, option, value = match.groups()
-        if name not in features:
-            raise SpecError(f"has({text!r}): {name!r} isn't a feature of this blueprint.")
-        if option is None:
-            return selection.holds(conditions.Feature(name))
-        options = features[name].options
-        if option not in options:
-            raise SpecError(f"has({text!r}): '{name}.{option}' isn't an option of {name}.")
-        if value not in options[option].choices:
-            raise SpecError(f"has({text!r}): {value!r} isn't a choice of {name}.{option}.")
-        return selection.holds(conditions.Option(name, option, value))
-
-    return has
+    return templates.context(source.catalog, selection, source.project.name, version, values)
 
 
 def render(root: Path, request: Request, tracked: Iterable[str], values: Mapping[str, Any]) -> list[File]:
@@ -278,7 +234,6 @@ def render(root: Path, request: Request, tracked: Iterable[str], values: Mapping
     if not sources:
         raise Refused(f"{base} holds no tracked file, so fastro make {generator.name} has nothing to write.")
     found: dict[str, File] = {}
-    environment = Environment(undefined=StrictUndefined, keep_trailing_newline=True, autoescape=False)
     for template in sources:
         path = template[len(base) :].removesuffix(TEMPLATE) if template.endswith(TEMPLATE) else template[len(base) :]
         if path in found or path == "" or path.endswith("/"):
@@ -288,19 +243,16 @@ def render(root: Path, request: Request, tracked: Iterable[str], values: Mapping
             raise Refused(f"{template} {reason}. fastro make reads templates only as regular files inside the repo.")
         data = (root / template).read_bytes()
         if template.endswith(TEMPLATE):
-            data = _rendered(environment, template, data, values)
+            data = _rendered(template, data, values)
         found[path] = File(path, template, data)
     return list(found.values())
 
 
-def _rendered(environment: Environment, template: str, data: bytes, values: Mapping[str, Any]) -> bytes:
+def _rendered(template: str, data: bytes, values: Mapping[str, Any]) -> bytes:
     try:
-        text = data.removeprefix(codecs.BOM_UTF8).decode("utf-8")
-        return environment.from_string(text).render(values).encode("utf-8")
-    except UnicodeDecodeError:
-        raise Refused(f"{template} isn't UTF-8 text, so it can't be rendered.") from None
-    except Exception as error:
-        raise Refused(f"{template} doesn't render: {error}") from None
+        return templates.render(template, data, values).encode("utf-8")
+    except templates.TemplateError as error:
+        raise Refused(str(error)) from None
 
 
 def check(output: Path, files: Iterable[File]) -> None:
