@@ -3,12 +3,16 @@ catalog accepts this fastro, through GitHub's API, with ``GITHUB_TOKEN`` sent as
 
 import json
 import re
+import socket
+import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator, Mapping
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -434,6 +438,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "100")
             self.end_headers()
             self.wfile.write(b"short")
+        elif self.path == "/stall":
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"start")
+            self.wfile.flush()
+            time.sleep(3)
         elif self.path == "/ok":
             self.send_response(200)
             self.end_headers()
@@ -543,3 +554,93 @@ def test_a_redirect_to_another_host_drops_the_token_and_one_to_the_same_host_kee
 
     assert "Authorization" not in Handler.seen[1]
     assert Handler.seen[3]["Authorization"] == "Bearer s3cret"
+
+
+TLS = Path(__file__).parent / "fixtures" / "tls"
+
+
+@pytest.fixture
+def secure_server() -> Iterator[int]:
+    """The same local server over TLS, with a certificate for ``localhost`` and ``127.0.0.1`` no system trusts; its
+    port."""
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(TLS / "cert.pem", TLS / "key.pem")
+    httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+    Handler.seen = []
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield httpd.server_address[1]
+    httpd.shutdown()
+    httpd.server_close()
+
+
+@pytest.mark.parametrize("start", ["stall", "redirect?to=https://localhost:{port}/stall"])
+def test_an_https_request_that_stops_sending_gives_up_once_nothing_arrives_for_the_stall(
+    secure_server: int, start: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SSL_CERT_FILE", str(TLS / "cert.pem"))
+    url = f"https://127.0.0.1:{secure_server}/{start.format(port=secure_server)}"
+    began = time.monotonic()
+
+    with pytest.raises(FetchError, match="timed out"):
+        http_get(url, {}, None, 1)
+
+    assert time.monotonic() - began < 2.5
+    assert http_get(f"https://localhost:{secure_server}/ok", {}, None, 1) == b"body"
+
+
+def test_an_https_server_whose_certificate_the_system_doesn_t_trust_is_refused(
+    secure_server: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+
+    with pytest.raises(FetchError, match=r"fastro can't reach https://127\.0\.0\.1:\d+/ok: .*CERTIFICATE_VERIFY_FAILED"):
+        http_get(f"https://127.0.0.1:{secure_server}/ok", {})
+
+
+def test_a_request_that_stops_sending_gives_up_once_nothing_arrives_for_the_stall(server: str) -> None:
+    started = time.monotonic()
+
+    with pytest.raises(FetchError, match=rf"fastro can't reach {server}/stall: .*timed out"):
+        http_get(f"{server}/stall", {}, None, 1)
+
+    assert time.monotonic() - started < 2.5
+
+
+def test_a_request_gives_up_connecting_after_30_seconds(server: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    timeouts: list[object] = []
+    real = socket.create_connection
+
+    def recorded(address: Any, timeout: Any = None, *arguments: Any, **keywords: Any) -> socket.socket:
+        timeouts.append(timeout)
+        return real(address, timeout, *arguments, **keywords)
+
+    monkeypatch.setattr(socket, "create_connection", recorded)
+
+    assert http_get(f"{server}/ok", {}) == b"body"
+    assert timeouts == [30]
+
+
+def test_an_https_request_connects_and_shakes_hands_within_30_seconds_then_waits_the_stall_for_data(
+    secure_server: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SSL_CERT_FILE", str(TLS / "cert.pem"))
+    handshakes: list[object] = []
+    reads: list[object] = []
+    wrap, connect = ssl.SSLContext.wrap_socket, sources._WaitingConnection.connect
+
+    def recorded_wrap(context: ssl.SSLContext, sock: socket.socket, *arguments: Any, **keywords: Any) -> ssl.SSLSocket:
+        if not keywords.get("server_side"):
+            handshakes.append(sock.gettimeout())
+        return wrap(context, sock, *arguments, **keywords)
+
+    def recorded_connect(connection: Any) -> None:
+        connect(connection)
+        reads.append(connection.sock.gettimeout())
+
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", recorded_wrap)
+    monkeypatch.setattr(sources._WaitingConnection, "connect", recorded_connect)
+
+    assert http_get(f"https://localhost:{secure_server}/ok", {}, None, 77) == b"body"
+    assert (handshakes, reads) == ([30], [77])

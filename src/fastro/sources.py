@@ -39,7 +39,10 @@ GIT_PREFIXES = ("git+ssh://", "git+https://")
 API = "https://api.github.com"
 API_VERSION = "2022-11-28"
 TOKEN_VARIABLE = "GITHUB_TOKEN"
-TIMEOUT = 30
+CONNECT = apply.CONNECT
+STALL = apply.STALL
+MOST_STALL = 86_400
+STALL_VARIABLE = "FASTRO_FETCH_TIMEOUT"
 COMMIT = re.compile(r"[0-9a-f]{40}")
 JSON = "application/vnd.github+json"
 RAW = "application/vnd.github.raw+json"
@@ -96,15 +99,38 @@ def limits(environ: Mapping[str, str]) -> Limits:
     Raises:
         SourceError: ``FASTRO_MAX_SOURCE_MB`` is set to anything but empty or a whole number of 200 or more.
     """
-    value = environ.get(SIZE_VARIABLE, "")
+    megabytes = _whole(environ, SIZE_VARIABLE, DEFAULT_MB, "MB")
+    return Limits(megabytes * MB, 5 * megabytes * MB)
+
+
+def stall(environ: Mapping[str, str]) -> int:
+    """How many seconds a fetch waits while nothing arrives: 60, or with ``FASTRO_FETCH_TIMEOUT`` set, that many
+    (spec 1.7).
+
+    Raises:
+        SourceError: ``FASTRO_FETCH_TIMEOUT`` is set to anything but empty or a whole number from 60 to 86,400.
+    """
+    return _whole(environ, STALL_VARIABLE, STALL, "seconds", MOST_STALL)
+
+
+def _whole(environ: Mapping[str, str], variable: str, least: int, unit: str, most: int | None = None) -> int:
+    """``variable``'s whole number, in decimal digits, no less than ``least`` and no more than ``most`` when there
+    is one, or ``least`` when it's unset or empty. A number of more than ``MOST_MB_DIGITS`` digits is taken as
+    ``10 ** MOST_MB_DIGITS``, so ``int`` never reads it whole, and is over any ``most``.
+
+    Raises:
+        SourceError: it's set to anything else.
+    """
+    value = environ.get(variable, "")
     whole = re.fullmatch("[0-9]+", value) is not None
     digits = value.lstrip("0")
-    megabytes = DEFAULT_MB
+    number = least
     if whole:
-        megabytes = int(digits or "0") if len(digits) <= MOST_MB_DIGITS else 10**MOST_MB_DIGITS
-    if value and (not whole or megabytes < DEFAULT_MB):
-        raise SourceError(f"{SIZE_VARIABLE} is {value!r}. Set it to a whole number of MB, {DEFAULT_MB} or more, or unset it.")
-    return Limits(megabytes * MB, 5 * megabytes * MB)
+        number = int(digits or "0") if len(digits) <= MOST_MB_DIGITS else 10**MOST_MB_DIGITS
+    if value and (not whole or number < least or (most is not None and number > most)):
+        bounds = f"{least} or more" if most is None else f"from {least} to {most:,}"
+        raise SourceError(f"{variable} is {value!r}. Set it to a whole number of {unit}, {bounds}, or unset it.")
+    return number
 
 
 def _size(count: int) -> str:
@@ -263,16 +289,18 @@ def open_gh(
     tool: Version,
     cache: Path,
     offline: bool = False,
-    fetch: Fetch = lambda url, headers, limit=None: http_get(url, headers, limit),
+    fetch: Fetch | None = None,
     environ: Mapping[str, str] = os.environ,
 ) -> Tree:
     """The ``gh:`` ``source`` opened from the tree of its commit in ``cache``: resolved through GitHub (``resolve_gh``)
     and its tarball fetched when the cache doesn't hold that commit yet, or with ``offline``, only from the cache, where
     no ref takes the highest release that a run with no ref picked and cached, and whose catalog lets ``tool`` read it
     (spec 1.7). Its root is the directory that holds ``blueprint.toml``, and it contributes every file there.
+    ``fetch`` asks GitHub (``http_get``, waiting as long as ``stall`` says, when it's not given).
 
     Raises:
-        SourceError: ``FASTRO_MAX_SOURCE_MB`` doesn't read (``limits``), checked first, even with ``offline``.
+        SourceError: ``FASTRO_MAX_SOURCE_MB`` or ``FASTRO_FETCH_TIMEOUT`` doesn't read (``limits``, ``stall``),
+            checked first, even with ``offline``.
         FetchError: GitHub can't be reached or answers with an error, the tarball isn't a whole gzipped tar of that
             commit, is over a limit, or has a member that doesn't stay a plain file, directory or symlink inside the
             tree (1.10), the tree has no ``blueprint.toml`` fastro may read where the source says, or ``offline``
@@ -281,6 +309,12 @@ def open_gh(
         OSError: the system won't let fastro write the cache or look in it (spec 8: exit 3).
     """
     most = limits(environ)
+    seconds = stall(environ)
+    if fetch is None:
+
+        def fetch(url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes:
+            return http_get(url, headers, limit, seconds)
+
     entries = cache / "gh" / source.location
     if offline:
         resolved = _cached(source, tool, entries)
@@ -423,7 +457,8 @@ def open_git(
     ``GITHUB_TOKEN`` when it's set, and ``say`` reports it.
 
     Raises:
-        SourceError: ``FASTRO_MAX_SOURCE_MB`` doesn't read (``limits``), checked first, even with ``offline``.
+        SourceError: ``FASTRO_MAX_SOURCE_MB`` or ``FASTRO_FETCH_TIMEOUT`` doesn't read (``limits``, ``stall``),
+            checked first, even with ``offline``.
         FetchError: git can't list the remote or fetch the REF, the remote has no such REF or no tag this fastro can
             read, the fetch or its archive is over a limit or isn't one fastro keeps (1.10), the tree has no
             ``blueprint.toml`` fastro may read where the source says, or ``offline`` finds nothing in the cache.
@@ -431,11 +466,12 @@ def open_git(
         OSError: the system won't let fastro write the cache or look in it (spec 8: exit 3).
     """
     most = limits(environ)
+    seconds = stall(environ)
     entries = cache / "git" / hashlib.sha256(source.location.encode()).hexdigest()
     if offline:
         resolved = _cached(source, tool, entries)
     else:
-        remote = _remote(source, environ.get(TOKEN_VARIABLE) or None, say)
+        remote = _remote(source, environ.get(TOKEN_VARIABLE) or None, say, seconds)
         resolved = _pinned(source, remote, entries, most) if source.ref else _newest(source, tool, remote, entries, most)
         _remember(entries, resolved, release=source.ref is None)
     return _opened(source, resolved, entries / resolved.commit / "tree")
@@ -449,14 +485,15 @@ class _Remote:
     url: str
     token: str | None
     refs: Mapping[str, str]
+    stall: int
     ssh: str | None = None
 
 
-def _remote(source: Source, token: str | None, say: Callable[[str], object]) -> _Remote:
+def _remote(source: Source, token: str | None, say: Callable[[str], object], stall: int) -> _Remote:
     url = source.location.removeprefix("git+")
     sent = token if url.startswith("https://") else None
     try:
-        return _Remote(url, sent, apply.remote_refs(url, sent))
+        return _Remote(url, sent, apply.remote_refs(url, sent, stall), stall)
     except apply.GitError as error:
         github = GITHUB_SSH.fullmatch(source.location)
         if github is None or not token:
@@ -466,7 +503,7 @@ def _remote(source: Source, token: str | None, say: Callable[[str], object]) -> 
     https = f"https://github.com/{github.group(1)}"
     say(f"fastro can't list the refs of {source.location} over SSH, so it's fetching {https} with GITHUB_TOKEN instead.")
     try:
-        return _Remote(https, token, apply.remote_refs(https, token), ssh)
+        return _Remote(https, token, apply.remote_refs(https, token, stall), stall, ssh)
     except apply.GitError as error:
         raise FetchError(
             f"git can't list the refs of {source.location} over SSH ({ssh}) or of {https} over HTTPS ({error})."
@@ -521,7 +558,7 @@ def _fetched(source: Source, remote: _Remote, ref: str, shown: str, entries: Pat
     ssh = f" SSH answered: {remote.ssh}" if remote.ssh else ""
     try:
         try:
-            commit = apply.fetch(remote.url, ref, remote.token, work / "repo", most.download)
+            commit = apply.fetch(remote.url, ref, remote.token, work / "repo", most.download, remote.stall)
         except apply.TooBig:
             raise FetchError(
                 f"{source.location}@{shown}'s fetch takes more than {_size(most.download)} on disk, the most fastro "
@@ -651,24 +688,25 @@ def _readable(data: bytes, tool: Version) -> bool:
         return False
 
 
-def http_get(url: str, headers: Mapping[str, str], limit: int | None = None) -> bytes:
+def http_get(url: str, headers: Mapping[str, str], limit: int | None = None, stall: int = STALL) -> bytes:
     """The body ``url`` answers with, sending ``headers``, read to at most one byte past ``limit`` when there is one.
-    A redirect to another host drops ``Authorization``, so a token reaches only the host it was meant for.
+    It gives up connecting after ``CONNECT`` seconds, and reading once nothing arrives for ``stall`` (spec 1.7). A
+    redirect to another host drops ``Authorization``, so a token reaches only the host it was meant for.
 
     Raises:
         NotFound: the server answered 404.
         FetchError: the server answered another error, or can't be reached.
     """
-    opener = urllib.request.build_opener(_SameHostAuthorization)
+    opener = urllib.request.build_opener(_SameHostAuthorization, _Waiting(stall), _WaitingSecurely(stall))
     try:
-        with opener.open(urllib.request.Request(url, headers=dict(headers)), timeout=TIMEOUT) as response:
+        with opener.open(urllib.request.Request(url, headers=dict(headers)), timeout=CONNECT) as response:
             body = response.read() if limit is None else _bounded(response, limit + 1)
     except urllib.error.HTTPError as error:
         kind = NotFound if error.code == 404 else FetchError
         hint = " If that's GitHub's rate limit, set GITHUB_TOKEN, or wait." if error.code in RATE_LIMITED else ""
         raise kind(f"{url} answered {error.code} {error.reason}.{hint}", error.code) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
-        reason = getattr(error, "reason", None) or type(error).__name__
+        reason = getattr(error, "reason", None) or str(error) or type(error).__name__
         raise FetchError(f"fastro can't reach {url}: {reason}. Check the network.") from None
     return body
 
@@ -687,6 +725,40 @@ def _bounded(response: Any, most: int) -> bytes:
     if count < most and response.length:
         raise http.client.IncompleteRead(b"".join(parts), response.length)
     return b"".join(parts)
+
+
+class _WaitingConnection(http.client.HTTPConnection):
+    """A connection that waits ``stall`` seconds for each read once it's connected."""
+
+    def __init__(self, *arguments: Any, stall: int = STALL, **keywords: Any) -> None:
+        super().__init__(*arguments, **keywords)
+        self.stall = stall
+
+    def connect(self) -> None:
+        super().connect()
+        self.sock.settimeout(self.stall)
+
+
+class _WaitingSecureConnection(_WaitingConnection, http.client.HTTPSConnection):
+    """The TLS connection, connecting as ``http.client`` does, then waiting ``stall`` seconds for each read."""
+
+
+class _Waiting(urllib.request.HTTPHandler):
+    def __init__(self, stall: int) -> None:
+        super().__init__()
+        self.stall = stall
+
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_WaitingConnection, req, stall=self.stall)
+
+
+class _WaitingSecurely(urllib.request.HTTPSHandler):
+    def __init__(self, stall: int) -> None:
+        super().__init__()
+        self.stall = stall
+
+    def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_WaitingSecureConnection, req, stall=self.stall)
 
 
 class _SameHostAuthorization(urllib.request.HTTPRedirectHandler):

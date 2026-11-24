@@ -530,7 +530,7 @@ def test_the_token_reaches_git_only_through_its_environment_and_nothing_kept_hol
     assert fetches and all({"maintenance.auto=false", "gc.auto=0"} <= set(command) for command in fetches)
     assert all(stdin is subprocess.DEVNULL for stdin in stdins)
     ssh_listing = [env for command, env in calls if "ls-remote" in command and command[-1].startswith("ssh://")]
-    assert ssh_listing and not [env for env in ssh_listing if "GIT_CONFIG_VALUE_0" in env]
+    assert ssh_listing and not [env for env in ssh_listing if "http.https://github.com/.extraheader" in _settings(env)]
     remote_calls = [env for command, env in calls if command[-1].startswith("https://") or "fetch" in command]
     assert remote_calls and all(
         _settings(env)["http.https://github.com/.extraheader"] == f"AUTHORIZATION: basic {encoded}" for env in remote_calls
@@ -593,6 +593,8 @@ def test_git_never_prompts_and_ssh_accepts_no_new_host_key_whatever_ssh_the_user
         "GIT_TRACE": "1",
         "GIT_TRACE_CURL": "1",
         "GIT_CURL_VERBOSE": "1",
+        "GIT_HTTP_LOW_SPEED_LIMIT": "1",
+        "GIT_HTTP_LOW_SPEED_TIME": "99999",
         **variables,
     }.items():
         monkeypatch.setenv(name, value)
@@ -606,15 +608,22 @@ def test_git_never_prompts_and_ssh_accepts_no_new_host_key_whatever_ssh_the_user
 
     env = apply._environment(True, TOKEN, empty)
 
-    assert env["GIT_SSH_COMMAND"] == f"{ssh} -o BatchMode=yes -o StrictHostKeyChecking=yes"
+    assert env["GIT_SSH_COMMAND"] == f"{ssh} -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30"
+    assert env["GCM_INTERACTIVE"] == "never"
     assert (env["GIT_TERMINAL_PROMPT"], env["GIT_ASKPASS"]) == ("0", "")
-    assert not {"GIT_SSH", "SSH_ASKPASS", "GIT_CURL_VERBOSE"} & set(env)
+    assert not {"GIT_SSH", "SSH_ASKPASS", "GIT_CURL_VERBOSE", "GIT_HTTP_LOW_SPEED_LIMIT", "GIT_HTTP_LOW_SPEED_TIME"} & set(env)
     assert {name: value for name, value in env.items() if name.startswith("GIT_TRACE")} == {
         "GIT_TRACE2": "0",
         "GIT_TRACE2_EVENT": "0",
         "GIT_TRACE2_PERF": "0",
     }
-    assert (env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_KEY_0"]) == ("1", "http.https://github.com/.extraheader")
+    assert _settings(env) == {
+        "http.https://github.com/.extraheader": "AUTHORIZATION: basic "
+        + base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode(),
+        "http.lowSpeedLimit": "1000",
+        "http.lowSpeedTime": "60",
+    }
+    assert _settings(apply._environment(True, None, empty, 95)) == {"http.lowSpeedLimit": "1000", "http.lowSpeedTime": "95"}
     assert {"GIT_ASKPASS", "GIT_TRACE"} <= set(apply._environment()) and "GIT_TERMINAL_PROMPT" not in apply._environment()
 
 
@@ -769,6 +778,82 @@ def test_an_archive_git_fails_to_finish_is_a_fetch_failure_and_nothing_is_kept(
         open_git(parse(_source("main")), TOOL, cache, environ={})
 
     assert os.listdir(_entries(cache)) == []
+
+
+def test_a_fetch_timeout_that_doesn_t_read_is_a_usage_error_before_the_remote_is_asked(
+    tmp_path: Path, config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreachable(*arguments: object) -> dict[str, str]:
+        raise AssertionError("asked the remote")
+
+    monkeypatch.setattr(apply, "remote_refs", unreachable)
+
+    for offline in (False, True):
+        with pytest.raises(SourceError, match="FASTRO_FETCH_TIMEOUT is '30'"):
+            open_git(parse(_source()), TOOL, tmp_path, offline=offline, environ={"FASTRO_FETCH_TIMEOUT": "30"})
+
+
+def test_a_fetch_timeout_reaches_both_the_listing_and_the_fetch(
+    remote: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, _ = remote
+    _commit(work, {"blueprint.toml": CATALOG.format(requires=">=0")})
+    _push(work)
+    run, popen = subprocess.run, subprocess.Popen
+    seen: list[str] = []
+
+    def recorded_run(command: list[str], **keywords: Any) -> Any:
+        if "ls-remote" in command:
+            seen.append(_settings(keywords["env"])["http.lowSpeedTime"])
+        return run(command, **keywords)
+
+    def recorded_popen(command: list[str], **keywords: Any) -> Any:
+        if "fetch" in command:
+            seen.append(_settings(keywords["env"])["http.lowSpeedTime"])
+        return popen(command, **keywords)
+
+    monkeypatch.setattr(subprocess, "run", recorded_run)
+    monkeypatch.setattr(subprocess, "Popen", recorded_popen)
+
+    open_git(parse(_source("main")), TOOL, tmp_path / "cache", environ={"FASTRO_FETCH_TIMEOUT": "75"})
+
+    assert seen == ["75", "75"]
+
+
+def test_with_both_variables_wrong_the_size_limit_is_reported_first(tmp_path: Path, config: Path) -> None:
+    environ = {"FASTRO_MAX_SOURCE_MB": "1", "FASTRO_FETCH_TIMEOUT": "1"}
+
+    with pytest.raises(SourceError, match="^FASTRO_MAX_SOURCE_MB is '1'"):
+        open_git(parse(_source()), TOOL, tmp_path, environ=environ)
+
+
+def test_a_fetch_timeout_reaches_the_https_listing_and_fetch_after_a_fallback(
+    github: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, popen = subprocess.run, subprocess.Popen
+    seen: list[tuple[str, str]] = []
+
+    def recorded_run(command: list[str], **keywords: Any) -> Any:
+        if "ls-remote" in command:
+            seen.append((command[-1], _settings(keywords["env"])["http.lowSpeedTime"]))
+        return run(command, **keywords)
+
+    def recorded_popen(command: list[str], **keywords: Any) -> Any:
+        if "fetch" in command:
+            seen.append((command[-2], _settings(keywords["env"])["http.lowSpeedTime"]))
+        return popen(command, **keywords)
+
+    monkeypatch.setattr(subprocess, "run", recorded_run)
+    monkeypatch.setattr(subprocess, "Popen", recorded_popen)
+    environ = {"GITHUB_TOKEN": TOKEN, "FASTRO_FETCH_TIMEOUT": "75"}
+
+    open_git(parse(f"{SSH}@main"), TOOL, tmp_path / "cache", environ=environ, say=lambda text: None)
+
+    assert seen == [
+        ("ssh://git@github.com/acme/bp", "75"),
+        ("https://github.com/acme/bp", "75"),
+        ("https://github.com/acme/bp", "75"),
+    ]
 
 
 def _git_bytes(repo: Path, *arguments: str) -> bytes:

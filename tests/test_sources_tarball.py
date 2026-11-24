@@ -695,3 +695,46 @@ def test_a_max_source_mb_that_s_empty_or_a_whole_number_of_200_or_more_is_read(
     open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=fake, environ={"FASTRO_MAX_SOURCE_MB": value})
 
     assert fake.limits[-1] == megabytes * 10**6
+
+
+@pytest.mark.parametrize(
+    "value", ["59", "0", "86401", "9" * 5000, "abc", "6e1", " 90", "90 ", "-90", "+90", "90.0", "\u0669\u0660"]
+)
+def test_a_fetch_timeout_that_isn_t_a_whole_number_from_60_to_86400_is_a_usage_error_before_anything_is_asked(
+    tmp_path: Path, value: str
+) -> None:
+    commit = "c" * 40
+    open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=_pinned("v1", commit, _good(commit)), environ={})
+    environ = {"FASTRO_FETCH_TIMEOUT": value}
+    message = f"FASTRO_FETCH_TIMEOUT is {value!r}. Set it to a whole number of seconds, from 60 to 86,400, or unset it."
+
+    for offline in (False, True):
+        with pytest.raises(SourceError) as caught:
+            open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, offline=offline, fetch=_offline, environ=environ)
+        assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(("value", "seconds"), [("", 60), ("60", 60), ("0120", 120), ("86400", 86_400)])
+def test_a_fetch_timeout_raises_how_long_a_gh_request_waits_for_data(
+    tmp_path: Path, value: str, seconds: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stalls: list[object] = []
+    commit = "c" * 40
+    answers = _pinned("v1", commit, _good(commit))
+
+    def recorded(url: str, headers: Mapping[str, str], limit: int | None = None, stall: int = 0) -> bytes:
+        stalls.append(stall)
+        return answers(url, headers, limit)
+
+    monkeypatch.setattr(sources, "http_get", recorded)
+
+    open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, environ={"FASTRO_FETCH_TIMEOUT": value})
+
+    assert stalls and set(stalls) == {seconds}
+
+
+def test_with_both_variables_wrong_the_size_limit_is_reported_first(tmp_path: Path) -> None:
+    environ = {"FASTRO_MAX_SOURCE_MB": "1", "FASTRO_FETCH_TIMEOUT": "1"}
+
+    with pytest.raises(SourceError, match="^FASTRO_MAX_SOURCE_MB is '1'"):
+        open_gh(parse("gh:acme/bp@v1"), TOOL, tmp_path, fetch=_offline, environ=environ)

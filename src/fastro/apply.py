@@ -25,6 +25,9 @@ EXPORT_IGNORE = "export-ignore"
 EXPORT_SUBST = "export-subst"
 EXTRAHEADER = "http.https://github.com/.extraheader"
 CHUNK = 1 << 16
+LOW_SPEED = 1000
+STALL = 60
+CONNECT = 30
 POLL = 0.05
 
 
@@ -175,12 +178,14 @@ def _set(repo: Path, names: Sequence[str], attribute: str) -> set[str]:
     return {fields[index] for index in range(0, len(fields) - 2, 3) if fields[index + 2] == "set"}
 
 
-def _environment(remote: bool = False, token: str | None = None, cwd: Path | None = None) -> dict[str, str]:
+def _environment(remote: bool = False, token: str | None = None, cwd: Path | None = None, stall: int = STALL) -> dict[str, str]:
     """This process's environment for a git that reads no repo the environment's git variables name and no
     system attributes (spec 1.7). With ``remote``, git never prompts, through a terminal, an askpass program or
     SSH, accepts no new host key, traces nothing, whatever its config says, and, given ``token``, sends it to
     ``https://github.com/`` as a header, set through git's environment config so it's in no argv and no config
-    file. ``cwd`` is where git runs, and no repo is looked for above it, or in it unless it's one.
+    file. Its transfer aborts below ``LOW_SPEED`` bytes a second for ``stall`` seconds, and SSH gives up connecting
+    after ``CONNECT`` seconds (spec 1.7). ``cwd`` is where git runs, and no repo is looked for above it, or in it
+    unless it's one.
 
     Raises:
         MissingToolError: ``git`` isn't on ``PATH``.
@@ -191,9 +196,25 @@ def _environment(remote: bool = False, token: str | None = None, cwd: Path | Non
     env = {name: value for name, value in os.environ.items() if name not in unset} | {"GIT_ATTR_NOSYSTEM": "1"}
     if not remote:
         return env
-    quiet = {"GIT_ASKPASS", "SSH_ASKPASS", "GIT_CURL_VERBOSE", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_CEILING_DIRECTORIES"}
+    quiet = {
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_CURL_VERBOSE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_HTTP_LOW_SPEED_LIMIT",
+        "GIT_HTTP_LOW_SPEED_TIME",
+    }
     env = {name: value for name, value in env.items() if name not in quiet and not name.startswith("GIT_TRACE")}
-    env |= {"GIT_TRACE2": "0", "GIT_TRACE2_EVENT": "0", "GIT_TRACE2_PERF": "0", "GIT_ASKPASS": "", "GIT_TERMINAL_PROMPT": "0"}
+    env |= {
+        "GIT_TRACE2": "0",
+        "GIT_TRACE2_EVENT": "0",
+        "GIT_TRACE2_PERF": "0",
+        "GIT_ASKPASS": "",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+    }
     if cwd is not None:
         env["GIT_CEILING_DIRECTORIES"] = os.path.realpath(cwd.parent)
     ssh = os.environ.get("GIT_SSH_COMMAND", "")
@@ -209,10 +230,14 @@ def _environment(remote: bool = False, token: str | None = None, cwd: Path | Non
         ssh = configured.stdout.strip()
     if not ssh:
         ssh = shlex.quote(os.environ["GIT_SSH"]) if os.environ.get("GIT_SSH") else "ssh"
-    env["GIT_SSH_COMMAND"] = f"{ssh} -o BatchMode=yes -o StrictHostKeyChecking=yes"
+    env["GIT_SSH_COMMAND"] = f"{ssh} -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout={CONNECT}"
+    settings = {"http.lowSpeedLimit": str(LOW_SPEED), "http.lowSpeedTime": str(stall)}
     if token:
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        env |= {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": EXTRAHEADER, "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}"}
+        settings = {EXTRAHEADER: f"AUTHORIZATION: basic {basic}", **settings}
+    env["GIT_CONFIG_COUNT"] = str(len(settings))
+    for index, (key, value) in enumerate(settings.items()):
+        env |= {f"GIT_CONFIG_KEY_{index}": key, f"GIT_CONFIG_VALUE_{index}": value}
     return env
 
 
@@ -229,7 +254,7 @@ def _git(arguments: Sequence[str], env: Mapping[str, str], cwd: Path | None = No
     return done.stdout
 
 
-def remote_refs(url: str, token: str | None) -> dict[str, str]:
+def remote_refs(url: str, token: str | None, stall: int = STALL) -> dict[str, str]:
     """Each ref the remote at ``url`` lists, by its full name, with the object it names, listed from an empty
     directory so no repo's own config steers it. An annotated tag's commit is under the tag's name plus ``^{}``,
     as ``git ls-remote`` writes it.
@@ -239,11 +264,11 @@ def remote_refs(url: str, token: str | None) -> dict[str, str]:
         GitError: git can't list the remote's refs.
     """
     with tempfile.TemporaryDirectory(prefix="fastro-git-") as empty:
-        listed = _git(["ls-remote", "--", url], _environment(True, token, Path(empty)), Path(empty))
+        listed = _git(["ls-remote", "--", url], _environment(True, token, Path(empty), stall), Path(empty))
     return {name: sha for sha, _, name in (line.partition("\t") for line in listed.splitlines()) if name}
 
 
-def fetch(url: str, ref: str, token: str | None, repo: Path, most: int) -> str:
+def fetch(url: str, ref: str, token: str | None, repo: Path, most: int, stall: int = STALL) -> str:
     """Fetch ``ref`` from ``url`` alone, one commit deep, into a new bare repo at ``repo``, and give its commit.
     Its objects may take no more than ``most`` bytes on disk, checked while git fetches, stopping it and what it
     started when they don't, and once it's done.
@@ -253,7 +278,7 @@ def fetch(url: str, ref: str, token: str | None, repo: Path, most: int) -> str:
         GitError: git can't fetch it.
         TooBig: its objects take more than ``most`` bytes.
     """
-    env = _environment(True, token, repo.parent)
+    env = _environment(True, token, repo.parent, stall)
     _git(["init", "-q", "--bare", "--template=", str(repo)], env, repo.parent)
     git = require("git")
     with tempfile.TemporaryFile() as errors:
