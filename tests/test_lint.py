@@ -75,7 +75,7 @@ def test_the_json_document_has_spec_7_s_shape(repo: Path) -> None:
         "project": "mini",
         "blueprint": {"name": "mini", "version": "0.1.0"},
         "tiers": ["static"],
-        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "BP007", "FR001", "FR002", "FR014", "FR016"],
+        "rules": ["BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "BP007", "BP008", "FR001", "FR002", "FR014", "FR016"],
         "counts": {"error": 0, "warning": 0},
         "findings": [],
     }
@@ -1711,3 +1711,108 @@ def test_an_app_ref_under_scripts_is_checked_by_fr014(repo: Path) -> None:
 def _sync_cli() -> tuple[int, str, str]:
     result = CliRunner().invoke(app, ["sync", "--check"])
     return result.exit_code, result.stdout, result.stderr
+
+
+def _env_message(path: str) -> tuple[str, str]:
+    return (
+        f"blueprint: {path} is a committed .env, which is almost always a leaked secret, whether or not a project receives it.",
+        f"Remove {path} from the repo with git rm --cached {path}, and rotate any secret it held. fastro new writes a "
+        "project's .env itself.",
+    )
+
+
+@pytest.mark.parametrize("path", [".env", "backend/.env", "docs/deep/.env"])
+def test_a_committed_env_is_a_bp008_finding_at_blueprint_naming_it(repo: Path, path: str) -> None:
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text("SECRET=1\n")
+    _git(repo, "add", "-f", path)
+
+    (finding,) = _findings()
+
+    assert (finding["file"], finding["line"], finding["code"]) == ("blueprint.toml", 1, "BP008")
+    assert (finding["message"], finding["fix"]) == _env_message(path)
+
+
+def test_a_committed_env_is_bp008_whatever_blueprint_only_or_export_ignore_says(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        'requires_fastro = ">=0.1.0.dev0"\n',
+        'requires_fastro = ">=0.1.0.dev0"\nblueprint_only = ["notes/"]\n',
+    )
+    for path in ("notes/.env", "private/.env"):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("SECRET=1\n")
+    (repo / ".gitattributes").write_text("private/ export-ignore\n")
+    _git(repo, "add", "-A", "-f")
+
+    assert [(finding["code"], finding["message"]) for finding in _findings()] == [
+        ("BP008", _env_message("notes/.env")[0]),
+        ("BP008", _env_message("private/.env")[0]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "overlay"),
+    [("overlay/.env.j2", "overlay"), ("overlay/sub/.env", "overlay"), ("overlay/sub/.env.j2", "overlay/")],
+)
+def test_an_overlay_file_whose_project_path_is_a_env_is_bp008(repo: Path, path: str, overlay: str) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        'requires_fastro = ">=0.1.0.dev0"\n',
+        f'requires_fastro = ">=0.1.0.dev0"\noverlay = "{overlay}"\n',
+    )
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text("SECRET=1\n")
+    _git(repo, "add", "-A", "-f")
+
+    assert [(finding["code"], finding["message"]) for finding in _findings()] == [("BP008", _env_message(path)[0])]
+
+
+@pytest.mark.parametrize("name", [".env.example", ".envrc", ".env.local", "x.env", "env"])
+def test_a_name_that_only_starts_or_ends_like_env_isn_t_bp008(repo: Path, name: str) -> None:
+    (repo / name).write_text("A=1\n")
+    _git(repo, "add", "-f", name)
+
+    assert "BP008" not in [finding["code"] for finding in _findings()]
+
+
+def test_an_env_git_doesn_t_track_or_that_s_gone_from_the_working_tree_isn_t_bp008(repo: Path) -> None:
+    (repo / ".env").write_text("A=1\n")
+    (repo / "backend" / ".env").write_text("A=1\n")
+    _git(repo, "add", "-f", "backend/.env")
+    (repo / "backend" / ".env").unlink()
+
+    assert [finding["code"] for finding in _findings()] == []
+
+
+def test_a_blueprint_toml_export_ignore_marks_is_bp001_at_blueprint_and_every_other_check_still_runs(repo: Path) -> None:
+    (repo / ".gitattributes").write_text("blueprint.toml export-ignore\n")
+    (repo / ".env").write_text("A=1\n")
+    _git(repo, "add", "-A", "-f")
+
+    findings = _findings()
+
+    assert [(finding["code"], finding["line"]) for finding in findings] == [("BP001", 1), ("BP008", 1)]
+    assert findings[0]["message"] == (
+        "blueprint: blueprint.toml is marked export-ignore, so every source leaves it out: one with a REF refuses the "
+        "repo, and the release walk skips the tag."
+    )
+    assert findings[0]["fix"] == "Remove export-ignore for blueprint.toml from .gitattributes."
+
+
+def test_a_blueprint_toml_git_doesn_t_track_isn_t_called_export_ignored(repo: Path) -> None:
+    _git(repo, "rm", "-q", "--cached", "blueprint.toml")
+
+    assert not [finding for finding in _findings() if "export-ignore" in str(finding["message"])]
+
+
+@pytest.mark.parametrize("path", ["overlay/x.env", "overlay/x.env.j2", "overlay/.env.example.j2"])
+def test_an_overlay_file_whose_project_path_only_ends_like_env_isn_t_bp008(repo: Path, path: str) -> None:
+    _edit(
+        repo / "blueprint.toml", 'requires_fastro = ">=0.1.0.dev0"\n', 'requires_fastro = ">=0.1.0.dev0"\noverlay = "overlay"\n'
+    )
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text("A=1\n")
+    _git(repo, "add", "-A", "-f")
+
+    assert "BP008" not in [finding["code"] for finding in _findings()]

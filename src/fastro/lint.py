@@ -7,6 +7,7 @@ import codecs
 import dataclasses
 import os
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-from fastro import make
+from fastro import make, overlay
 from fastro import pyproject as rewriting
 from fastro import sync as syncing
 from fastro.apply import RepositoryError, export_subst, tracked_files
@@ -31,7 +32,8 @@ from fastro.engine.resolve import SelectionError, select
 from fastro.engine.spec import Ref, RepoPath
 
 LOAD_PROBLEM = "BP001"
-RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "BP007", "FR001", "FR002", "FR014", "FR016")
+CATALOG_FILE = "blueprint.toml"
+RULES = ("BP001", "BP002", "BP003", "BP004", "BP005", "BP006", "BP007", "BP008", "FR001", "FR002", "FR014", "FR016")
 PATH_FIX = "Fix the path, or add the file to git."
 MODULE_FIX = "Point module at a module the repo has, or add its file to git."
 APP_FIX = "Point app at a module the repo has, or add its file to git."
@@ -123,14 +125,14 @@ def lint(root: Path) -> Report:
         Extending: the catalog extends another, which this fastro can't merge yet (2.10).
         NotInstalled: fastro isn't installed.
     """
-    file = root / "blueprint.toml"
+    file = root / CATALOG_FILE
     try:
         there = present(file)
     except OSError as error:
         raise Unreadable(file, error) from None
     if not there:
-        raise UsageError(f"{root} has no blueprint.toml. Run fastro blueprint lint in a blueprint repo.")
-    for name in ("blueprint.toml", "fastro.toml"):
+        raise UsageError(f"{root} has no {CATALOG_FILE}. Run fastro blueprint lint in a blueprint repo.")
+    for name in (CATALOG_FILE, "fastro.toml"):
         try:
             refused = unreadable_config(root, name)
         except OSError as error:
@@ -149,8 +151,11 @@ def lint(root: Path) -> Report:
     if catalog is not None:
         try:
             tracked = {path.text for path in tracked_files(root)}
+            committed = tracked_files(root, exported=False)
         except RepositoryError as error:
             raise UsageError(f"{error}. Run fastro blueprint lint in a blueprint repo, which git tracks.") from None
+        found.extend(_export_ignored_catalog(catalog, tracked, committed))
+        found.extend(_committed_env(catalog, committed))
         found.extend(_missing_paths(catalog, tracked))
         found.extend(_missing_modules(catalog, tracked))
         found.extend(_unresolved_refs(root, catalog, tracked, catalog.document, _declared_refs(catalog)))
@@ -420,6 +425,32 @@ class Unread:
 
     reason: str
     fix: str
+
+
+def _export_ignored_catalog(catalog: Blueprint, tracked: set[str], committed: Sequence[RepoPath]) -> list[Problem]:
+    """BP001: ``blueprint.toml``, when git tracks it and ``export-ignore`` marks it, at ``[blueprint]`` (1.7, 2.13)."""
+    if CATALOG_FILE in tracked or RepoPath(CATALOG_FILE) not in committed:
+        return []
+    message = (
+        f"{CATALOG_FILE} is marked export-ignore, so every source leaves it out: one with a REF refuses the repo, and the "
+        "release walk skips the tag."
+    )
+    return [catalog.document.problem(("blueprint",), message, f"Remove export-ignore for {CATALOG_FILE} from .gitattributes.")]
+
+
+def _committed_env(catalog: Blueprint, committed: Sequence[RepoPath]) -> list[Problem]:
+    """BP008: each ``.env`` git tracks and has in the working tree, whatever ``blueprint_only`` or ``export-ignore``
+    says, at ``[blueprint]`` (2.1, 2.13)."""
+    return [
+        catalog.document.problem(
+            ("blueprint",),
+            f"{path} is a committed .env, which is almost always a leaked secret, whether or not a project receives it.",
+            f"Remove {path} from the repo with git rm --cached {path}, and rotate any secret it held. fastro new writes a "
+            "project's .env itself.",
+            "BP008",
+        )
+        for path in overlay.env_files(catalog, committed, received=False)
+    ]
 
 
 def _substituted(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:

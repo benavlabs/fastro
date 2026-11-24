@@ -63,11 +63,12 @@ class Change:
     source: str = ""
 
 
-def tracked_files(repo: Path, untracked: bool = False) -> tuple[RepoPath, ...]:
+def tracked_files(repo: Path, untracked: bool = False, exported: bool = True) -> tuple[RepoPath, ...]:
     """The files git tracks in ``repo``, sorted by path in code point order, leaving out one deleted from the working
-    tree and one ``export-ignore`` marks, as ``git archive`` does (spec 1.7, 2.13). With ``untracked``, the files git
-    doesn't track or ignore are listed too, as ``--include-untracked`` asks (1.7). ``repo`` may be a directory inside a
-    work tree: the paths are relative to it, and the work tree's own ``.gitattributes`` decide.
+    tree and, while ``exported`` holds, one ``export-ignore`` marks, as ``git archive`` does (spec 1.7, 2.13). With
+    ``untracked``, the files git doesn't track or ignore are listed too, as ``--include-untracked`` asks (1.7).
+    ``repo`` may be a directory inside a work tree: the paths are relative to it, and the work tree's own
+    ``.gitattributes`` decide.
 
     One fastro can't check, in a directory it isn't allowed to search, is kept, so whoever reads it says why it can't.
 
@@ -83,6 +84,8 @@ def tracked_files(repo: Path, untracked: bool = False) -> tuple[RepoPath, ...]:
     top, prefix = _place(repo)
     listed_names = {name.rstrip("/") for name in listed.stdout.split("\0") if name}
     names = sorted(name for name in listed_names if _in_working_tree(repo / name))
+    if not exported:
+        return tuple(RepoPath(name) for name in names)
     directories = sorted({directory for name in names for directory in _above(prefix + name)})
     ignored = _set(Path(top), [*(prefix + name for name in names), *directories], EXPORT_IGNORE)
     return tuple(RepoPath(name) for name in names if ignored.isdisjoint([prefix + name, *_above(prefix + name)]))

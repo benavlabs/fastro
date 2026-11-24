@@ -1213,6 +1213,63 @@ def test_an_env_example_verify_isnt_allowed_to_resolve_exits_3(repo: Path, uv: P
     assert _calls(uv) == []
 
 
+def test_verify_refuses_a_run_holding_a_env_a_project_would_receive_naming_each_before_any_build(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fastro.verify.mkdtemp", lambda prefix: pytest.fail("built"))
+    for path in (".env", "backend/src/modules/billing/.env"):
+        (repo / path).write_text("SECRET=1\n")
+        _git(repo, "add", "-f", path)
+    message = (
+        r"^verify can't build a set: \.env and backend/src/modules/billing/\.env would reach a project as a \.env, "
+        r"which is almost always a leaked secret\. Remove them from the repo: fastro new writes a project's \.env "
+        r"itself\.$"
+    )
+
+    with pytest.raises(Unbuildable, match=message):
+        verify(repo, CATALOG, ["minimal"], lambda project, selection: [], keep=False)
+
+
+def test_verify_builds_past_a_env_no_project_receives(repo: Path, tmp_path: Path) -> None:
+    text = (
+        (repo / "blueprint.toml")
+        .read_text()
+        .replace('requires_fastro = ">=0.1.0.dev0"\n', 'requires_fastro = ">=0.1.0.dev0"\nblueprint_only = ["notes/"]\n', 1)
+    )
+    (repo / "blueprint.toml").write_text(text)
+    for path in ("notes/.env", "private/.env", ".fastro/.env"):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("SECRET=1\n")
+    (repo / ".gitattributes").write_text("private/ export-ignore\n")
+    _git(repo, "add", "-A", "-f")
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+
+    assert verify(repo, catalog, ["minimal"], lambda project, selection: [], keep=False) == 0
+
+
+@pytest.mark.parametrize(("path", "overlay"), [("overlay/.env.j2", "overlay"), ("overlay/sub/.env", "overlay/")])
+def test_verify_refuses_an_overlay_file_that_gives_a_project_a_env(repo: Path, path: str, overlay: str) -> None:
+    text = (
+        (repo / "blueprint.toml")
+        .read_text()
+        .replace('requires_fastro = ">=0.1.0.dev0"\n', f'requires_fastro = ">=0.1.0.dev0"\noverlay = "{overlay}"\n', 1)
+    )
+    (repo / "blueprint.toml").write_text(text)
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text("SECRET=1\n")
+    _git(repo, "add", "-A", "-f")
+    catalog = blueprint.load("blueprint.toml", text, Version("0.1.0"))
+    message = (
+        f"verify can't build a set: {path} would reach a project as a .env, which is almost always a leaked secret. "
+        "Remove it from the repo: fastro new writes a project's .env itself."
+    )
+
+    with pytest.raises(Unbuildable) as caught:
+        verify(repo, catalog, ["minimal"], lambda project, selection: [], keep=False)
+
+    assert str(caught.value) == message
+
+
 def test_verify_refuses_a_nameless_pyproject_itself(repo: Path) -> None:
     (repo / PYPROJECT).write_text('[project]\nversion = "0.1.0"\n')
 

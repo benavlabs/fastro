@@ -157,15 +157,22 @@ def build(
 
 
 def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> None:
-    """Refuse the run when ``{python_root}/pyproject.toml`` gives a build no name, or a tracked
-    ``{python_root}/.env.example`` isn't UTF-8 (spec 2.13).
+    """Refuse the run when a tracked ``.env`` would reach a project (2.1), ``{python_root}/pyproject.toml`` gives a
+    build no name, or a tracked ``{python_root}/.env.example`` isn't UTF-8 (spec 2.13).
 
     Raises:
-        Unbuildable: ``pyproject.toml`` isn't tracked, 1.10 rules it out, it isn't UTF-8, it doesn't parse, or it has
-            no ``[project].name`` string that's a valid name by section 3's rule; or ``.env.example`` is tracked, 1.10
-            doesn't rule it out, and it isn't UTF-8 or has a problem 6.1 refuses.
+        Unbuildable: a tracked ``.env`` would reach a project, named each; ``pyproject.toml`` isn't tracked, 1.10
+            rules it out, it isn't UTF-8, it doesn't parse, or it has no ``[project].name`` string that's a valid name
+            by section 3's rule; or ``.env.example`` is tracked, 1.10 doesn't rule it out, and it isn't UTF-8 or has a
+            problem 6.1 refuses.
         OSError: the system won't let fastro resolve or open either file.
     """
+    if envs := overlay.env_files(catalog, tracked, received=True):
+        listed = f"{', '.join(envs[:-1])} and {envs[-1]}" if len(envs) > 1 else envs[0]
+        raise Unbuildable(
+            f"{REFUSED} {listed} would reach a project as a .env, which is almost always a leaked secret. Remove "
+            f"{'them' if len(envs) > 1 else 'it'} from the repo: fastro new writes a project's .env itself."
+        )
     python_root = catalog.info.python_root.text.rstrip("/")
     names = {path.text for path in tracked}
     _name(root, catalog, tracked)
@@ -230,8 +237,9 @@ def verify(root: Path, catalog: Blueprint, names: Sequence[str], checks: Checks,
         UnknownSet: a name isn't a verify set. Nothing has been built.
         RepositoryError: ``root`` isn't a git repository. Nothing has been built.
         MissingToolError: ``git`` isn't on ``PATH``, and nothing has been built; or a check needs ``uv`` and it isn't.
-        Unbuildable: ``{python_root}/pyproject.toml`` gives a build no name, or a tracked
-            ``{python_root}/.env.example`` isn't UTF-8 or has a problem 6.1 refuses, and nothing has been built; or a
+        Unbuildable: a tracked ``.env`` would reach a project (2.1), ``{python_root}/pyproject.toml`` gives a build no
+            name, or a tracked ``{python_root}/.env.example`` isn't UTF-8 or has a problem 6.1 refuses, and nothing has
+            been built; or a
             set's wiring can't be rendered, its runtime dependencies can't be merged (6.3), or its overlay can't be given
             (2.1, 7) or holds a file export-subst marks (1.7), and the run ends there.
         ApplyError: a set's build is refused. The run ends there.

@@ -14,12 +14,38 @@ from fastro.engine.files import breaks_the_rule, file_kind
 from fastro.engine.spec import RepoPath
 
 TEMPLATE = ".j2"
+ENV = ".env"
 NOTHING = "so nothing was written."
 
 
 class OverlayError(Exception):
     """An overlay a project can't be given: a template that can't be read or rendered, or a project path two
     sources would both give."""
+
+
+def project_path(catalog: Blueprint, name: str) -> str | None:
+    """The project path the overlay gives the file ``name``: its path under the overlay minus a ``.j2`` suffix, or
+    ``None`` when the catalog has no overlay or ``name`` isn't in it (2.1)."""
+    if catalog.info.overlay is None:
+        return None
+    base = catalog.info.overlay.text.rstrip("/") + "/"
+    return name[len(base) :].removesuffix(TEMPLATE) if name.startswith(base) else None
+
+
+def env_files(catalog: Blueprint, names: Iterable[RepoPath], received: bool) -> list[str]:
+    """Each of ``names`` that's a ``.env`` (2.1): a file named exactly ``.env``, at any depth, or an overlay file
+    whose project path is ``.env`` or ends in ``/.env``. With ``received``, only those a project would receive: in the
+    overlay, or outside ``blueprint_only``."""
+    found = []
+    for path in names:
+        given = project_path(catalog, path.text)
+        if given is not None:
+            if given.rsplit("/", 1)[-1] == ENV:
+                found.append(path.text)
+        elif path.text.rsplit("/", 1)[-1] == ENV:
+            if not received or not any(only.covers(path.text) for only in catalog.info.all_blueprint_only):
+                found.append(path.text)
+    return found
 
 
 def files(
