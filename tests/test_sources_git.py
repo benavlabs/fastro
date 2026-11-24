@@ -420,6 +420,7 @@ def test_an_archive_over_the_extracted_limit_fails_and_nothing_is_kept(remote: t
 
 
 SSH = "git+ssh://git@github.com/acme/bp"
+SSH_REMOTE = "ssh://git@example.test/acme/bp"
 
 
 @pytest.fixture
@@ -799,20 +800,14 @@ def test_a_fetch_timeout_reaches_both_the_listing_and_the_fetch(
     work, _ = remote
     _commit(work, {"blueprint.toml": CATALOG.format(requires=">=0")})
     _push(work)
-    run, popen = subprocess.run, subprocess.Popen
+    popen = subprocess.Popen
     seen: list[str] = []
 
-    def recorded_run(command: list[str], **keywords: Any) -> Any:
-        if "ls-remote" in command:
-            seen.append(_settings(keywords["env"])["http.lowSpeedTime"])
-        return run(command, **keywords)
-
     def recorded_popen(command: list[str], **keywords: Any) -> Any:
-        if "fetch" in command:
+        if "fetch" in command or "ls-remote" in command:
             seen.append(_settings(keywords["env"])["http.lowSpeedTime"])
         return popen(command, **keywords)
 
-    monkeypatch.setattr(subprocess, "run", recorded_run)
     monkeypatch.setattr(subprocess, "Popen", recorded_popen)
 
     open_git(parse(_source("main")), TOOL, tmp_path / "cache", environ={"FASTRO_FETCH_TIMEOUT": "75"})
@@ -830,20 +825,16 @@ def test_with_both_variables_wrong_the_size_limit_is_reported_first(tmp_path: Pa
 def test_a_fetch_timeout_reaches_the_https_listing_and_fetch_after_a_fallback(
     github: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run, popen = subprocess.run, subprocess.Popen
+    popen = subprocess.Popen
     seen: list[tuple[str, str]] = []
 
-    def recorded_run(command: list[str], **keywords: Any) -> Any:
+    def recorded_popen(command: list[str], **keywords: Any) -> Any:
         if "ls-remote" in command:
             seen.append((command[-1], _settings(keywords["env"])["http.lowSpeedTime"]))
-        return run(command, **keywords)
-
-    def recorded_popen(command: list[str], **keywords: Any) -> Any:
         if "fetch" in command:
             seen.append((command[-2], _settings(keywords["env"])["http.lowSpeedTime"]))
         return popen(command, **keywords)
 
-    monkeypatch.setattr(subprocess, "run", recorded_run)
     monkeypatch.setattr(subprocess, "Popen", recorded_popen)
     environ = {"GITHUB_TOKEN": TOKEN, "FASTRO_FETCH_TIMEOUT": "75"}
 
@@ -854,6 +845,202 @@ def test_a_fetch_timeout_reaches_the_https_listing_and_fetch_after_a_fallback(
         ("https://github.com/acme/bp", "75"),
         ("https://github.com/acme/bp", "75"),
     ]
+
+
+def _hung(
+    command_word: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    writes: Path | None = None,
+    shrinks: bool = False,
+    when: Any = None,
+    seconds: int = 30,
+) -> list[Any]:
+    """git's ``command_word`` replaced by a process that sends nothing for ``seconds`` and exits 7, or with
+    ``writes``, one that adds a file to that directory every half second for three seconds and exits 7, after
+    writing 100 kB and removing it again when it ``shrinks``; the processes it started."""
+    real = subprocess.Popen
+    started: list[Any] = []
+
+    def replaced(command: list[str], **keywords: Any) -> Any:
+        if command_word in command and (when is None or when(command)):
+            if writes is None:
+                command = ["sh", "-c", f"sleep {seconds}; exit 7"]
+            else:
+                script = 'for i in 1 2 3 4 5 6; do echo x > "$1/objects/f$i"; sleep 0.5; done; exit 7'
+                if shrinks:
+                    script = 'head -c 100000 /dev/zero > "$1/objects/big"; sleep 0.2; rm "$1/objects/big"; ' + script
+                command = ["sh", "-c", script, "sh", str(writes)]
+            started.append(real(command, **keywords))
+            return started[-1]
+        return real(command, **keywords)
+
+    monkeypatch.setattr(subprocess, "Popen", replaced)
+    return started
+
+
+def test_a_fetch_whose_temporary_repo_stops_growing_is_stopped_once_the_stall_has_passed(
+    remote: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _hung("fetch", monkeypatch)
+    began = time.monotonic()
+
+    with pytest.raises(apply.Stalled):
+        apply.fetch(SSH_REMOTE, "main", None, tmp_path / "repo", 10**9, 1)
+
+    assert time.monotonic() - began < 3
+    assert started[-1].returncode == -signal.SIGKILL
+
+
+def test_a_fetch_whose_temporary_repo_keeps_growing_is_never_stopped_for_stalling(
+    remote: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hung("fetch", monkeypatch, writes=tmp_path / "repo")
+
+    with pytest.raises(apply.GitError, match="git exited 7"):
+        apply.fetch(SSH_REMOTE, "main", None, tmp_path / "repo", 10**9, 1)
+
+
+def test_a_fetch_whose_objects_shrink_and_grow_back_below_their_largest_total_is_still_stopped(
+    remote: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hung("fetch", monkeypatch, writes=tmp_path / "repo", shrinks=True)
+    began = time.monotonic()
+
+    with pytest.raises(apply.Stalled):
+        apply.fetch(SSH_REMOTE, "main", None, tmp_path / "repo", 10**9, 1)
+
+    assert time.monotonic() - began < 3
+
+
+def test_an_https_fetch_is_left_to_git_s_own_low_speed_abort(
+    remote: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hung("fetch", monkeypatch, seconds=3)
+
+    with pytest.raises(apply.GitError, match="git exited 7"):
+        apply.fetch(HTTPS, "main", None, tmp_path / "repo", 10**9, 1)
+
+
+def test_a_stalled_ssh_fetch_fails_with_a_message_naming_the_remote(
+    remote: tuple[Path, Path], tmp_path: Path, config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, bare = remote
+    _commit(work, {"blueprint.toml": CATALOG.format(requires=">=0")})
+    _push(work)
+    _reach(config, SSH_REMOTE, bare)
+    monkeypatch.setattr(sources, "stall", lambda environ: 2)
+    _hung("fetch", monkeypatch)
+    cache = tmp_path / "cache"
+    message = rf"^git can't fetch main from {re.escape(SSH_REMOTE)}: nothing arrived for 2 seconds\.$"
+
+    with pytest.raises(FetchError, match=message):
+        open_git(parse(f"git+{SSH_REMOTE}@main"), TOOL, cache, environ={})
+
+    assert os.listdir(_entries(cache, f"git+{SSH_REMOTE}")) == []
+
+
+def test_an_ssh_listing_that_hasn_t_finished_in_the_stall_fails_naming_the_remote(
+    tmp_path: Path, config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sources, "stall", lambda environ: 2)
+    started = _hung("ls-remote", monkeypatch)
+    began = time.monotonic()
+    message = rf"^git can't list the refs of git\+{re.escape(SSH_REMOTE)}: it hadn't finished after 2 seconds\.$"
+
+    with pytest.raises(FetchError, match=message):
+        open_git(parse(f"git+{SSH_REMOTE}@main"), TOOL, tmp_path, environ={})
+
+    assert time.monotonic() - began < 4
+    assert started[-1].returncode == -signal.SIGKILL
+
+
+def test_an_ssh_listing_stopped_for_stalling_takes_what_git_started_with_it(
+    tmp_path: Path, config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sources, "stall", lambda environ: 1)
+    child = tmp_path / "child"
+    real = subprocess.Popen
+
+    def replaced(command: list[str], **keywords: Any) -> Any:
+        if "ls-remote" in command:
+            command = ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", str(child)]
+        return real(command, **keywords)
+
+    monkeypatch.setattr(subprocess, "Popen", replaced)
+
+    with pytest.raises(FetchError, match="it hadn't finished after 1 seconds"):
+        open_git(parse(f"git+{SSH_REMOTE}@main"), TOOL, tmp_path / "cache", environ={})
+
+    pid = int(child.read_text())
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError(f"git's child {pid} outlived it")
+
+
+def test_a_listing_interrupted_while_it_waits_takes_what_git_started_with_it(
+    tmp_path: Path, config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = tmp_path / "child"
+    real, communicate = subprocess.Popen, subprocess.Popen.communicate
+
+    def replaced(command: list[str], **keywords: Any) -> Any:
+        if "ls-remote" in command:
+            command = ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", str(child)]
+        return real(command, **keywords)
+
+    def interrupted(process: Any, *arguments: Any, **keywords: Any) -> Any:
+        if "sleep 30" in " ".join(map(str, process.args)):
+            while not child.exists() or not child.read_text().strip():
+                time.sleep(0.02)
+            raise KeyboardInterrupt
+        return communicate(process, *arguments, **keywords)
+
+    monkeypatch.setattr(real, "communicate", interrupted)
+    monkeypatch.setattr(subprocess, "Popen", replaced)
+
+    with pytest.raises(KeyboardInterrupt):
+        open_git(parse(f"git+{SSH_REMOTE}@main"), TOOL, tmp_path / "cache", environ={})
+
+    pid = int(child.read_text())
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError(f"git's child {pid} outlived it")
+
+
+def test_an_https_listing_is_left_to_git_s_own_low_speed_abort(
+    tmp_path: Path, config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sources, "stall", lambda environ: 1)
+    _hung("ls-remote", monkeypatch, seconds=3)
+
+    with pytest.raises(FetchError, match=rf"^git can't list the refs of git\+{re.escape(HTTPS)}: git exited 7$"):
+        open_git(parse(_source("main")), TOOL, tmp_path, environ={})
+
+
+def test_a_github_ssh_listing_that_stalls_falls_back_to_https(
+    github: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sources, "stall", lambda environ: 2)
+    _hung("ls-remote", monkeypatch, when=lambda command: command[-1].startswith("ssh://"))
+    said: list[str] = []
+    began = time.monotonic()
+
+    tree = open_git(parse(f"{SSH}@main"), TOOL, tmp_path / "cache", environ={"GITHUB_TOKEN": TOKEN}, say=said.append)
+
+    assert time.monotonic() - began < 6
+    assert tree.files[0] == RepoPath("blueprint.toml")
+    assert len(said) == 1
 
 
 def _git_bytes(repo: Path, *arguments: str) -> bytes:

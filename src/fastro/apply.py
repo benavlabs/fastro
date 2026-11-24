@@ -43,6 +43,10 @@ class TooBig(Exception):
     """A fetch whose objects passed the most fastro lets one take on disk."""
 
 
+class Stalled(Exception):
+    """An SSH fetch whose objects stopped growing for longer than fastro waits."""
+
+
 class ApplyError(Exception):
     """A change apply refuses to make: outside the target, through a symlink, not one this step may change, at a
     directory or anything else that isn't a regular file, or under a file where a directory should be."""
@@ -259,24 +263,49 @@ def remote_refs(url: str, token: str | None, stall: int = STALL) -> dict[str, st
     directory so no repo's own config steers it. An annotated tag's commit is under the tag's name plus ``^{}``,
     as ``git ls-remote`` writes it.
 
+    An SSH remote that hasn't listed them within ``stall`` seconds is stopped, with what it started (spec 1.7).
+
     Raises:
         MissingToolError: ``git`` isn't on ``PATH``.
-        GitError: git can't list the remote's refs.
+        GitError: git can't list the remote's refs, or an SSH remote didn't in time.
     """
+    git = require("git")
     with tempfile.TemporaryDirectory(prefix="fastro-git-") as empty:
-        listed = _git(["ls-remote", "--", url], _environment(True, token, Path(empty), stall), Path(empty))
-    return {name: sha for sha, _, name in (line.partition("\t") for line in listed.splitlines()) if name}
+        env = _environment(True, token, Path(empty), stall)
+        with subprocess.Popen(
+            [git, "ls-remote", "--", url],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=empty,
+            start_new_session=True,
+        ) as process:
+            try:
+                listed, said = process.communicate(timeout=stall if url.startswith("ssh://") else None)
+            except subprocess.TimeoutExpired:
+                _stop(process)
+                raise GitError(f"it hadn't finished after {stall} seconds.") from None
+            except BaseException:
+                _stop(process)
+                raise
+    if process.returncode != 0:
+        raise GitError(said.decode("utf-8", "replace").strip() or f"git exited {process.returncode}")
+    lines = listed.decode("utf-8", "replace").splitlines()
+    return {name: sha for sha, _, name in (line.partition("\t") for line in lines) if name}
 
 
 def fetch(url: str, ref: str, token: str | None, repo: Path, most: int, stall: int = STALL) -> str:
     """Fetch ``ref`` from ``url`` alone, one commit deep, into a new bare repo at ``repo``, and give its commit.
     Its objects may take no more than ``most`` bytes on disk, checked while git fetches, stopping it and what it
-    started when they don't, and once it's done.
+    started when they don't, and once it's done. Over SSH, it's stopped too when they haven't passed their largest
+    total for ``stall`` seconds, counted from when git starts (spec 1.7).
 
     Raises:
         MissingToolError: ``git`` isn't on ``PATH``.
         GitError: git can't fetch it.
         TooBig: its objects take more than ``most`` bytes.
+        Stalled: an SSH fetch's objects stopped growing for ``stall`` seconds.
     """
     env = _environment(True, token, repo.parent, stall)
     _git(["init", "-q", "--bare", "--template=", str(repo)], env, repo.parent)
@@ -304,10 +333,16 @@ def fetch(url: str, ref: str, token: str | None, repo: Path, most: int, stall: i
             stderr=errors,
             start_new_session=True,
         )
+        watching, largest, grew = url.startswith("ssh://"), 0, time.monotonic()
         try:
             while process.poll() is None:
-                if _size(repo / "objects") > most:
+                size = _size(repo / "objects")
+                if size > most:
                     raise TooBig
+                if size > largest:
+                    largest, grew = size, time.monotonic()
+                elif watching and time.monotonic() - grew > stall:
+                    raise Stalled
                 time.sleep(POLL)
         except BaseException:
             _stop(process)

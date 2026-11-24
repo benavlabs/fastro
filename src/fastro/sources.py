@@ -564,6 +564,9 @@ def _fetched(source: Source, remote: _Remote, ref: str, shown: str, entries: Pat
                 f"{source.location}@{shown}'s fetch takes more than {_size(most.download)} on disk, the most fastro "
                 f"fetches (1.10). Set {SIZE_VARIABLE} to raise it."
             ) from None
+        except apply.Stalled:
+            waited = f"nothing arrived for {remote.stall} seconds."
+            raise FetchError(f"git can't fetch {shown} from {remote.url}: {waited}") from None
         except apply.GitError as error:
             raise FetchError(f"git can't fetch {shown} from {remote.url}: {error}{ssh}") from None
         if not _kept(entries, commit):
