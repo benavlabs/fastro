@@ -1,8 +1,10 @@
 """Rendering a blueprint template is bounded by size, never by a clock (spec 6.2): each rendered file stops at
 10 MB, counted as it's produced, and a sandboxed ``*``, ``+`` or ``**`` whose result would pass its limit fails
-before it computes."""
+before it computes, and Python's integer digit limit is 4,300 while it renders, whatever the interpreter's own
+setting."""
 
-from collections.abc import Mapping
+import sys
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -15,6 +17,13 @@ ITEMS = (
     "in a template (6.2)."
 )
 DIGITS = "a.txt.j2 doesn't render: '{op}' would give an integer of more than 4,300 digits, the most fastro writes out (6.2)."
+
+
+@pytest.fixture
+def digits() -> Iterator[None]:
+    before = sys.get_int_max_str_digits()
+    yield
+    sys.set_int_max_str_digits(before)
 
 
 def _render(text: str, values: Mapping[str, object] | None = None) -> str:
@@ -159,3 +168,27 @@ def test_a_power_whose_bits_land_on_the_bound_is_still_refused() -> None:
 
 def test_a_lone_surrogate_counts_as_the_three_bytes_python_would_pass_it_as() -> None:
     assert _refused("{{ (x * n) | length }}", {"x": "\ud800", "n": 3333334}) == STRING.format(op="*")
+
+
+@pytest.mark.usefixtures("digits")
+def test_an_interpreter_set_below_4300_digits_still_renders_4300_and_keeps_its_setting() -> None:
+    sys.set_int_max_str_digits(1000)
+
+    assert _render("{{ (9 ** 4506) | string | length }}") == "4300"
+    assert sys.get_int_max_str_digits() == 1000
+
+
+@pytest.mark.usefixtures("digits")
+def test_an_interpreter_with_no_digit_limit_still_stops_at_4300_and_keeps_its_setting() -> None:
+    sys.set_int_max_str_digits(0)
+
+    assert "Exceeds the limit (4300 digits)" in _refused("{{ n }}", {"n": 10**4300})
+    assert sys.get_int_max_str_digits() == 0
+
+
+@pytest.mark.usefixtures("digits")
+def test_an_integer_literal_past_4300_digits_is_refused_whatever_the_interpreter_s_setting() -> None:
+    sys.set_int_max_str_digits(0)
+
+    assert "Exceeds the limit (4300 digits)" in _refused("{{ " + "9" * 4301 + " }}")
+    assert sys.get_int_max_str_digits() == 0

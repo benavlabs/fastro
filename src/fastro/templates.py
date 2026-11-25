@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import sys
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -105,7 +106,8 @@ class TemplateError(Exception):
 def render(name: str, data: bytes, values: Mapping[str, Any]) -> str:
     """The template ``name``, whose bytes are ``data``, read as UTF-8 past a byte order mark and rendered with
     ``values`` in Jinja's sandbox, as spec 6.2 says, so a template reaches only its context, changes none of it, and
-    runs no code. Its output may come to 10 MB of UTF-8, counted as it's produced.
+    runs no code. Its output may come to 10 MB of UTF-8, counted as it's produced, and Python's integer digit limit
+    is 4,300 while it renders, whatever the interpreter's own setting, which is restored afterwards.
 
     Raises:
         TemplateError: it isn't UTF-8 or doesn't render.
@@ -116,6 +118,8 @@ def render(name: str, data: bytes, values: Mapping[str, Any]) -> str:
         raise TemplateError(f"{name} isn't UTF-8 text, so it can't be rendered.") from None
     pieces = []
     size = 0
+    before = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(MOST_DIGITS)
     try:
         for piece in ENVIRONMENT.from_string(text).generate(values):
             try:
@@ -129,6 +133,8 @@ def render(name: str, data: bytes, values: Mapping[str, Any]) -> str:
         raise
     except Exception as error:
         raise TemplateError(f"{name} doesn't render: {error}") from None
+    finally:
+        sys.set_int_max_str_digits(before)
     return "".join(pieces)
 
 
