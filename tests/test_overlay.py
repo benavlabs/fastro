@@ -100,6 +100,19 @@ def test_a_template_keeps_its_last_newline_and_a_template_without_one_gets_none(
         ("{{ project.missing }}\n", r"^overlay/a\.txt\.j2 doesn't render: .*'missing'"),
         ("{% if %}\n", r"^overlay/a\.txt\.j2 doesn't render"),
         ("{{ has('nope') }}\n", r"^overlay/a\.txt\.j2 doesn't render: has\('nope'\): 'nope' isn't a feature"),
+        (
+            "{{ ''.__class__.__mro__[1].__subclasses__() }}\n",
+            r"^overlay/a\.txt\.j2 doesn't render: access to attribute '__class__' of 'str' object is unsafe\.",
+        ),
+        ("{{ cycler.__init__.__globals__ }}\n", r"^overlay/a\.txt\.j2 doesn't render: .*unsafe"),
+        ("{% set _ = project.update({'name': 'x'}) %}\n", r"^overlay/a\.txt\.j2 doesn't render: .*unsafe"),
+        ("{% set _ = features.append('x') %}\n", r"^overlay/a\.txt\.j2 doesn't render: .*unsafe"),
+        ('{% include "a.txt.j2" %}\n', r"^overlay/a\.txt\.j2 doesn't render: no loader for this environment specified$"),
+        (
+            '{% import "a.txt.j2" as other %}\n',
+            r"^overlay/a\.txt\.j2 doesn't render: no loader for this environment specified$",
+        ),
+        ('{% extends "a.txt.j2" %}\n', r"^overlay/a\.txt\.j2 doesn't render: no loader for this environment specified$"),
     ],
 )
 def test_a_template_that_doesn_t_render_refuses_the_build_before_anything_is_written(

@@ -6,7 +6,8 @@ import codecs
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from fastro.engine import conditions
 from fastro.engine.blueprint import Blueprint
@@ -14,7 +15,7 @@ from fastro.engine.project import slug
 from fastro.engine.resolve import Selection
 from fastro.engine.spec import OPERATORS, SpecError
 
-ENVIRONMENT = Environment(undefined=StrictUndefined, keep_trailing_newline=True, autoescape=False)
+ENVIRONMENT = ImmutableSandboxedEnvironment(undefined=StrictUndefined, keep_trailing_newline=True, autoescape=False)
 
 
 class TemplateError(Exception):
@@ -23,7 +24,8 @@ class TemplateError(Exception):
 
 def render(name: str, data: bytes, values: Mapping[str, Any]) -> str:
     """The template ``name``, whose bytes are ``data``, read as UTF-8 past a byte order mark and rendered with
-    ``values`` as spec 6.2 says.
+    ``values`` in Jinja's sandbox, as spec 6.2 says, so a template reaches only its context, changes none of it, and
+    runs no code.
 
     Raises:
         TemplateError: it isn't UTF-8 or doesn't render.

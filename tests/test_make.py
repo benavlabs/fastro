@@ -383,6 +383,10 @@ def _refused(args: list[str], message: str, out: Path) -> None:
         ({"blueprint/templates/deploy/local/sub/.j2": "x\n"}, "blueprint/templates/deploy/local/sub/.j2 would be written at"),
         ({"blueprint/templates/deploy/local/.j2": "x\n"}, "blueprint/templates/deploy/local/.j2 would be written at"),
         ({"blueprint/templates/deploy/local/z.txt.j2": "{{ nope }}\n"}, "z.txt.j2 doesn't render: 'nope' is undefined"),
+        (
+            {"blueprint/templates/deploy/local/z.txt.j2": "{{ ''.__class__.__mro__ }}\n"},
+            "z.txt.j2 doesn't render: access to attribute '__class__' of 'str' object is unsafe.",
+        ),
         ({"blueprint/templates/deploy/local/z.txt.j2": "{{ has('a b') }}\n"}, "z.txt.j2 doesn't render:"),
         (
             {"blueprint/templates/deploy/local/z.txt.j2": "{{ has('taskiq') }}\n"},
@@ -427,6 +431,7 @@ def _refused(args: list[str], message: str, out: Path) -> None:
         "named-j2",
         "j2-at-the-root",
         "undefined",
+        "sandboxed",
         "bad-condition",
         "unknown-feature",
         "unknown-option",
