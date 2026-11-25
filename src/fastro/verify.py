@@ -19,7 +19,7 @@ from fastro import overlay, pyproject, templates
 from fastro.apply import ApplyError, Change, apply, changes, export_subst, gitlinks, tracked_files
 from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.files import breaks_the_rule, file_kind
+from fastro.engine.files import breaks_the_rule, file_kind, shown, utf8
 from fastro.engine.plan import plan, python_root_lock, starting_lock
 from fastro.engine.problems import CatalogError
 from fastro.engine.render import RenderError, render
@@ -128,6 +128,10 @@ def build(
     copied = [RepoPath(change.source or change.path) for change in found if change.kind == "copy"]
     copied += [RepoPath(source) for source, _ in overlaid]
     found += [change for _, change in overlaid]
+    if odd := next((path.text for path in copied if not utf8(path.text)), None):
+        raise Unbuildable(
+            f"{shown(odd)} is at a path that isn't UTF-8, which no source can carry. Rename it to a path that's UTF-8."
+        )
     if marked := export_subst(root, copied):
         raise Unbuildable(
             f"{marked[0].text} has git's export-subst attribute set, so a tarball of the repo would expand its "
@@ -169,7 +173,7 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
             problem 6.1 refuses.
         OSError: the system won't let fastro resolve or open either file.
     """
-    if envs := overlay.env_files(catalog, tracked, gitlinks(root), received=True):
+    if envs := [shown(path) for path in overlay.env_files(catalog, tracked, gitlinks(root), received=True)]:
         listed = f"{', '.join(envs[:-1])} and {envs[-1]}" if len(envs) > 1 else envs[0]
         raise Unbuildable(
             f"{REFUSED} {listed} would reach a project as a .env, which is almost always a leaked secret. Remove "

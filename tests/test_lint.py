@@ -2016,3 +2016,37 @@ def test_a_clash_at_a_path_core_and_an_overlay_file_both_give_names_core(repo: P
         "blueprint: 'overlay/backend/pyproject.toml/x' and 'backend/pyproject.toml' (core) would give a project both a "
         "file 'backend/pyproject.toml' and files under it."
     ) in [message for _, message, _ in _overlay(repo, *given)]
+
+
+def test_a_tracked_file_at_a_path_that_isn_t_utf_8_is_bp007_named_with_escapes(
+    repo: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    track_bytes(repo, b"backend/caf\xe9.txt")
+
+    found = [(finding["line"], finding["message"], finding["fix"]) for finding in _findings() if finding["code"] == "BP007"]
+
+    assert found == [
+        (
+            1,
+            "blueprint: backend/caf\\xe9.txt is at a path that isn't UTF-8, so no source can carry it, and every source "
+            "refuses it.",
+            "Rename it to a path that's UTF-8.",
+        )
+    ]
+
+
+def test_human_lint_names_a_path_that_isn_t_utf_8_with_escapes_in_every_finding(
+    repo: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    (repo / ".gitattributes").write_text("*.txt export-subst\n")
+    _git(repo, "add", ".gitattributes")
+    track_bytes(repo, b"backend/caf\xe9.txt")
+    track_bytes(repo, b"d\xe9/.env")
+
+    code, out, err = _lint()
+
+    assert code == 1
+    assert "backend/caf\\xe9.txt has git's export-subst attribute set" in out
+    assert "Remove export-subst for backend/caf\\xe9.txt from .gitattributes." in out
+    assert "d\\xe9/.env is a committed .env" in out
+    assert "git rm --cached d\\xe9/.env" in out

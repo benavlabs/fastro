@@ -22,7 +22,7 @@ from fastro import sync as syncing
 from fastro.apply import RepositoryError, export_subst, gitlinks, tracked_files
 from fastro.engine import bindings, catalog_check, envfile, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
-from fastro.engine.files import breaks_the_rule, present, unreadable, unreadable_config
+from fastro.engine.files import breaks_the_rule, present, shown, unreadable, unreadable_config, utf8
 from fastro.engine.plan import plan
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, Problem
@@ -504,18 +504,29 @@ def _committed_env(root: Path, catalog: Blueprint, committed: Sequence[RepoPath]
             "project's .env itself.",
             "BP008",
         )
-        for path in overlay.env_files(catalog, committed, gitlinks(root), received=False)
+        for path in map(shown, overlay.env_files(catalog, committed, gitlinks(root), received=False))
     ]
 
 
 def _substituted(root: Path, catalog: Blueprint, tracked: set[str]) -> list[Problem]:
-    """BP007: each tracked file git's ``export-subst`` attribute is set on, at ``[blueprint]`` (1.7, 2.13)."""
-    return [
+    """BP007: each tracked file at a path that isn't UTF-8, and each git's ``export-subst`` attribute is set on, at
+    ``[blueprint]``, every path named as ``shown`` writes it (1.7, 2.13)."""
+    odd = [
         catalog.document.problem(
             ("blueprint",),
-            f"{path.text} has git's export-subst attribute set, so a tarball of the repo would expand its placeholders "
-            "and a clone wouldn't, and every source refuses it.",
-            f"Remove export-subst for {path.text} from .gitattributes.",
+            f"{shown(path)} is at a path that isn't UTF-8, so no source can carry it, and every source refuses it.",
+            "Rename it to a path that's UTF-8.",
+            "BP007",
+        )
+        for path in tracked
+        if not utf8(path)
+    ]
+    return odd + [
+        catalog.document.problem(
+            ("blueprint",),
+            f"{shown(path.text)} has git's export-subst attribute set, so a tarball of the repo would expand its "
+            "placeholders and a clone wouldn't, and every source refuses it.",
+            f"Remove export-subst for {shown(path.text)} from .gitattributes.",
             "BP007",
         )
         for path in export_subst(root, map(RepoPath, sorted(tracked)))

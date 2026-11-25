@@ -1417,3 +1417,55 @@ def test_a_build_of_an_env_example_6_1_refuses_is_unbuildable(repo: Path, tmp_pa
 
     with pytest.raises(Unbuildable, match="^CACHE_BACKEND has no '# @fastro option=cache.backend' marker"):
         build(repo, catalog, (), tmp_path / "core")
+
+
+def test_a_build_refuses_a_file_it_would_copy_at_a_path_that_isn_t_utf_8(
+    repo: Path, tmp_path: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    track_bytes(repo, b"backend/caf\xe9.txt")
+
+    with pytest.raises(Unbuildable) as caught:
+        build(repo, CATALOG, (), tmp_path / "build")
+
+    assert str(caught.value) == (
+        "backend/caf\\xe9.txt is at a path that isn't UTF-8, which no source can carry. Rename it to a path that's UTF-8."
+    )
+    assert not (tmp_path / "build").exists()
+
+
+def test_a_build_refuses_an_overlay_file_at_a_path_that_isn_t_utf_8(
+    repo: Path, tmp_path: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    text = (
+        (repo / "blueprint.toml")
+        .read_text()
+        .replace('requires_fastro = ">=0.1.0.dev0"\n', 'requires_fastro = ">=0.1.0.dev0"\noverlay = "overlay"\n', 1)
+    )
+    (repo / "blueprint.toml").write_text(text)
+    _git(repo, "add", "blueprint.toml")
+    track_bytes(repo, b"overlay/caf\xe9.txt")
+
+    with pytest.raises(Unbuildable) as caught:
+        build(repo, blueprint.load("blueprint.toml", text, Version("0.1.0")), (), tmp_path / "build")
+
+    assert str(caught.value) == (
+        "overlay/caf\\xe9.txt is at a path that isn't UTF-8, which no source can carry. Rename it to a path that's UTF-8."
+    )
+    assert not (tmp_path / "build").exists()
+
+
+def test_a_refused_env_names_a_path_that_isn_t_utf_8_with_escapes(
+    repo: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    track_bytes(repo, b"d\xe9/.env")
+
+    with pytest.raises(Unbuildable, match=r"^verify can't build a set: d\\xe9/\.env would reach a project as a \.env"):
+        verify(repo, CATALOG, ["minimal"], lambda project, selection: [], keep=False)
+
+
+def test_a_build_takes_no_notice_of_a_path_that_isn_t_utf_8_it_wouldn_t_copy(
+    repo: Path, tmp_path: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    track_bytes(repo, b"backend/src/modules/billing/caf\xe9.py")
+
+    assert (build(repo, CATALOG, (), tmp_path / "build") / "backend").is_dir()

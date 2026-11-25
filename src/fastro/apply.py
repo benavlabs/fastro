@@ -22,6 +22,7 @@ from fastro.engine.spec import RepoPath
 from fastro.tools import require
 
 GITLINK = "160000"
+NAMES = "surrogateescape"
 EXPORT_IGNORE = "export-ignore"
 EXPORT_SUBST = "export-subst"
 EXTRAHEADER = "http.https://github.com/.extraheader"
@@ -69,7 +70,8 @@ def tracked_files(repo: Path, untracked: bool = False, exported: bool = True) ->
     tree and, while ``exported`` holds, one ``export-ignore`` marks, as ``git archive`` does (spec 1.7, 2.13). With
     ``untracked``, the files git doesn't track or ignore are listed too, as ``--include-untracked`` asks (1.7).
     ``repo`` may be a directory inside a work tree: the paths are relative to it, and the work tree's own
-    ``.gitattributes`` decide.
+    ``.gitattributes`` decide. A path that isn't UTF-8 is read as Python reads such a file name, each byte UTF-8
+    can't decode a lone surrogate, so ``files.shown`` can name it.
 
     One fastro can't check, in a directory it isn't allowed to search, is kept, so whoever reads it says why it can't.
 
@@ -79,7 +81,13 @@ def tracked_files(repo: Path, untracked: bool = False, exported: bool = True) ->
     """
     git = require("git")
     others = ["--others", "--exclude-standard"] if untracked else []
-    listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z", "--cached", *others], capture_output=True, text=True)
+    listed = subprocess.run(
+        [git, "-C", str(repo), "ls-files", "-z", "--cached", *others],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors=NAMES,
+    )
     if listed.returncode != 0:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
     top, prefix = _place(repo)
@@ -101,7 +109,9 @@ def gitlinks(repo: Path) -> frozenset[str]:
         RepositoryError: ``repo`` isn't a git repository, or isn't in its work tree.
     """
     git = require("git")
-    listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z", "--stage"], capture_output=True, text=True)
+    listed = subprocess.run(
+        [git, "-C", str(repo), "ls-files", "-z", "--stage"], capture_output=True, text=True, encoding="utf-8", errors=NAMES
+    )
     if listed.returncode != 0:
         raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
     modes: dict[str, set[str]] = {}
@@ -136,7 +146,11 @@ def _place(repo: Path) -> tuple[Path, str]:
     """
     git = require("git")
     where = subprocess.run(
-        [git, "-C", str(repo), "rev-parse", "--show-toplevel", "--show-prefix"], capture_output=True, text=True
+        [git, "-C", str(repo), "rev-parse", "--show-toplevel", "--show-prefix"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors=NAMES,
     )
     if where.returncode != 0:
         raise RepositoryError(f"{repo} isn't in a git work tree: {where.stderr.strip()}")
@@ -198,6 +212,8 @@ def _set(repo: Path, names: Sequence[str], attribute: str) -> set[str]:
             input="\0".join(names) + "\0",
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors=NAMES,
             check=True,
             env=env,
         )

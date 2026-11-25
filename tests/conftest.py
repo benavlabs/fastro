@@ -5,6 +5,7 @@ import importlib
 import os
 import pkgutil
 import re
+import subprocess
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -142,3 +143,19 @@ def replace() -> Callable[[Path, str, str], str]:
         return REASONS[make]
 
     return swap
+
+
+@pytest.fixture
+def track_bytes(monkeypatch: pytest.MonkeyPatch) -> Callable[[Path, bytes], None]:
+    """Tracks a file at a path given as bytes through git's index, and has fastro take it as present in the working
+    tree, since macOS can't name a file whose path isn't UTF-8."""
+
+    def track(repo: Path, path: bytes) -> None:
+        hashed = subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input=b"x\n", capture_output=True, check=True
+        )
+        entry = b"100644," + hashed.stdout.strip() + b"," + path
+        subprocess.run([b"git", b"-C", os.fsencode(repo), b"update-index", b"--add", b"--cacheinfo", entry], check=True)
+        monkeypatch.setattr("fastro.apply._in_working_tree", lambda path: True)
+
+    return track

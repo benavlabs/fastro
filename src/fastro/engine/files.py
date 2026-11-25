@@ -8,6 +8,21 @@ import stat
 from pathlib import Path
 
 
+def utf8(path: str) -> bool:
+    """Whether ``path`` is UTF-8: it holds none of the lone surrogates Python reads a byte UTF-8 can't decode as."""
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def shown(path: str) -> str:
+    """``path`` as a message names it (spec 1.7): each byte UTF-8 can't decode written ``\\xNN``, as Python's
+    ``backslashreplace`` writes it."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+
+
 def unreadable(root: Path, path: str) -> str | None:
     """Why fastro may not read ``path`` in ``root``, or ``None`` when it resolves to a regular file inside ``root``
     (spec 1.10). Where its symlinks finally lead is what counts, wherever they pass on the way."""

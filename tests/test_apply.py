@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from fastro.apply import (
     changes,
     check,
     export_subst,
+    gitlinks,
     head_commit,
     tracked_files,
 )
@@ -671,3 +672,13 @@ def test_check_raises_for_a_path_under_a_directory_fastro_cant_search_on_every_p
             check(found, source, target)
     finally:
         locked.chmod(0o755)
+
+
+def test_a_tracked_path_that_isn_t_utf_8_is_listed_as_python_reads_file_names(
+    tmp_path: Path, track_bytes: Callable[[Path, bytes], None]
+) -> None:
+    repo = _repo(tmp_path / "repo", {"a.py": ""})
+    track_bytes(repo, b"caf\xe9.txt")
+
+    assert tracked_files(repo) == (RepoPath("a.py"), RepoPath("caf\udce9.txt"))
+    assert gitlinks(repo) == frozenset()

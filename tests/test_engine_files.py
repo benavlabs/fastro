@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fastro.engine.files import breaks_the_rule
+from fastro.engine.files import breaks_the_rule, shown, utf8
 
 LOOPS = [
     RuntimeError("Symlink loop from 'blueprint.toml'"),
@@ -27,3 +27,13 @@ def test_a_symlink_loop_breaks_the_rule_however_this_python_reports_it(
     monkeypatch.setattr(Path, "resolve", looping)
 
     assert breaks_the_rule(tmp_path, "blueprint.toml") == "has symlinks that can't be followed"
+
+
+@pytest.mark.parametrize(("path", "expected"), [("backend/café.py", True), ("backend/caf\udce9.py", False), ("a", True)])
+def test_a_path_is_utf_8_unless_it_holds_a_byte_utf_8_can_t_decode(path: str, expected: bool) -> None:
+    assert utf8(path) is expected
+
+
+def test_a_path_is_shown_with_each_byte_utf_8_can_t_decode_written_as_an_escape() -> None:
+    assert shown(b"d\xe9/caf\xc3(.txt".decode("utf-8", "surrogateescape")) == "d\\xe9/caf\\xc3(.txt"
+    assert shown("backend/café.py") == "backend/café.py"
