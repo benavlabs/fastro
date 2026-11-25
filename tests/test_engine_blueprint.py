@@ -198,7 +198,13 @@ def test_the_blueprint_tables_optional_keys_have_the_specs_defaults() -> None:
     assert (blueprint.verify.include_presets, blueprint.verify.sets, blueprint.verify.checks) == (True, {}, ())
 
 
-KEPT = [RepoPath("blueprint.toml"), RepoPath("fastro.toml"), RepoPath(".fastro/")]
+KEPT = [
+    RepoPath("blueprint.toml"),
+    RepoPath("fastro.toml"),
+    RepoPath("fastro.toml/"),
+    RepoPath(".fastro"),
+    RepoPath(".fastro/"),
+]
 
 
 @pytest.mark.parametrize("overlay", ["blueprint/overlay/", "blueprint/overlay"])

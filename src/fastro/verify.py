@@ -120,7 +120,9 @@ def build(
     values = templates.context(catalog, selection, _name(root, catalog, files), str(installed_version()))
     try:
         overlaid = overlay.files(root, catalog, files, values)
-        overlay.check(found, overlaid, (op.path for op in made.ops if op.op == "render"))
+        overlay.check(
+            found, overlaid, (op.path for op in made.ops if op.op == "render"), {op.path: op.origin for op in made.ops}
+        )
     except overlay.OverlayError as error:
         raise Unbuildable(str(error)) from None
     copied = [RepoPath(change.source or change.path) for change in found if change.kind == "copy"]

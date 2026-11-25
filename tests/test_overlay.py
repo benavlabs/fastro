@@ -159,7 +159,7 @@ def test_two_overlay_files_at_one_project_path_refuse_the_build_naming_both(tmp_
 @pytest.mark.parametrize(
     ("overlay_file", "other"),
     [
-        ("overlay/backend/pyproject.toml", "backend/pyproject.toml"),
+        ("overlay/backend/pyproject.toml", "backend/pyproject.toml \\(core\\)"),
         ("overlay/backend/src/wiring/app.py.j2", "the wiring file backend/src/wiring/app.py"),
     ],
 )
@@ -169,7 +169,7 @@ def test_an_overlay_file_at_a_path_the_plan_gives_another_source_refuses_the_bui
     root, catalog = _repo(tmp_path, {overlay_file: "x\n"})
     path = overlay_file.removeprefix("overlay/").removesuffix(".j2")
 
-    with pytest.raises(Unbuildable, match=f"^{overlay_file} and {other} would both give a project {path}"):
+    with pytest.raises(Unbuildable, match=f"^{overlay_file} and {other} would both give a project {path},"):
         build(root, catalog, (), tmp_path / "build")
 
     assert not (tmp_path / "build").exists()
@@ -214,16 +214,18 @@ def test_an_overlay_env_example_is_what_the_build_holds_never_a_file_in_the_work
     [
         (
             {"overlay/backend": "x\n"},
-            r"^overlay/backend and backend/\S+ would give a project both a file backend and files under it",
+            r"^backend/\S+ \(core\) and overlay/backend would give a project both a file backend and files under it, so "
+            r"nothing was written\.$",
         ),
         (
             {"overlay/a.j2": "x\n", "overlay/a/b": "y\n"},
-            r"^overlay/a\.j2 and overlay/a/b would give a project both a file a and files under it",
+            r"^overlay/a/b and overlay/a\.j2 would give a project both a file a and files under it, so nothing was "
+            r"written\.$",
         ),
         (
             {"overlay/backend/pyproject.toml/x": "y\n"},
-            r"^overlay/backend/pyproject\.toml/x and backend/pyproject\.toml would give a project both a file "
-            r"backend/pyproject\.toml and files under it",
+            r"^overlay/backend/pyproject\.toml/x and backend/pyproject\.toml \(core\) would give a project both a file "
+            r"backend/pyproject\.toml and files under it, so nothing was written\.$",
         ),
     ],
 )
@@ -272,3 +274,77 @@ def test_an_overlay_env_example_that_isn_t_utf_8_refuses_the_build(tmp_path: Pat
 
     with pytest.raises(Unbuildable, match=r"^overlay/backend/\.env\.example isn't UTF-8 text\. Save it as UTF-8\.$"):
         build(root, catalog, (), tmp_path / "build")
+
+
+@pytest.mark.parametrize(
+    ("name", "path"),
+    [
+        ("overlay/fastro.toml", "fastro.toml"),
+        ("overlay/fastro.toml.j2", "fastro.toml"),
+        ("overlay/.fastro/lock.toml", ".fastro/lock.toml"),
+        ("overlay/.fastro", ".fastro"),
+        ("overlay/fastro.toml/x.j2", "fastro.toml/x"),
+    ],
+)
+def test_an_overlay_file_at_one_of_fastro_s_own_paths_refuses_the_build(tmp_path: Path, name: str, path: str) -> None:
+    root, catalog = _repo(tmp_path, {name: "x\n"})
+
+    with pytest.raises(Unbuildable) as caught:
+        build(root, catalog, (), tmp_path / "build")
+
+    assert str(caught.value) == (
+        f"{name} would give a project {path}, and fastro.toml, .fastro and what's under them are paths fastro writes "
+        "itself, so nothing was written."
+    )
+    assert not (tmp_path / "build").exists()
+
+
+def test_an_overlay_file_beside_fastro_s_own_paths_is_fine(tmp_path: Path) -> None:
+    root, catalog = _repo(tmp_path, {"overlay/fastro.toml.example": "x\n", "overlay/.fastroignore": "y\n"})
+
+    project = build(root, catalog, (), tmp_path / "build")
+
+    assert (project / "fastro.toml.example").read_text() == "x\n" and (project / ".fastroignore").read_text() == "y\n"
+
+
+def test_an_overlay_file_where_a_feature_gives_a_file_names_the_feature(tmp_path: Path) -> None:
+    root, catalog = _repo(tmp_path, {"overlay/backend/src/modules/billing/routes.py/x": "x\n"})
+
+    with pytest.raises(Unbuildable) as caught:
+        build(root, catalog, ("billing",), tmp_path / "build")
+
+    assert str(caught.value) == (
+        "overlay/backend/src/modules/billing/routes.py/x and backend/src/modules/billing/routes.py (feature:billing) "
+        "would give a project both a file backend/src/modules/billing/routes.py and files under it, so nothing was "
+        "written."
+    )
+
+
+def test_a_tracked_file_under_a_path_a_wiring_file_renders_refuses_the_build_naming_both(tmp_path: Path) -> None:
+    root, catalog = _repo(tmp_path, {})
+    (root / "backend/src/wiring/app.py").unlink()
+    (root / "backend/src/wiring/app.py").mkdir()
+    (root / "backend/src/wiring/app.py/x.py").write_text("x = 1\n")
+    _git(root, "add", "-A")
+
+    with pytest.raises(Unbuildable) as caught:
+        build(root, catalog, (), tmp_path / "build")
+
+    assert str(caught.value) == (
+        "backend/src/wiring/app.py/x.py (core) and the wiring file backend/src/wiring/app.py would give a project both "
+        "a file backend/src/wiring/app.py and files under it, so nothing was written."
+    )
+    assert not (tmp_path / "build").exists()
+
+
+@pytest.mark.parametrize("name", [".fastro", "fastro.toml/notes.md"])
+def test_a_core_file_at_one_of_fastro_s_own_paths_never_reaches_a_build(tmp_path: Path, name: str) -> None:
+    root, catalog = _repo(tmp_path, {})
+    (root / "fastro.toml").unlink()
+    (root / name).parent.mkdir(parents=True, exist_ok=True)
+    (root / name).write_text("x\n")
+    _git(root, "add", "-A")
+
+    project = build(root, catalog, (), tmp_path / "build")
+
+    assert not (project / name.split("/")[0]).exists()

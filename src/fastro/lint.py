@@ -28,7 +28,7 @@ from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, Problem
 from fastro.engine.project import PROJECT_NAME, Project
 from fastro.engine.render import RenderError, shadows
-from fastro.engine.resolve import SelectionError, select
+from fastro.engine.resolve import Ownership, SelectionError, select
 from fastro.engine.spec import Ref, RepoPath
 
 LOAD_PROBLEM = "BP001"
@@ -47,6 +47,9 @@ SOURCE_FIX = "Add source = true to fastro.toml."
 COMMAND_CLASH_FIX = "Rename one of the commands, so that no command's words begin another's."
 FLAG_CLASH_FIX = "Rename the param, so that its flags are its own."
 OVERLAY_FIX = "Move or rename one of them, so that each path a project gets has one source."
+OWN_FIX = "Move it: fastro.toml, .fastro and what's under them are fastro's own, and no source may give a project one."
+OWN_ENTRY_FIX = "Remove the entry: fastro writes fastro.toml and .fastro in a project itself."
+CLASH_FIX = "Move or rename one of them, so that no path a project gets is both a file and a directory."
 NAME_RULE = "use letters, digits, '.', '_' and '-', starting and ending with a letter or digit, as PEP 508 says."
 
 
@@ -157,6 +160,7 @@ def lint(root: Path) -> Report:
         found.extend(_export_ignored_catalog(catalog, tracked, committed))
         found.extend(_committed_env(root, catalog, committed))
         found.extend(_missing_paths(catalog, tracked))
+        found.extend(_own_entries(catalog))
         found.extend(_missing_modules(catalog, tracked))
         found.extend(_unresolved_refs(root, catalog, tracked, catalog.document, _declared_refs(catalog)))
         found.extend(_open_verify_sets(catalog))
@@ -179,7 +183,9 @@ def lint(root: Path) -> Report:
         except CatalogError as error:
             found.extend(error.problems)
     if catalog is not None:
-        found.extend(_overlay_collisions(catalog, tracked, checked.app.paths if checked is not None else ()))
+        app = checked.app.paths if checked is not None else ()
+        found.extend(_overlay_collisions(catalog, tracked, app))
+        found.extend(_clashes(catalog, tracked))
     if catalog is not None and checked is not None:
         refs = syncing.app_refs(catalog, checked.app.contributes)
         found.extend(_unresolved_refs(root, catalog, tracked, checked.document, refs))
@@ -242,9 +248,10 @@ def _missing_paths(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
 
 
 def _overlay_collisions(catalog: Blueprint, tracked: set[str], app: tuple[RepoPath, ...]) -> list[Problem]:
-    """BP003: each tracked overlay file whose project path an ``[app].paths`` entry of the blueprint's own
-    ``fastro.toml`` covers, or a tracked file outside ``blueprint_only``, a wiring file or an overlay file before it
-    gives a project too, at ``[blueprint].overlay`` (2.1)."""
+    """BP003: each tracked overlay file whose project path is one of fastro's own (``overlay.fastro_own``), one an
+    ``[app].paths`` entry of the blueprint's own ``fastro.toml`` covers, or one a tracked file outside
+    ``blueprint_only``, a wiring file or an overlay file before it gives a project too, at ``[blueprint].overlay``
+    (2.1)."""
     if catalog.info.overlay is None:
         return []
     base = catalog.info.overlay.text.rstrip("/") + "/"
@@ -254,7 +261,10 @@ def _overlay_collisions(catalog: Blueprint, tracked: set[str], app: tuple[RepoPa
     for path in sorted(path for path in tracked if path.startswith(base)):
         target = path.removeprefix(base).removesuffix(".j2")
         entry = next((entry for entry in app if entry.covers(target)), None)
-        if entry is not None:
+        if overlay.fastro_own(target):
+            message = f"{path!r} gives a project {target!r}, one of the paths fastro writes itself."
+            found.append(catalog.document.problem(("blueprint", "overlay"), message, OWN_FIX, "BP003"))
+        elif entry is not None:
             message = f"{path!r} gives a project {target!r}, which the [app].paths entry {entry.text!r} covers."
             found.append(catalog.document.problem(("blueprint", "overlay"), message, OVERLAY_FIX, "BP003"))
         elif target in given:
@@ -262,6 +272,51 @@ def _overlay_collisions(catalog: Blueprint, tracked: set[str], app: tuple[RepoPa
             found.append(catalog.document.problem(("blueprint", "overlay"), message, OVERLAY_FIX, "BP003"))
         else:
             given[target] = repr(path)
+    return found
+
+
+def _own_entries(catalog: Blueprint) -> list[Problem]:
+    """BP003: each feature's or ``when``'s ``paths`` entry at one of fastro's own paths (``overlay.fastro_own``),
+    which ships nothing, since those paths are always ``blueprint_only`` (2.1)."""
+    declared: list[tuple[KeyPath, RepoPath]] = []
+    for feature in catalog.features:
+        declared += [((*feature.at, "paths", index), path) for index, path in enumerate(feature.paths)]
+        for number, when in enumerate(feature.when):
+            declared += [((*feature.at, "when", number, "paths", index), path) for index, path in enumerate(when.paths)]
+    message = "is one of the paths fastro writes itself, so no project gets it from here and the entry ships nothing."
+    return [
+        catalog.document.problem(at, f"{path.text!r} {message}", OWN_ENTRY_FIX, "BP003")
+        for at, path in declared
+        if overlay.fastro_own(path.text)
+    ]
+
+
+def _clashes(catalog: Blueprint, tracked: set[str]) -> list[Problem]:
+    """BP003: each path one of the catalog's own sources gives a project as a file while another gives files under
+    it, under every selection at once, at ``[blueprint]`` (2.1). The sources are the tracked files outside
+    ``blueprint_only``, each wiring file's ``path`` and each overlay file's project path; the loader has already
+    refused a wiring path under another (2.6). Each finding names the first path under the file, and where both come
+    from, naming a tracked file by its catalog origin, as a build does, whatever ``[app].paths`` says."""
+    ownership = Ownership(catalog)
+    given = {
+        path: f"{path!r} ({ownership.of(RepoPath(path)).origin})"
+        for path in tracked
+        if not any(only.covers(path) for only in catalog.info.all_blueprint_only)
+    }
+    given.update({file.path.text: f"the wiring file {file.path.text!r}" for file in catalog.wiring})
+    if catalog.info.overlay is not None:
+        for path in sorted(tracked):
+            target = overlay.project_path(catalog, path)
+            if target and not overlay.fastro_own(target):
+                given.setdefault(target, repr(path))
+    found = []
+    named: set[str] = set()
+    for path in sorted(given):
+        for above in overlay.parents(path):
+            if above in given and above not in named:
+                named.add(above)
+                message = f"{given[path]} and {given[above]} would give a project both a file {above!r} and files under it."
+                found.append(catalog.document.problem(("blueprint",), message, CLASH_FIX, "BP003"))
     return found
 
 

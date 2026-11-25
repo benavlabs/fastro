@@ -102,7 +102,13 @@ CONTRIBUTION_KEYS = {"order", "if", "call"}
 DATA_CONTRIBUTION_KEYS = ("data", "order", "if")
 SCHEMA = 1
 UPGRADE = "Upgrade fastro (uv tool upgrade fastro), then run this again."
-KEPT = (RepoPath("blueprint.toml"), RepoPath("fastro.toml"), RepoPath(".fastro/"))
+KEPT = (
+    RepoPath("blueprint.toml"),
+    RepoPath("fastro.toml"),
+    RepoPath("fastro.toml/"),
+    RepoPath(".fastro"),
+    RepoPath(".fastro/"),
+)
 
 
 @dataclass(frozen=True)

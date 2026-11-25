@@ -389,7 +389,13 @@ def _overlay(repo: Path, *paths: str) -> list[tuple[object, object, object]]:
 
 
 def test_overlay_files_at_paths_no_project_gets_otherwise_are_fine(repo: Path) -> None:
-    given = ("docs/guide.md", "overlay/README.md.j2", "overlay/docs/guide.md", "overlay/backend/new.py", "overlay/fastro.toml")
+    given = (
+        "docs/guide.md",
+        "overlay/README.md.j2",
+        "overlay/docs/guide.md",
+        "overlay/backend/new.py",
+        "overlay/fastro.toml.example",
+    )
 
     assert _overlay(repo, *given) == []
 
@@ -1859,3 +1865,154 @@ def test_a_env_one_side_of_a_merge_has_as_a_submodule_is_still_bp008(repo: Path)
     subprocess.run(["git", "-C", str(repo), "update-index", "--index-info"], input=entries, text=True, check=True)
 
     assert ("BP008", _env_message("notes/.env")[0]) in [(finding["code"], finding["message"]) for finding in _findings()]
+
+
+OWN_FIX = "Move it: fastro.toml, .fastro and what's under them are fastro's own, and no source may give a project one."
+DIRECTORY_FIX = "Move or rename one of them, so that no path a project gets is both a file and a directory."
+
+
+@pytest.mark.parametrize(
+    ("name", "path"),
+    [
+        ("overlay/fastro.toml", "fastro.toml"),
+        ("overlay/fastro.toml.j2", "fastro.toml"),
+        ("overlay/.fastro/lock.toml", ".fastro/lock.toml"),
+        ("overlay/.fastro", ".fastro"),
+        ("overlay/fastro.toml/x.j2", "fastro.toml/x"),
+    ],
+)
+def test_an_overlay_file_at_one_of_fastro_s_own_paths_is_bp003_at_the_overlay(repo: Path, name: str, path: str) -> None:
+    assert _overlay(repo, name) == [
+        (
+            _line_of(repo, 'overlay = "overlay"'),
+            f"blueprint.overlay: {name!r} gives a project {path!r}, one of the paths fastro writes itself.",
+            OWN_FIX,
+        )
+    ]
+
+
+@pytest.mark.parametrize("entry", [".fastro/notes.md", ".fastro/", "fastro.toml"])
+def test_a_feature_paths_entry_at_one_of_fastro_s_own_paths_is_bp003_at_the_entry(repo: Path, entry: str) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        'paths = ["backend/src/modules/cache/", "backend/tests/test_cache.py"]',
+        f'paths = ["backend/src/modules/cache/", "backend/tests/test_cache.py", "{entry}"]',
+    )
+    _track(repo, ".fastro/notes.md")
+
+    found = [(finding["line"], finding["message"], finding["fix"]) for finding in _findings() if finding["code"] == "BP003"]
+
+    assert found == [
+        (
+            _line_of(repo, f'"{entry}"'),
+            f"features.cache.paths[2]: {entry!r} is one of the paths fastro writes itself, so no project gets it from "
+            "here and the entry ships nothing.",
+            "Remove the entry: fastro writes fastro.toml and .fastro in a project itself.",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("given", "message"),
+    [
+        (
+            ("overlay/backend/pyproject.toml/x",),
+            "'overlay/backend/pyproject.toml/x' and 'backend/pyproject.toml' (core) would give a project both a file "
+            "'backend/pyproject.toml' and files under it.",
+        ),
+        (
+            ("overlay/backend/src/modules/billing/routes.py/x.j2",),
+            "'overlay/backend/src/modules/billing/routes.py/x.j2' and 'backend/src/modules/billing/routes.py' "
+            "(feature:billing) would give a project both a file 'backend/src/modules/billing/routes.py' and files "
+            "under it.",
+        ),
+        (
+            ("overlay/a.j2", "overlay/a/b"),
+            "'overlay/a/b' and 'overlay/a.j2' would give a project both a file 'a' and files under it.",
+        ),
+        (
+            ("overlay/backend",),
+            "'backend/pyproject.toml' (core) and 'overlay/backend' would give a project both a file 'backend' and files "
+            "under it.",
+        ),
+    ],
+    ids=["core", "feature", "overlay", "overlay-file-over-core"],
+)
+def test_a_file_from_one_source_where_another_gives_a_directory_is_bp003_at_blueprint(
+    repo: Path, given: tuple[str, ...], message: str
+) -> None:
+    assert _overlay(repo, *given) == [(1, f"blueprint: {message}", DIRECTORY_FIX)]
+
+
+def test_a_tracked_file_under_a_wiring_path_is_bp003_at_blueprint(repo: Path) -> None:
+    _git(repo, "rm", "-q", "--cached", "frontend/menu.ts")
+    (repo / "frontend/menu.ts").unlink()
+    _track(repo, "frontend/menu.ts/x.ts")
+
+    found = [(finding["line"], finding["message"], finding["fix"]) for finding in _findings() if finding["code"] == "BP003"]
+
+    assert found == [
+        (
+            1,
+            "blueprint: 'frontend/menu.ts/x.ts' (core) and the wiring file 'frontend/menu.ts' would give a project both "
+            "a file 'frontend/menu.ts' and files under it.",
+            DIRECTORY_FIX,
+        )
+    ]
+
+
+def test_an_overlay_file_under_a_blueprint_only_file_is_fine(repo: Path) -> None:
+    assert _overlay(repo, "docs/guide.md", "overlay/docs/guide.md/x") == []
+
+
+def test_overlay_files_at_fastro_s_own_paths_are_reported_once_each_not_as_a_clash(repo: Path) -> None:
+    assert [message for _, message, _ in _overlay(repo, "overlay/fastro.toml.j2", "overlay/fastro.toml/x")] == [
+        "blueprint.overlay: 'overlay/fastro.toml.j2' gives a project 'fastro.toml', one of the paths fastro writes itself.",
+        "blueprint.overlay: 'overlay/fastro.toml/x' gives a project 'fastro.toml/x', one of the paths fastro writes itself.",
+    ]
+
+
+def test_a_when_paths_entry_at_one_of_fastro_s_own_paths_is_bp003_at_the_entry(repo: Path) -> None:
+    _edit(
+        repo / "blueprint.toml",
+        'paths = ["backend/tests/test_accounts_queued.py"]',
+        'paths = ["backend/tests/test_accounts_queued.py", ".fastro/notes.md"]',
+    )
+    _track(repo, ".fastro/notes.md")
+
+    found = [(finding["line"], finding["message"]) for finding in _findings() if finding["code"] == "BP003"]
+
+    assert found == [
+        (
+            _line_of(repo, '".fastro/notes.md"'),
+            "features.accounts.when[\"tasks\"].paths[1]: '.fastro/notes.md' is one of the paths fastro writes itself, "
+            "so no project gets it from here and the entry ships nothing.",
+        )
+    ]
+
+
+def test_a_clash_names_a_file_app_paths_owns_by_its_catalog_origin_as_a_build_does(repo: Path) -> None:
+    _app(repo, '[app]\npaths = ["backend/pyproject.toml"]')
+
+    assert [message for _, message, _ in _overlay(repo, "overlay/backend/pyproject.toml/x")] == [
+        "blueprint: 'overlay/backend/pyproject.toml/x' and 'backend/pyproject.toml' (core) would give a project both a "
+        "file 'backend/pyproject.toml' and files under it."
+    ]
+
+
+def test_files_under_one_file_give_one_finding_naming_the_first(repo: Path) -> None:
+    given = ("overlay/backend/pyproject.toml/y", "overlay/backend/pyproject.toml/x")
+
+    assert [message for _, message, _ in _overlay(repo, *given)] == [
+        "blueprint: 'overlay/backend/pyproject.toml/x' and 'backend/pyproject.toml' (core) would give a project both a "
+        "file 'backend/pyproject.toml' and files under it."
+    ]
+
+
+def test_a_clash_at_a_path_core_and_an_overlay_file_both_give_names_core(repo: Path) -> None:
+    given = ("overlay/backend/pyproject.toml.j2", "overlay/backend/pyproject.toml/x")
+
+    assert (
+        "blueprint: 'overlay/backend/pyproject.toml/x' and 'backend/pyproject.toml' (core) would give a project both a "
+        "file 'backend/pyproject.toml' and files under it."
+    ) in [message for _, message, _ in _overlay(repo, *given)]

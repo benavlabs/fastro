@@ -16,6 +16,7 @@ from fastro.engine.spec import RepoPath
 TEMPLATE = ".j2"
 ENV = ".env"
 NOTHING = "so nothing was written."
+OWN = ("fastro.toml", ".fastro")
 
 
 class OverlayError(Exception):
@@ -30,6 +31,12 @@ def project_path(catalog: Blueprint, name: str) -> str | None:
         return None
     base = catalog.info.overlay.text.rstrip("/") + "/"
     return name[len(base) :].removesuffix(TEMPLATE) if name.startswith(base) else None
+
+
+def fastro_own(path: str) -> bool:
+    """Whether ``path`` is one fastro writes in a project itself: ``fastro.toml``, ``.fastro``, or a path under
+    either (2.1)."""
+    return path.split("/", 1)[0] in OWN
 
 
 def env_files(catalog: Blueprint, names: Iterable[RepoPath], submodules: Container[str], received: bool) -> list[str]:
@@ -59,8 +66,9 @@ def files(
     when the catalog names no overlay.
 
     Raises:
-        OverlayError: a template is named only ``.j2``, two overlay files share a project path or one's is a
-            directory another's sits under, or a template is a symlink, breaks spec 1.10's rule, isn't UTF-8 past a
+        OverlayError: a template is named only ``.j2``, an overlay file's project path is one of fastro's own
+            (``fastro_own``), two overlay files share a project path or one's is a directory another's sits under, or
+            a template is a symlink, breaks spec 1.10's rule, isn't UTF-8 past a
             byte order mark or doesn't render.
         OSError: the system won't let fastro read a template.
     """
@@ -72,13 +80,18 @@ def files(
         if name.rsplit("/", 1)[-1] == TEMPLATE:
             raise OverlayError(f"{name} is named only {TEMPLATE}, so it gives a project no path, {NOTHING}")
         path = name[len(base) :].removesuffix(TEMPLATE)
+        if fastro_own(path):
+            raise OverlayError(
+                f"{name} would give a project {path}, and fastro.toml, .fastro and what's under them are paths fastro "
+                f"writes itself, {NOTHING}"
+            )
         if path in found:
             raise OverlayError(f"{found[path]} and {name} would both give a project {path}, {NOTHING}")
         found[path] = name
     for path, name in found.items():
-        for above in _above(path):
+        for above in parents(path):
             if above in found:
-                raise OverlayError(f"{found[above]} and {name} {_both(above)}")
+                raise OverlayError(f"{name} and {found[above]} {_both(above)}")
     given: list[tuple[str, Change]] = []
     for path, name in found.items():
         if not name.endswith(TEMPLATE):
@@ -95,35 +108,46 @@ def files(
     return given
 
 
-def check(planned: Sequence[Change], overlay: Sequence[tuple[str, Change]], wiring: Iterable[str]) -> None:
+def check(
+    planned: Sequence[Change], overlay: Sequence[tuple[str, Change]], wiring: Iterable[str], origins: Mapping[str, str]
+) -> None:
     """Refuse a plan that would give one path both an overlay file and another source (7), or a path that's a file
-    from one and a directory from the other.
+    from one source and a directory from another, overlay or not (2.1). Each message names both paths, a wiring file
+    as one and any other planned file with its ``origins`` entry.
 
     Raises:
         OverlayError: an overlay file's project path is one ``planned`` copies or writes, or a directory one of its
-            paths sits under, or sits under one of them, naming both.
+            paths sits under, or sits under one of them; or one planned path sits under another.
     """
     rendered = set(wiring)
     others = {change.path: change for change in planned}
     under: dict[str, Change] = {}
     for change in planned:
-        for above in _above(change.path):
+        for above in parents(change.path):
             under.setdefault(above, change)
 
     def source(change: Change) -> str:
-        return f"the wiring file {change.path}" if change.path in rendered else change.source or change.path
+        if change.path in rendered:
+            return f"the wiring file {change.path}"
+        named = change.source or change.path
+        return f"{named} ({origins[change.path]})" if change.path in origins else named
 
     for name, change in overlay:
         if (other := others.get(change.path)) is not None:
             raise OverlayError(f"{name} and {source(other)} would both give a project {change.path}, {NOTHING}")
         if (other := under.get(change.path)) is not None:
-            raise OverlayError(f"{name} and {source(other)} {_both(change.path)}")
-        for above in _above(change.path):
+            raise OverlayError(f"{source(other)} and {name} {_both(change.path)}")
+        for above in parents(change.path):
             if (other := others.get(above)) is not None:
                 raise OverlayError(f"{name} and {source(other)} {_both(above)}")
+    for change in sorted(planned, key=lambda change: change.path):
+        for above in parents(change.path):
+            if (other := others.get(above)) is not None:
+                raise OverlayError(f"{source(change)} and {source(other)} {_both(above)}")
 
 
-def _above(path: str) -> list[str]:
+def parents(path: str) -> list[str]:
+    """The directories ``path`` sits under, outermost first."""
     parts = path.split("/")
     return ["/".join(parts[:count]) for count in range(1, len(parts))]
 
