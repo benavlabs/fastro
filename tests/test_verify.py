@@ -1270,6 +1270,19 @@ def test_verify_refuses_an_overlay_file_that_gives_a_project_a_env(repo: Path, p
     assert str(caught.value) == message
 
 
+def test_verify_doesn_t_take_a_submodule_named_env_for_a_env(repo: Path) -> None:
+    (repo / "vendor" / ".env").mkdir(parents=True)
+    commit = "1" * 40
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{commit},vendor/.env")
+
+    with pytest.raises(ApplyError) as caught:
+        verify(repo, CATALOG, ["minimal"], lambda project, selection: [], keep=False)
+
+    assert str(caught.value) == (
+        "verify set 'minimal' can't be built: 'vendor/.env' is a directory in the source, so nothing was changed."
+    )
+
+
 def test_verify_refuses_a_nameless_pyproject_itself(repo: Path) -> None:
     (repo / PYPROJECT).write_text('[project]\nversion = "0.1.0"\n')
 

@@ -21,6 +21,7 @@ from fastro.engine.plan import Plan
 from fastro.engine.spec import RepoPath
 from fastro.tools import require
 
+GITLINK = "160000"
 EXPORT_IGNORE = "export-ignore"
 EXPORT_SUBST = "export-subst"
 EXTRAHEADER = "http.https://github.com/.extraheader"
@@ -89,6 +90,25 @@ def tracked_files(repo: Path, untracked: bool = False, exported: bool = True) ->
     directories = sorted({directory for name in names for directory in _above(prefix + name)})
     ignored = _set(Path(top), [*(prefix + name for name in names), *directories], EXPORT_IGNORE)
     return tuple(RepoPath(name) for name in names if ignored.isdisjoint([prefix + name, *_above(prefix + name)]))
+
+
+def gitlinks(repo: Path) -> frozenset[str]:
+    """The paths, relative to ``repo``, that git's index records as a submodule (mode 160000) rather than a file,
+    whatever the working tree holds there. During a merge, a path counts only when every stage it has is one.
+
+    Raises:
+        MissingToolError: ``git`` isn't on ``PATH``.
+        RepositoryError: ``repo`` isn't a git repository, or isn't in its work tree.
+    """
+    git = require("git")
+    listed = subprocess.run([git, "-C", str(repo), "ls-files", "-z", "--stage"], capture_output=True, text=True)
+    if listed.returncode != 0:
+        raise RepositoryError(f"{repo} isn't a git repository: {listed.stderr.strip()}")
+    modes: dict[str, set[str]] = {}
+    for entry in filter(None, listed.stdout.split("\0")):
+        stage, name = entry.split("\t", 1)
+        modes.setdefault(name, set()).add(stage.split(" ", 1)[0])
+    return frozenset(name for name, found in modes.items() if found == {GITLINK})
 
 
 def export_ignored(top: Path, name: str) -> bool:

@@ -19,7 +19,7 @@ from packaging.version import InvalidVersion, Version
 from fastro import make, overlay
 from fastro import pyproject as rewriting
 from fastro import sync as syncing
-from fastro.apply import RepositoryError, export_subst, tracked_files
+from fastro.apply import RepositoryError, export_subst, gitlinks, tracked_files
 from fastro.engine import bindings, catalog_check, envfile, project
 from fastro.engine.blueprint import MODULE_GENERATOR, Blueprint, Command, IncompatibleCatalog
 from fastro.engine.files import breaks_the_rule, present, unreadable, unreadable_config
@@ -155,7 +155,7 @@ def lint(root: Path) -> Report:
         except RepositoryError as error:
             raise UsageError(f"{error}. Run fastro blueprint lint in a blueprint repo, which git tracks.") from None
         found.extend(_export_ignored_catalog(catalog, tracked, committed))
-        found.extend(_committed_env(catalog, committed))
+        found.extend(_committed_env(root, catalog, committed))
         found.extend(_missing_paths(catalog, tracked))
         found.extend(_missing_modules(catalog, tracked))
         found.extend(_unresolved_refs(root, catalog, tracked, catalog.document, _declared_refs(catalog)))
@@ -438,7 +438,7 @@ def _export_ignored_catalog(catalog: Blueprint, tracked: set[str], committed: Se
     return [catalog.document.problem(("blueprint",), message, f"Remove export-ignore for {CATALOG_FILE} from .gitattributes.")]
 
 
-def _committed_env(catalog: Blueprint, committed: Sequence[RepoPath]) -> list[Problem]:
+def _committed_env(root: Path, catalog: Blueprint, committed: Sequence[RepoPath]) -> list[Problem]:
     """BP008: each ``.env`` git tracks and has in the working tree, whatever ``blueprint_only`` or ``export-ignore``
     says, at ``[blueprint]`` (2.1, 2.13)."""
     return [
@@ -449,7 +449,7 @@ def _committed_env(catalog: Blueprint, committed: Sequence[RepoPath]) -> list[Pr
             "project's .env itself.",
             "BP008",
         )
-        for path in overlay.env_files(catalog, committed, received=False)
+        for path in overlay.env_files(catalog, committed, gitlinks(root), received=False)
     ]
 
 

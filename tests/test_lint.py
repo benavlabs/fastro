@@ -1816,3 +1816,46 @@ def test_an_overlay_file_whose_project_path_only_ends_like_env_isn_t_bp008(repo:
     _git(repo, "add", "-A", "-f")
 
     assert "BP008" not in [finding["code"] for finding in _findings()]
+
+
+def _gitlink(repo: Path, path: str) -> None:
+    """A submodule at ``path``: git records a commit there, and the working tree has its directory."""
+    (repo / path).mkdir(parents=True)
+    commit = "1" * 40
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{commit},{path}")
+
+
+def test_a_submodule_named_env_isn_t_a_file_so_it_isn_t_bp008(repo: Path) -> None:
+    _gitlink(repo, "vendor/.env")
+
+    assert "BP008" not in [finding["code"] for finding in _findings()]
+
+
+def test_a_submodule_named_env_with_a_file_in_its_place_isn_t_bp008(repo: Path) -> None:
+    _gitlink(repo, "vendor/.env")
+    (repo / "vendor/.env").rmdir()
+    (repo / "vendor/.env").write_text("SECRET=1\n")
+
+    assert "BP008" not in [finding["code"] for finding in _findings()]
+
+
+def test_a_committed_env_with_a_directory_in_its_place_is_still_bp008(repo: Path) -> None:
+    (repo / "notes").mkdir()
+    (repo / "notes/.env").write_text("SECRET=1\n")
+    _git(repo, "add", "-f", "notes/.env")
+    (repo / "notes/.env").unlink()
+    (repo / "notes/.env").mkdir()
+    (repo / "notes/.env/x").write_text("x\n")
+
+    assert ("BP008", _env_message("notes/.env")[0]) in [(finding["code"], finding["message"]) for finding in _findings()]
+
+
+def test_a_env_one_side_of_a_merge_has_as_a_submodule_is_still_bp008(repo: Path) -> None:
+    (repo / "notes").mkdir()
+    (repo / "notes/.env").write_text("SECRET=1\n")
+    hashed = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "notes/.env"], capture_output=True, text=True)
+    blob = hashed.stdout.strip()
+    entries = f"160000 {'1' * 40} 1\tnotes/.env\n100644 {blob} 2\tnotes/.env\n100644 {blob} 3\tnotes/.env\n"
+    subprocess.run(["git", "-C", str(repo), "update-index", "--index-info"], input=entries, text=True, check=True)
+
+    assert ("BP008", _env_message("notes/.env")[0]) in [(finding["code"], finding["message"]) for finding in _findings()]

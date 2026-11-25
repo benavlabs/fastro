@@ -16,7 +16,7 @@ from tempfile import mkdtemp
 
 from fastro import lint as linting
 from fastro import overlay, pyproject, templates
-from fastro.apply import ApplyError, Change, apply, changes, export_subst, tracked_files
+from fastro.apply import ApplyError, Change, apply, changes, export_subst, gitlinks, tracked_files
 from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
 from fastro.engine.files import breaks_the_rule, file_kind
@@ -167,7 +167,7 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
             problem 6.1 refuses.
         OSError: the system won't let fastro resolve or open either file.
     """
-    if envs := overlay.env_files(catalog, tracked, received=True):
+    if envs := overlay.env_files(catalog, tracked, gitlinks(root), received=True):
         listed = f"{', '.join(envs[:-1])} and {envs[-1]}" if len(envs) > 1 else envs[0]
         raise Unbuildable(
             f"{REFUSED} {listed} would reach a project as a .env, which is almost always a leaked secret. Remove "

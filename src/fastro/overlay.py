@@ -3,7 +3,7 @@ each ``*.j2`` file rendered with the template context (6.2) and its suffix dropp
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Container, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +32,15 @@ def project_path(catalog: Blueprint, name: str) -> str | None:
     return name[len(base) :].removesuffix(TEMPLATE) if name.startswith(base) else None
 
 
-def env_files(catalog: Blueprint, names: Iterable[RepoPath], received: bool) -> list[str]:
+def env_files(catalog: Blueprint, names: Iterable[RepoPath], submodules: Container[str], received: bool) -> list[str]:
     """Each of ``names`` that's a ``.env`` (2.1): a file named exactly ``.env``, at any depth, or an overlay file
-    whose project path is ``.env`` or ends in ``/.env``. With ``received``, only those a project would receive: in the
-    overlay, or outside ``blueprint_only``."""
+    whose project path is ``.env`` or ends in ``/.env``, never one of ``submodules``, which git records as a
+    submodule rather than a file. With ``received``, only those a project would receive: in the overlay, or outside
+    ``blueprint_only``."""
     found = []
     for path in names:
+        if path.text in submodules:
+            continue
         given = project_path(catalog, path.text)
         if given is not None:
             if given.rsplit("/", 1)[-1] == ENV:
