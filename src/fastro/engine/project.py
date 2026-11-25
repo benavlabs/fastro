@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +74,34 @@ class Project:
     def slug(self) -> str:
         """The name normalized as PEP 503 does (``slug``)."""
         return slug(self.name)
+
+
+def toml_string(text: str) -> str:
+    """``text`` as a TOML basic string: JSON's escapes are all TOML escapes too, and TOML also escapes DEL."""
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def written(catalog: Blueprint, asked: Iterable[str], name: str, chosen: Mapping[tuple[str, str], str]) -> str:
+    """The ``fastro.toml`` ``new`` and ``init`` write (spec 3): the catalog's ``blueprint``, the features in ``asked``
+    in catalog order, ``[project].name``, and ``[options]`` with each of ``chosen``, keyed ``"feature.option"`` in
+    catalog order of feature and then option, left out when ``chosen`` is empty."""
+    wanted = set(asked)
+    lines = [
+        f"blueprint = {{ name = {toml_string(catalog.info.name)}, version = {toml_string(str(catalog.info.version))} }}",
+        f"features = [{', '.join(toml_string(feature.name) for feature in catalog.features if feature.name in wanted)}]",
+        "",
+        "[project]",
+        f"name = {toml_string(name)}",
+    ]
+    options = [
+        f"{toml_string(f'{feature.name}.{option}')} = {toml_string(chosen[(feature.name, option)])}"
+        for feature in catalog.features
+        for option in feature.options
+        if (feature.name, option) in chosen
+    ]
+    if options:
+        lines += ["", "[options]", *options]
+    return "\n".join(lines) + "\n"
 
 
 def slug(name: str) -> str:

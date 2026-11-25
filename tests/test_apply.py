@@ -682,3 +682,27 @@ def test_a_tracked_path_that_isn_t_utf_8_is_listed_as_python_reads_file_names(
 
     assert tracked_files(repo) == (RepoPath("a.py"), RepoPath("caf\udce9.txt"))
     assert gitlinks(repo) == frozenset()
+
+
+def test_a_copy_onto_the_file_it_copies_from_is_refused_and_the_file_is_kept(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", {"a.py": "x = 1\n"})
+
+    with pytest.raises(ApplyError, match="^'a.py' is the file it would be copied from, so nothing was changed.$"):
+        apply([Change("copy", "a.py")], repo, repo)
+
+    assert (repo / "a.py").read_text() == "x = 1\n"
+
+
+def test_a_copy_onto_its_own_file_spelled_another_way_is_refused_where_the_file_system_takes_it_for_the_same(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path / "repo", {"a.py": "x = 1\n"})
+    alias = tmp_path / "REPO"
+
+    if alias.exists():
+        with pytest.raises(ApplyError, match="is the file it would be copied from"):
+            apply([Change("copy", "a.py")], repo, alias)
+    else:
+        apply([Change("copy", "a.py")], repo, alias)
+
+    assert (repo / "a.py").read_text() == "x = 1\n"

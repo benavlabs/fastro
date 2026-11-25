@@ -15,18 +15,19 @@ from pathlib import Path
 from tempfile import mkdtemp
 
 from fastro import lint as linting
-from fastro import overlay, pyproject, templates
-from fastro.apply import ApplyError, Change, apply, changes, export_subst, gitlinks, tracked_files
+from fastro import overlay
+from fastro.apply import ApplyError, apply, export_subst, gitlinks, tracked_files
+from fastro.assembly import Unbuildable as Unbuildable
+from fastro.assembly import assemble
 from fastro.engine import catalog_check, envfile
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.files import breaks_the_rule, file_kind, shown, utf8
-from fastro.engine.plan import plan, python_root_lock, starting_lock
+from fastro.engine.files import breaks_the_rule, file_kind
+from fastro.engine.plan import starting_lock
 from fastro.engine.problems import CatalogError
-from fastro.engine.render import RenderError, render
-from fastro.engine.resolve import Selection, SelectionError, select
+from fastro.engine.resolve import Selection, select
 from fastro.engine.spec import RepoPath
 from fastro.runner import available, declared_command, run_captured
-from fastro.tools import installed_version, require
+from fastro.tools import require
 
 EVERYTHING = "everything"
 REPORTED_LINES = 40
@@ -54,10 +55,6 @@ print("every module imports")
 
 class UnknownSet(Exception):
     """A set asked for isn't one the catalog verifies (spec 8: exit 2)."""
-
-
-class Unbuildable(Exception):
-    """The catalog loaded, but a build of it can't be rendered: a problem in ``blueprint.toml`` (spec 8: exit 1)."""
 
 
 @dataclass(frozen=True)
@@ -102,63 +99,14 @@ def build(
         Unbuildable: the build has no name it can read (``_name``), the wiring can't be rendered, an overlay file
             can't be given (``overlay.OverlayError``) or would land where another source does or under or over one,
             the selection's runtime dependencies can't be merged, ``.env.example`` has a problem 6.1 refuses, or a
-            file the build would copy or render from the repo, the lock and the overlay included, has git's
-            ``export-subst`` attribute set (1.7).
+            file the build would copy or render from the repo, the lock and the overlay included, is at a path that
+            isn't UTF-8 or has git's ``export-subst`` attribute set (1.7).
         ApplyError: a file the build would copy is one apply refuses.
     """
     files = tracked_files(root) if tracked is None else tracked
     selection = select(catalog, features, options=options)
-    made = plan(catalog, selection, files)
-    try:
-        rendered = render(made)
-    except (RenderError, SelectionError) as error:
-        raise Unbuildable(str(error)) from None
-    found = changes(made, rendered)
-    lock = starting_lock(catalog, files)
-    if lock is not None:
-        found.append(Change("copy", python_root_lock(catalog), source=lock.text))
-    values = templates.context(catalog, selection, _name(root, catalog, files), str(installed_version()))
-    try:
-        overlaid = overlay.files(root, catalog, files, values)
-        overlay.check(
-            found, overlaid, (op.path for op in made.ops if op.op == "render"), {op.path: op.origin for op in made.ops}
-        )
-    except overlay.OverlayError as error:
-        raise Unbuildable(str(error)) from None
-    copied = [RepoPath(change.source or change.path) for change in found if change.kind == "copy"]
-    copied += [RepoPath(source) for source, _ in overlaid]
-    found += [change for _, change in overlaid]
-    if odd := next((path.text for path in copied if not utf8(path.text)), None):
-        raise Unbuildable(
-            f"{shown(odd)} is at a path that isn't UTF-8, which no source can carry. Rename it to a path that's UTF-8."
-        )
-    if marked := export_subst(root, copied):
-        raise Unbuildable(
-            f"{marked[0].text} has git's export-subst attribute set, so a tarball of the repo would expand its "
-            f"placeholders and a clone wouldn't. Remove export-subst for {marked[0].text} from .gitattributes."
-        )
-    python_root = catalog.info.python_root.text.rstrip("/")
-    rewrites: dict[str, Callable[[str, Blueprint, Selection], str]] = {
-        f"{python_root}/pyproject.toml": pyproject.rewrite,
-        f"{python_root}/.env.example": envfile.process,
-    }
-    from_overlay = {change.path: source for source, change in overlaid}
-    for index, change in enumerate(found):
-        rewrite = rewrites.get(change.path)
-        source = change.source or change.path
-        if rewrite is None or (change.kind == "copy" and breaks_the_rule(root, source) is not None):
-            continue
-        try:
-            given = change.text if change.kind == "write" else (root / source).read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            raise Unbuildable(f"{source} isn't UTF-8 text. Save it as UTF-8.") from None
-        try:
-            text = rewrite(given, catalog, selection)
-        except (pyproject.PyprojectError, envfile.EnvFileError) as error:
-            named = f"{from_overlay[change.path]}: " if change.path in from_overlay else ""
-            raise Unbuildable(f"{named}{error}") from None
-        found[index] = Change("write", change.path, text)
-    apply(found, root, into)
+    built = assemble(root, catalog, selection, files, _name(root, catalog, files), lambda copied: export_subst(root, copied))
+    apply(built.changes, root, into)
     return into
 
 
@@ -173,11 +121,11 @@ def _readable(root: Path, catalog: Blueprint, tracked: Sequence[RepoPath]) -> No
             problem 6.1 refuses.
         OSError: the system won't let fastro resolve or open either file.
     """
-    if envs := [shown(path) for path in overlay.env_files(catalog, tracked, gitlinks(root), received=True)]:
-        listed = f"{', '.join(envs[:-1])} and {envs[-1]}" if len(envs) > 1 else envs[0]
+    if envs := overlay.env_files(catalog, tracked, gitlinks(root), received=True):
+        listed, them = overlay.listed(envs)
         raise Unbuildable(
             f"{REFUSED} {listed} would reach a project as a .env, which is almost always a leaked secret. Remove "
-            f"{'them' if len(envs) > 1 else 'it'} from the repo: fastro new writes a project's .env itself."
+            f"{them} from the repo: fastro new writes a project's .env itself."
         )
     python_root = catalog.info.python_root.text.rstrip("/")
     names = {path.text for path in tracked}

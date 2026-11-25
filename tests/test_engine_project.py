@@ -7,7 +7,7 @@ from packaging.version import Version
 from fastro.engine import blueprint
 from fastro.engine.blueprint import Blueprint, Contribution
 from fastro.engine.problems import CatalogError
-from fastro.engine.project import App, Pin, Plugin, Project, load
+from fastro.engine.project import App, Pin, Plugin, Project, load, toml_string, written
 from fastro.engine.spec import RepoPath
 
 FULL = """\
@@ -419,3 +419,30 @@ def test_against_a_catalog_that_extends_another_only_the_pin_is_checked() -> Non
     refused = _refused(text.replace('version = "0.1.0"', 'version = "9.0"'), extending)
 
     assert [problem.key for problem in refused.problems] == ["blueprint.version"]
+
+
+def test_new_s_fastro_toml_lists_the_features_asked_for_in_catalog_order_and_the_options_chosen() -> None:
+    text = written(_catalog(), ["taskiq", "accounts"], "acme-api", {("taskiq", "broker"): "rabbitmq"})
+
+    assert text == (
+        'blueprint = { name = "mini", version = "0.1.0" }\n'
+        'features = ["accounts", "taskiq"]\n'
+        "\n"
+        "[project]\n"
+        'name = "acme-api"\n'
+        "\n"
+        "[options]\n"
+        '"taskiq.broker" = "rabbitmq"\n'
+    )
+    assert load("fastro.toml", text, _catalog()).features == ("accounts", "taskiq")
+
+
+def test_new_s_fastro_toml_leaves_out_options_when_none_were_chosen() -> None:
+    assert written(_catalog(), [], "acme", {}) == (
+        'blueprint = { name = "mini", version = "0.1.0" }\nfeatures = []\n\n[project]\nname = "acme"\n'
+    )
+
+
+@pytest.mark.parametrize(("text", "expected"), [('a"b\\c', '"a\\"b\\\\c"'), ("é\x7f\n", '"é\\u007f\\n"')])
+def test_a_toml_string_escapes_what_toml_must_and_keeps_the_rest(text: str, expected: str) -> None:
+    assert toml_string(text) == expected

@@ -1032,7 +1032,7 @@ def test_a_render_error_makes_a_build_unbuildable(repo: Path, tmp_path: Path, mo
     def broken(*arguments: object) -> object:
         raise RenderError("SITE has no contribution and no fallback.")
 
-    monkeypatch.setattr("fastro.verify.render", broken)
+    monkeypatch.setattr("fastro.assembly.render", broken)
 
     with pytest.raises(Unbuildable, match="SITE has no contribution and no fallback."):
         build(repo, CATALOG, verify_sets(CATALOG)["minimal"], tmp_path / "scratch" / "minimal")
@@ -1044,7 +1044,7 @@ def test_any_other_value_error_in_a_build_is_a_bug_and_isnt_caught(
     def bug(*arguments: object) -> object:
         raise ValueError("a fastro bug")
 
-    monkeypatch.setattr("fastro.verify.render", bug)
+    monkeypatch.setattr("fastro.assembly.render", bug)
 
     with pytest.raises(ValueError, match="a fastro bug") as raised:
         build(repo, CATALOG, verify_sets(CATALOG)["minimal"], tmp_path / "scratch" / "minimal")

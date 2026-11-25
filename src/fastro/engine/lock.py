@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -14,6 +13,7 @@ from fastro.engine import spec
 from fastro.engine.blueprint import UPGRADE, CrossReferenceError, IncompatibleCatalog, Reader
 from fastro.engine.positions import KeyPath
 from fastro.engine.problems import CatalogError, Document, Problem, read
+from fastro.engine.project import toml_string
 from fastro.engine.spec import RepoPath, SpecError
 
 if TYPE_CHECKING:
@@ -103,12 +103,14 @@ def dump(lock: Lock) -> str:
     lines = [
         "[lock]",
         f"schema = {lock.schema}",
-        f"fastro = {_string(str(lock.fastro))}",
+        f"fastro = {toml_string(str(lock.fastro))}",
         f"blueprint = {_provenance(lock.blueprint)}",
-        f"features = [{', '.join(map(_string, lock.features))}]",
+        f"features = [{', '.join(map(toml_string, lock.features))}]",
     ]
     if lock.options:
-        pairs = (f"{_string(f'{feature}.{option}')} = {_string(value)}" for (feature, option), value in lock.options.items())
+        pairs = (
+            f"{toml_string(f'{feature}.{option}')} = {toml_string(value)}" for (feature, option), value in lock.options.items()
+        )
         lines.append(f"options = {{ {', '.join(pairs)} }}")
     if lock.starter is not None:
         lines += ["", f"starter = {_provenance(lock.starter)}"]
@@ -116,19 +118,18 @@ def dump(lock: Lock) -> str:
         lines += [
             "",
             f"[plugins.{name}]",
-            f"source = {_string(plugin.source)}",
-            f"version = {_string(str(plugin.version))}",
+            f"source = {toml_string(plugin.source)}",
+            f"version = {toml_string(str(plugin.version))}",
         ]
         if plugin.commit is not None:
-            lines.append(f"commit = {_string(plugin.commit)}")
+            lines.append(f"commit = {toml_string(plugin.commit)}")
     if lock.files:
         lines += ["", "[files]"]
         for path in sorted(lock.files, key=lambda path: path.text):
             entry = lock.files[path]
             linked = ", linked = true" if entry.linked else ""
-            lines.append(
-                f"{_string(path.text)} = {{ sha256 = {_string(entry.sha256)}, origin = {_string(entry.origin)}{linked} }}"
-            )
+            sha256, origin = toml_string(entry.sha256), toml_string(entry.origin)
+            lines.append(f"{toml_string(path.text)} = {{ sha256 = {sha256}, origin = {origin}{linked} }}")
     return "\n".join(lines) + "\n"
 
 
@@ -136,12 +137,7 @@ def _provenance(provenance: Provenance) -> str:
     pairs = [("name", provenance.name), ("version", str(provenance.version)), ("source", provenance.source)]
     if provenance.commit is not None:
         pairs.append(("commit", provenance.commit))
-    return f"{{ {', '.join(f'{key} = {_string(value)}' for key, value in pairs)} }}"
-
-
-def _string(text: str) -> str:
-    """``text`` as a TOML basic string: JSON's escapes are all TOML escapes too, and TOML also escapes DEL."""
-    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+    return f"{{ {', '.join(f'{key} = {toml_string(value)}' for key, value in pairs)} }}"
 
 
 def _against(lock: Lock, project: Project) -> list[Problem]:

@@ -484,7 +484,8 @@ def check(
 
     A path must stay inside ``target`` once resolved, and no part of it there, nor of a copied file in ``source``,
     may be a symlink, and a copied file must be a regular file there. In ``target``, no part of the way to it may be a
-    file, and what's already at it must be a regular file. With ``only``, each change's path must be one of them.
+    file, and what's already at it must be a regular file. A copy can't land on the file it copies from. With
+    ``only``, each change's path must be one of them.
 
     Raises:
         ApplyError: a change breaks one of those rules.
@@ -499,12 +500,15 @@ def check(
         if change.kind == "copy":
             origin = _inside(source, change.source or change.path, "the source")
             _regular_source(origin, change.source or change.path)
+            if same_file(origin, destination):
+                raise ApplyError(f"{change.path!r} is the file it would be copied from, so nothing was changed.")
         checked.append((change, destination, origin))
     return checked
 
 
 def apply(found: Iterable[Change], source: Path, target: Path, only: Collection[str] | None = None) -> None:
-    """Make each change in ``target``, copying from ``source``, once :func:`check` has allowed every one.
+    """Make each change in ``target``, copying from ``source``, once :func:`check` has allowed every one. A file a
+    change writes over is replaced by a new one, so nothing is written through a hard link.
 
     Raises:
         ApplyError: a change isn't allowed. Nothing has been changed.
@@ -515,11 +519,22 @@ def apply(found: Iterable[Change], source: Path, target: Path, only: Collection[
                 destination.unlink()
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if file_kind(destination) is not None:
+            destination.unlink()
         if origin is not None:
             shutil.copyfile(origin, destination)
             shutil.copymode(origin, destination)
         else:
             destination.write_bytes(change.text.encode("utf-8"))
+
+
+def same_file(one: Path, other: Path) -> bool:
+    """Whether ``one`` and ``other`` are one file as the file system sees it, however each is spelled: a path that
+    differs only in case on a file system that ignores case, or one reached through a symlink."""
+    try:
+        return os.path.samefile(one, other)
+    except OSError:
+        return False
 
 
 def _regular_source(origin: Path, path: str) -> None:

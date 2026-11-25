@@ -10,7 +10,7 @@ from typing import Any
 from fastro import templates
 from fastro.apply import Change
 from fastro.engine.blueprint import Blueprint
-from fastro.engine.files import breaks_the_rule, file_kind
+from fastro.engine.files import breaks_the_rule, file_kind, shown
 from fastro.engine.spec import RepoPath
 
 TEMPLATE = ".j2"
@@ -31,6 +31,15 @@ def project_path(catalog: Blueprint, name: str) -> str | None:
         return None
     base = catalog.info.overlay.text.rstrip("/") + "/"
     return name[len(base) :].removesuffix(TEMPLATE) if name.startswith(base) else None
+
+
+def listed(paths: Sequence[str]) -> tuple[str, str]:
+    """``paths`` named in a sentence, each as ``shown`` writes it (``a``, ``a and b``, ``a, b and c``), and the
+    pronoun that stands for them: ``it`` or ``them``."""
+    names = [shown(path) for path in paths]
+    if len(names) == 1:
+        return names[0], "it"
+    return f"{', '.join(names[:-1])} and {names[-1]}", "them"
 
 
 def fastro_own(path: str) -> bool:
